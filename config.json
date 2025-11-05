@@ -1,0 +1,55 @@
+{
+  "agent_name": "Big Flavor Band Agent",
+  "version": "1.0.0",
+  "website_url": "https://bigflavorband.com",
+  "mcp_server": {
+    "name": "big-flavor-band-server",
+    "description": "MCP server for Big Flavor band song library management"
+  },
+  "settings": {
+    "cache_duration_seconds": 3600,
+    "default_album_duration_minutes": 45,
+    "default_setlist_duration_minutes": 60,
+    "max_recommendations": 5
+  },
+  "audio_quality_levels": [
+    "excellent",
+    "good",
+    "fair",
+    "poor"
+  ],
+  "energy_levels": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "mood_categories": [
+    "upbeat",
+    "melancholic",
+    "relaxed",
+    "energetic",
+    "fun",
+    "emotional"
+  ],
+  "supported_genres": [
+    "Rock",
+    "Blues",
+    "Acoustic",
+    "Folk",
+    "Country",
+    "Jazz",
+    "Alternative"
+  ],
+  "recommendation_weights": {
+    "tempo_compatibility": 20,
+    "key_compatibility": 25,
+    "genre_match": 15,
+    "mood_preference": 30,
+    "energy_preference": 30,
+    "audio_quality": 10
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}
