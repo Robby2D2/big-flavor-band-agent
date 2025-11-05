@@ -5,20 +5,23 @@ Provides a menu-driven interface for exploring agent features.
 
 import asyncio
 import json
+import sys
 from agent import BigFlavorAgent
 
 
 class BigFlavorCLI:
     """Command-line interface for the Big Flavor Band Agent."""
     
-    def __init__(self):
+    def __init__(self, use_real_songs=True):
         self.agent = None
         self.running = True
+        self.use_real_songs = use_real_songs
     
     async def initialize(self):
         """Initialize the agent."""
-        print("\n🎸 Initializing Big Flavor Agent...")
-        self.agent = BigFlavorAgent()
+        mode = "REAL SONGS from bigflavorband.com" if self.use_real_songs else "MOCK DATA"
+        print(f"\n🎸 Initializing Big Flavor Agent ({mode})...")
+        self.agent = BigFlavorAgent(use_real_songs=self.use_real_songs)
         await self.agent.initialize()
         print(f"✓ Loaded {len(self.agent.song_library)} songs\n")
     
@@ -45,7 +48,7 @@ class BigFlavorCLI:
         # Show available songs
         print("Available songs:")
         for i, song in enumerate(self.agent.song_library, 1):
-            print(f"  {i}. {song['title']} ({song['genre']}, {song['mood']})")
+            print(f"  {i}. {song['title']} ({song['genre']}, {song['mood']}) [ID: {song['id']}]")
         
         choice = input("\nEnter song number for context (or press Enter for any): ").strip()
         
@@ -65,14 +68,23 @@ class BigFlavorCLI:
             energy=energy
         )
         
-        print(f"\n✨ Recommended: {result['recommended_song']['title']}")
-        print(f"   Genre: {result['recommended_song']['genre']}")
-        print(f"   Mood: {result['recommended_song']['mood']}")
-        print(f"   Tempo: {result['recommended_song']['tempo_bpm']} BPM")
-        print(f"   Confidence: {result['confidence_score']}/100")
+        suggested = result.get('suggested_song') or result.get('recommended_song')
+        reasoning = result.get('reasoning') or result.get('reasons', [])
+        
+        print(f"\n✨ Recommended: {suggested['title']} [ID: {suggested['id']}]")
+        print(f"   Genre: {suggested['genre']}")
+        if 'mood' in suggested:
+            print(f"   Mood: {suggested['mood']}")
+        if suggested.get('tempo_bpm'):
+            print(f"   Tempo: {suggested['tempo_bpm']} BPM")
+        if 'confidence_score' in result:
+            print(f"   Confidence: {result['confidence_score']}/100")
         print("\n   Why this song?")
-        for reason in result['reasons']:
-            print(f"   • {reason}")
+        if isinstance(reasoning, str):
+            print(f"   • {reasoning}")
+        else:
+            for reason in reasoning:
+                print(f"   • {reason}")
         
         input("\nPress Enter to continue...")
     
@@ -82,7 +94,7 @@ class BigFlavorCLI:
         
         print("Available songs:")
         for i, song in enumerate(self.agent.song_library, 1):
-            print(f"  {i}. {song['title']}")
+            print(f"  {i}. {song['title']} [ID: {song['id']}]")
         
         choice = input("\nEnter song number: ").strip()
         
@@ -100,9 +112,9 @@ class BigFlavorCLI:
         print("\n🔍 Finding similar songs...")
         result = await self.agent.suggest_similar_songs(song_id, limit=5)
         
-        print(f"\nSongs similar to '{result['reference_song']['title']}':")
+        print(f"\nSongs similar to '{result['reference_song']['title']}' [ID: {result['reference_song']['id']}]:")
         for i, song in enumerate(result['similar_songs'], 1):
-            print(f"\n{i}. {song['title']}")
+            print(f"\n{i}. {song['title']} [ID: {song['id']}]")
             print(f"   Genre: {song['genre']}")
             print(f"   Similarity: {song['similarity_score']}%")
             print(f"   Matching: {', '.join(song['matching_attributes'])}")
@@ -132,8 +144,10 @@ class BigFlavorCLI:
         for track in result['tracks']:
             mins = track['duration_seconds'] // 60
             secs = track['duration_seconds'] % 60
-            print(f"   {track['track_number']}. {track['title']} ({mins}:{secs:02d})")
-            print(f"      {track['genre']} • {track['mood']} • {track['tempo_bpm']} BPM")
+            print(f"   {track['track_number']}. {track['title']} ({mins}:{secs:02d}) [ID: {track['id']}]")
+            tempo_str = f"{track['tempo_bpm']} BPM" if track.get('tempo_bpm') else "N/A"
+            mood_str = track.get('mood', 'N/A')
+            print(f"      {track['genre']} • {mood_str} • {tempo_str}")
         
         print("\n   Curation Notes:")
         for note in result['curation_notes']:
@@ -147,7 +161,7 @@ class BigFlavorCLI:
         
         print("Available songs:")
         for i, song in enumerate(self.agent.song_library, 1):
-            print(f"  {i}. {song['title']}")
+            print(f"  {i}. {song['title']} [ID: {song['id']}]")
         
         choices = input("\nEnter song numbers separated by commas: ").strip()
         
@@ -186,7 +200,7 @@ class BigFlavorCLI:
         
         print("Available songs:")
         for i, song in enumerate(self.agent.song_library, 1):
-            print(f"  {i}. {song['title']} ({song.get('audio_quality', 'unknown')} quality)")
+            print(f"  {i}. {song['title']} ({song.get('audio_quality', 'unknown')} quality) [ID: {song['id']}]")
         
         choice = input("\nEnter song number: ").strip()
         
@@ -224,7 +238,7 @@ class BigFlavorCLI:
         
         print("Available songs:")
         for i, song in enumerate(self.agent.song_library, 1):
-            print(f"  {i}. {song['title']} ({song.get('audio_quality', 'unknown')})")
+            print(f"  {i}. {song['title']} ({song.get('audio_quality', 'unknown')}) [ID: {song['id']}]")
         
         choices = input("\nEnter song numbers separated by commas (or Enter for all): ").strip()
         
@@ -246,7 +260,7 @@ class BigFlavorCLI:
         
         print("\n   Quality Rankings:")
         for i, song in enumerate(result['quality_ranking'], 1):
-            print(f"   {i}. {song['title']}")
+            print(f"   {i}. {song['title']} [ID: {song['id']}]")
             print(f"      Quality: {song['quality']} ({song['quality_score']}/100)")
         
         if result['recommendations']:
@@ -284,8 +298,8 @@ class BigFlavorCLI:
         
         print("\n   Songs:")
         for song in result['songs']:
-            print(f"\n   {song['position']}. {song['title']}")
-            print(f"      Duration: {song['duration_minutes']} min | Energy: {song['energy']}")
+            print(f"\n   {song['position']}. {song['title']} [ID: {song['id']}]")
+            print(f"      Duration: {song['duration_minutes']} min | Energy: {song.get('energy', 'N/A')}")
             print(f"      Note: {song['performance_notes']}")
         
         print("\n   Performance Notes:")
@@ -299,9 +313,11 @@ class BigFlavorCLI:
         print("\n--- Song Library ---\n")
         
         for i, song in enumerate(self.agent.song_library, 1):
-            print(f"{i}. {song['title']}")
-            print(f"   Genre: {song['genre']} | Mood: {song['mood']} | Energy: {song['energy']}")
-            print(f"   Tempo: {song['tempo_bpm']} BPM | Key: {song['key']}")
+            print(f"{i}. {song['title']} [ID: {song['id']}]")
+            print(f"   Genre: {song['genre']} | Mood: {song.get('mood', 'N/A')} | Energy: {song.get('energy', 'N/A')}")
+            tempo_str = f"{song['tempo_bpm']} BPM" if song.get('tempo_bpm') else "N/A"
+            key_str = song.get('key', 'N/A')
+            print(f"   Tempo: {tempo_str} | Key: {key_str}")
             print(f"   Quality: {song.get('audio_quality', 'unknown')}")
             print()
         
@@ -346,7 +362,23 @@ class BigFlavorCLI:
 
 async def main():
     """Main entry point."""
-    cli = BigFlavorCLI()
+    # Check for --mock flag
+    use_real_songs = "--mock" not in sys.argv
+    
+    if use_real_songs:
+        print("\n" + "="*60)
+        print("🎸 BIG FLAVOR BAND AI AGENT - INTERACTIVE CLI")
+        print("="*60)
+        print("Mode: REAL SONGS from bigflavorband.com/rss")
+        print("="*60 + "\n")
+    else:
+        print("\n" + "="*60)
+        print("🎸 BIG FLAVOR BAND AI AGENT - INTERACTIVE CLI")
+        print("="*60)
+        print("Mode: MOCK DATA (for testing)")
+        print("="*60 + "\n")
+    
+    cli = BigFlavorCLI(use_real_songs=use_real_songs)
     try:
         await cli.run()
     except KeyboardInterrupt:

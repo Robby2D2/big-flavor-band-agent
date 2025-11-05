@@ -68,32 +68,34 @@ class SongRecommendationEngine:
             
             # If we have a current song, consider musical compatibility
             if current_song:
-                # Tempo compatibility (within 20 BPM gets bonus)
-                tempo_diff = abs(song["tempo_bpm"] - current_song["tempo_bpm"])
-                if tempo_diff <= 20:
-                    score += 20
-                    reasons.append("Similar tempo for smooth transition")
-                elif tempo_diff <= 40:
-                    score += 10
-                    reasons.append("Compatible tempo")
+                # Tempo compatibility (within 20 BPM gets bonus) - only if tempo data available
+                if "tempo_bpm" in song and "tempo_bpm" in current_song:
+                    tempo_diff = abs(song["tempo_bpm"] - current_song["tempo_bpm"])
+                    if tempo_diff <= 20:
+                        score += 20
+                        reasons.append("Similar tempo for smooth transition")
+                    elif tempo_diff <= 40:
+                        score += 10
+                        reasons.append("Compatible tempo")
                 
-                # Key compatibility
-                if self._are_keys_compatible(song["key"], current_song["key"]):
-                    score += 25
-                    reasons.append("Musically compatible key")
+                # Key compatibility - only if key data available
+                if "key" in song and "key" in current_song and song.get("key") and current_song.get("key"):
+                    if self._are_keys_compatible(song["key"], current_song["key"]):
+                        score += 25
+                        reasons.append("Musically compatible key")
                 
                 # Genre match
-                if song["genre"] == current_song["genre"]:
+                if song.get("genre") == current_song.get("genre"):
                     score += 15
                     reasons.append(f"Same genre ({song['genre']})")
             
             # Mood preference
-            if preferred_mood and song["mood"] == preferred_mood:
+            if preferred_mood and song.get("mood") == preferred_mood:
                 score += 30
                 reasons.append(f"Matches desired mood ({preferred_mood})")
             
             # Energy preference
-            if preferred_energy and song["energy"] == preferred_energy:
+            if preferred_energy and song.get("energy") == preferred_energy:
                 score += 30
                 reasons.append(f"Matches desired energy ({preferred_energy})")
             
@@ -117,22 +119,34 @@ class SongRecommendationEngine:
             return {"error": "No suitable songs found"}
         
         best_match = scored_songs[0]
+        best_song = best_match["song"]
+        
+        # Build recommended song dict with safe get() for all fields
+        recommended_song = {
+            "id": best_song.get("id"),
+            "title": best_song.get("title"),
+            "genre": best_song.get("genre"),
+            "mood": best_song.get("mood"),
+        }
+        
+        # Add optional fields if they exist
+        if "tempo_bpm" in best_song:
+            recommended_song["tempo_bpm"] = best_song["tempo_bpm"]
+        if "energy" in best_song:
+            recommended_song["energy"] = best_song["energy"]
+        if "full_title" in best_song:
+            recommended_song["full_title"] = best_song["full_title"]
+        if "album_session" in best_song:
+            recommended_song["album_session"] = best_song["album_session"]
         
         return {
-            "recommended_song": {
-                "id": best_match["song"]["id"],
-                "title": best_match["song"]["title"],
-                "genre": best_match["song"]["genre"],
-                "tempo_bpm": best_match["song"]["tempo_bpm"],
-                "mood": best_match["song"]["mood"],
-                "energy": best_match["song"]["energy"]
-            },
+            "suggested_song": recommended_song,
             "confidence_score": best_match["score"],
-            "reasons": best_match["reasons"],
+            "reasoning": " | ".join(best_match["reasons"]) if best_match["reasons"] else "Good match based on available criteria",
             "alternatives": [
                 {
-                    "id": alt["song"]["id"],
-                    "title": alt["song"]["title"],
+                    "id": alt["song"].get("id"),
+                    "title": alt["song"].get("title"),
                     "score": alt["score"]
                 }
                 for alt in scored_songs[1:4]  # Top 3 alternatives

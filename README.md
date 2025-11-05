@@ -4,12 +4,14 @@ An AI-powered agent for managing the Big Flavor band's song library, with capabi
 
 ## 🎸 Features
 
+- **Real Song Library**: Access to **1,452 real songs** from bigflavorband.com via RSS feed
 - **Smart Song Recommendations**: Get suggestions for what song to play next based on tempo, key, mood, and energy
 - **Album Curation**: Automatically create album suggestions from your song library with optimal track ordering
 - **Setlist Generation**: Create performance setlists with customizable energy flow patterns
 - **Audio Engineering Assistance**: Get professional audio engineering suggestions to improve recording quality
 - **Flow Analysis**: Analyze how well songs transition together in albums or setlists
 - **MCP Server Integration**: Built with Model Context Protocol for AI agent connectivity
+- **Intelligent Metadata**: Automatically infers genre, mood, and tags from song titles and sessions
 
 ## 📁 Project Structure
 
@@ -155,19 +157,54 @@ Songs in the library should include:
 }
 ```
 
-## 🌐 Integrating with bigflavorband.com
+## 🌐 RSS Feed Integration - LIVE DATA! 🎉
 
-Currently, the system uses mock data for demonstration. To integrate with your actual website:
+**The MCP Server now uses REAL songs from bigflavorband.com!**
 
-1. Update `mcp_server.py` in the `get_song_library()` method
-2. Implement scraping or API calls to fetch real song data
-3. Parse the HTML/API response to match the song data format
-4. Consider caching to avoid excessive website requests
+### ✅ What's Included
 
-Example integration patterns:
-- **Static Website**: Use BeautifulSoup to scrape HTML
-- **REST API**: Use httpx to call API endpoints  
-- **Database**: Connect directly to your song database
+- **1,452 real songs** fetched from https://bigflavorband.com/rss
+- **Automatic metadata parsing** including:
+  - Song titles and variants
+  - Recording sessions (e.g., "Kevin's Bar+Cart Birthday Bash", "Broken Pitchfork Retreat")
+  - Direct MP3 download links
+  - Publication dates
+  - Inferred genres and moods
+  - Auto-generated tags for instruments and styles
+
+### Testing the RSS Integration
+
+Run the test script to see real songs in action:
+
+```powershell
+python test_rss_parser.py
+```
+
+This will display:
+- Total songs fetched from the RSS feed
+- Sample songs with full metadata
+- Search functionality demo
+- Genre filtering demo
+
+### How It Works
+
+The MCP server:
+1. Fetches the RSS feed from bigflavorband.com
+2. Parses XML to extract song information
+3. Infers genres based on keywords (Rock, Blues, Jazz, Acoustic/Folk)
+4. Determines moods from song titles (melancholic, upbeat, energetic, romantic, reflective)
+5. Generates tags from instruments mentioned (guitar, piano, drums, vocals, etc.)
+6. Caches results for performance
+
+### Example Real Songs
+
+- "So Tired" - 45+ variations across different sessions
+- "Here Comes a Regular" - Multiple live and studio versions
+- "Hallelujah" - Various performer arrangements
+- "This Year" - Different interpretations and sessions
+- "Rock and Roll" - Live recordings and studio takes
+
+For more details, see [RSS_UPDATE.md](./RSS_UPDATE.md)
 
 ## 🎵 Features in Detail
 

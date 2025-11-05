@@ -8,6 +8,22 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("album-curator")
 
+# Default duration for songs without duration_seconds (3.5 minutes)
+DEFAULT_SONG_DURATION = 210
+
+
+def get_song_duration(song: Dict[str, Any]) -> int:
+    """
+    Get song duration in seconds, using default if not available.
+    
+    Args:
+        song: Song dictionary
+    
+    Returns:
+        Duration in seconds
+    """
+    return song.get("duration_seconds", DEFAULT_SONG_DURATION)
+
 
 class AlbumCurator:
     """Curator for creating albums and setlists from song libraries."""
@@ -52,7 +68,7 @@ class AlbumCurator:
         ordered_tracks = self._order_tracks(selected_songs)
         
         # Calculate total duration
-        total_duration_seconds = sum(song["duration_seconds"] for song in ordered_tracks)
+        total_duration_seconds = sum(get_song_duration(song) for song in ordered_tracks)
         
         return {
             "album_name": self._generate_album_name(theme, ordered_tracks),
@@ -64,9 +80,9 @@ class AlbumCurator:
                     "track_number": idx + 1,
                     "id": song["id"],
                     "title": song["title"],
-                    "duration_seconds": song["duration_seconds"],
+                    "duration_seconds": get_song_duration(song),
                     "genre": song["genre"],
-                    "tempo_bpm": song["tempo_bpm"],
+                    "tempo_bpm": song.get("tempo_bpm"),
                     "mood": song["mood"]
                 }
                 for idx, song in enumerate(ordered_tracks)
@@ -152,15 +168,15 @@ class AlbumCurator:
         
         return {
             "setlist_name": f"Big Flavor {energy_flow.title()} Energy Set",
-            "duration_minutes": round(sum(s["duration_seconds"] for s in selected_songs) / 60, 1),
+            "duration_minutes": round(sum(get_song_duration(s) for s in selected_songs) / 60, 1),
             "energy_flow": energy_flow,
             "songs": [
                 {
                     "position": idx + 1,
                     "id": song["id"],
                     "title": song["title"],
-                    "duration_minutes": round(song["duration_seconds"] / 60, 1),
-                    "energy": song["energy"],
+                    "duration_minutes": round(get_song_duration(song) / 60, 1),
+                    "energy": song.get("energy", "medium"),
                     "performance_notes": self._generate_performance_notes(song, idx + 1, len(selected_songs))
                 }
                 for idx, song in enumerate(selected_songs)
@@ -208,20 +224,24 @@ class AlbumCurator:
         selected = []
         current_duration = 0
         
+        # Estimate duration for songs that don't have it (assume 3.5 minutes average)
+        DEFAULT_DURATION = 210  # 3.5 minutes in seconds
+        
         # Sort by quality and variety
         sorted_songs = sorted(
             songs,
             key=lambda s: (
                 {"excellent": 3, "good": 2, "fair": 1}.get(s.get("audio_quality", "fair"), 0),
-                -abs(current_duration + s["duration_seconds"] - target_seconds)
+                -abs(current_duration + s.get("duration_seconds", DEFAULT_DURATION) - target_seconds)
             ),
             reverse=True
         )
         
         for song in sorted_songs:
-            if current_duration + song["duration_seconds"] <= target_seconds * 1.1:  # 10% buffer
+            song_duration = song.get("duration_seconds", DEFAULT_DURATION)
+            if current_duration + song_duration <= target_seconds * 1.1:  # 10% buffer
                 selected.append(song)
-                current_duration += song["duration_seconds"]
+                current_duration += song_duration
                 
                 if current_duration >= target_seconds * 0.9:  # At least 90% of target
                     break
@@ -237,9 +257,9 @@ class AlbumCurator:
         ordered = []
         
         # Categorize by energy
-        high_energy = [s for s in songs if s["energy"] == "high"]
-        medium_energy = [s for s in songs if s["energy"] == "medium"]
-        low_energy = [s for s in songs if s["energy"] == "low"]
+        high_energy = [s for s in songs if s.get("energy") == "high"]
+        medium_energy = [s for s in songs if s.get("energy") == "medium"]
+        low_energy = [s for s in songs if s.get("energy") == "low"]
         
         # Start with a medium or medium-high energy song
         if medium_energy:
@@ -252,13 +272,13 @@ class AlbumCurator:
         
         while remaining:
             # Try to vary from the last song
-            last_energy = ordered[-1]["energy"] if ordered else "medium"
+            last_energy = ordered[-1].get("energy", "medium") if ordered else "medium"
             
             # Pick a song with different energy if possible
             next_song = None
             for energy_level in ["low", "medium", "high"]:
                 if energy_level != last_energy:
-                    candidates = [s for s in remaining if s["energy"] == energy_level]
+                    candidates = [s for s in remaining if s.get("energy") == energy_level]
                     if candidates:
                         next_song = candidates[0]
                         remaining.remove(next_song)
@@ -283,21 +303,27 @@ class AlbumCurator:
         issue = None
         suggestion = None
         
-        # Tempo analysis
-        tempo_diff = abs(current["tempo_bpm"] - next_song["tempo_bpm"])
-        if tempo_diff <= 15:
-            score += 25
-        elif tempo_diff <= 30:
-            score += 15
-        elif tempo_diff > 50:
-            score -= 20
-            quality = "poor"
-            issue = f"Large tempo jump ({current['tempo_bpm']} → {next_song['tempo_bpm']} BPM)"
-            suggestion = f"Consider a transitional song or reorder tracks {transition_number} and {transition_number + 1}"
+        # Tempo analysis (skip if tempo data not available)
+        current_tempo = current.get("tempo_bpm")
+        next_tempo = next_song.get("tempo_bpm")
+        
+        if current_tempo and next_tempo:
+            tempo_diff = abs(current_tempo - next_tempo)
+            if tempo_diff <= 15:
+                score += 25
+            elif tempo_diff <= 30:
+                score += 15
+            elif tempo_diff > 50:
+                score -= 20
+                quality = "poor"
+                issue = f"Large tempo jump ({current_tempo} → {next_tempo} BPM)"
+                suggestion = f"Consider a transitional song or reorder tracks {transition_number} and {transition_number + 1}"
         
         # Energy flow
         energy_map = {"low": 1, "medium": 2, "high": 3}
-        energy_diff = abs(energy_map[current["energy"]] - energy_map[next_song["energy"]])
+        current_energy = current.get("energy", "medium")
+        next_energy = next_song.get("energy", "medium")
+        energy_diff = abs(energy_map[current_energy] - energy_map[next_energy])
         
         if energy_diff == 0:
             score += 15
@@ -307,7 +333,7 @@ class AlbumCurator:
             score -= 15
             if not issue:
                 quality = "fair"
-                issue = f"Abrupt energy change ({current['energy']} → {next_song['energy']})"
+                issue = f"Abrupt energy change ({current_energy} → {next_energy})"
                 suggestion = f"Add a medium-energy song between tracks {transition_number} and {transition_number + 1}"
         
         # Genre consistency
@@ -341,9 +367,9 @@ class AlbumCurator:
         energy_flow: str
     ) -> List[Dict[str, Any]]:
         """Select and order songs for a setlist based on energy flow."""
-        high_energy = [s for s in songs if s["energy"] == "high"]
-        medium_energy = [s for s in songs if s["energy"] == "medium"]
-        low_energy = [s for s in songs if s["energy"] == "low"]
+        high_energy = [s for s in songs if s.get("energy") == "high"]
+        medium_energy = [s for s in songs if s.get("energy") == "medium"]
+        low_energy = [s for s in songs if s.get("energy") == "low"]
         
         selected = []
         current_duration = 0
@@ -366,9 +392,10 @@ class AlbumCurator:
                     pool.append(low_energy.pop(0))
         
         for song in pool:
-            if current_duration + song["duration_seconds"] <= target_seconds * 1.1:
+            song_duration = get_song_duration(song)
+            if current_duration + song_duration <= target_seconds * 1.1:
                 selected.append(song)
-                current_duration += song["duration_seconds"]
+                current_duration += song_duration
                 
                 if current_duration >= target_seconds * 0.9:
                     break
@@ -401,11 +428,11 @@ class AlbumCurator:
         if theme:
             notes.append(f"Album curated around '{theme}' theme")
         
-        total_duration = sum(t["duration_seconds"] for t in tracks)
+        total_duration = sum(get_song_duration(t) for t in tracks)
         notes.append(f"Total runtime: {round(total_duration / 60, 1)} minutes across {len(tracks)} tracks")
         
         # Energy flow
-        energy_flow = " → ".join([t["energy"] for t in tracks])
+        energy_flow = " → ".join([t.get("energy", "medium") for t in tracks])
         notes.append(f"Energy progression: {energy_flow}")
         
         # Genre distribution
@@ -431,9 +458,9 @@ class AlbumCurator:
             return "Closer - leave them wanting more!"
         elif position == total_songs // 2:
             return "Mid-set anchor - good time for band banter"
-        elif song["energy"] == "high":
+        elif song.get("energy") == "high":
             return "High energy - get the crowd moving"
-        elif song["energy"] == "low":
+        elif song.get("energy") == "low":
             return "Breather - let the audience catch their breath"
         else:
             return "Keep the momentum going"
@@ -448,10 +475,10 @@ class AlbumCurator:
         
         notes.append(f"Setlist designed with {energy_flow} energy flow")
         
-        total_duration = sum(s["duration_seconds"] for s in songs)
+        total_duration = sum(get_song_duration(s) for s in songs)
         notes.append(f"Total performance time: ~{round(total_duration / 60)} minutes")
         
-        high_energy_count = len([s for s in songs if s["energy"] == "high"])
+        high_energy_count = len([s for s in songs if s.get("energy") == "high"])
         notes.append(f"Includes {high_energy_count} high-energy crowd-pleasers")
         
         if energy_flow == "building":

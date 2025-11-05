@@ -8,6 +8,9 @@ import json
 import logging
 from typing import Any, Optional
 from urllib.parse import urljoin
+from datetime import datetime
+import xml.etree.ElementTree as ET
+import re
 
 import httpx
 from mcp.server import Server
@@ -24,8 +27,10 @@ class BigFlavorMCPServer:
     
     def __init__(self, base_url: str = "https://bigflavorband.com"):
         self.base_url = base_url
+        self.rss_url = f"{base_url}/rss"
         self.app = Server("big-flavor-band-server")
         self.songs_cache = []
+        self.last_fetch_time = None
         self.setup_handlers()
     
     def setup_handlers(self):
@@ -154,29 +159,34 @@ class BigFlavorMCPServer:
                 )]
     
     async def get_song_library(self) -> dict:
-        """Fetch the complete song library."""
+        """Fetch the complete song library from RSS feed."""
         try:
-            # This is a placeholder - you'll need to implement actual scraping/API logic
-            # for bigflavorband.com
+            logger.info(f"Fetching song library from {self.rss_url}")
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(self.base_url)
+                response = await client.get(self.rss_url)
+                response.raise_for_status()
                 
-                # For now, return mock data structure
-                # You would parse the actual HTML or API response here
-                self.songs_cache = self._get_mock_songs()
+                # Parse RSS feed
+                self.songs_cache = self._parse_rss_feed(response.text)
+                self.last_fetch_time = datetime.now()
+                
+                logger.info(f"Successfully fetched {len(self.songs_cache)} songs from RSS feed")
                 
                 return {
                     "status": "success",
+                    "source": "bigflavorband.com RSS feed",
                     "total_songs": len(self.songs_cache),
+                    "last_updated": self.last_fetch_time.isoformat(),
                     "songs": self.songs_cache
                 }
         except Exception as e:
-            logger.error(f"Error fetching song library: {e}")
-            # Return mock data if website is unavailable
-            self.songs_cache = self._get_mock_songs()
+            logger.error(f"Error fetching song library from RSS: {e}")
+            # Return mock data if RSS is unavailable
+            if not self.songs_cache:
+                self.songs_cache = self._get_mock_songs()
             return {
-                "status": "using_mock_data",
-                "message": "Using sample data - implement website scraping for real data",
+                "status": "error",
+                "message": f"Failed to fetch RSS feed: {str(e)}",
                 "total_songs": len(self.songs_cache),
                 "songs": self.songs_cache
             }
@@ -293,6 +303,151 @@ class BigFlavorMCPServer:
                 "Reverb settings should match the song's mood"
             ]
         }
+    
+    def _parse_rss_feed(self, rss_content: str) -> list[dict]:
+        """Parse RSS feed XML and extract song information."""
+        try:
+            root = ET.fromstring(rss_content)
+            songs = []
+            
+            # Find all item elements in the RSS feed
+            for idx, item in enumerate(root.findall('.//item')):
+                try:
+                    title = item.find('title')
+                    link = item.find('link')
+                    enclosure = item.find('enclosure')
+                    pub_date = item.find('pubDate')
+                    guid = item.find('guid')
+                    
+                    # Extract title (format: "Song Title - variant/performer")
+                    song_title = title.text if title is not None and title.text else f"Untitled {idx+1}"
+                    
+                    # Parse title to extract song name and variant/performers
+                    song_name, variant = self._parse_song_title(song_title)
+                    
+                    # Extract album/session name from link or guid
+                    url_text = ""
+                    if link is not None and link.text:
+                        url_text = link.text
+                    elif guid is not None and guid.text:
+                        url_text = guid.text
+                    album_session = self._extract_album_session(url_text)
+                    
+                    # Create song object
+                    pub_date_text = pub_date.text if pub_date is not None and pub_date.text else ""
+                    song = {
+                        "id": f"song_{idx+1:04d}",
+                        "title": song_name,
+                        "full_title": song_title,
+                        "variant": variant,
+                        "album_session": album_session,
+                        "url": link.text if link is not None and link.text else "",
+                        "audio_url": enclosure.get('url') if enclosure is not None else "",
+                        "audio_type": enclosure.get('type') if enclosure is not None else "",
+                        "pub_date": pub_date_text,
+                        "recording_date": self._parse_date(pub_date_text),
+                        "genre": self._infer_genre(song_title, album_session),
+                        "mood": self._infer_mood(song_title),
+                        "tags": self._generate_tags(song_title, album_session),
+                    }
+                    
+                    songs.append(song)
+                except Exception as e:
+                    logger.warning(f"Error parsing RSS item {idx}: {e}")
+                    continue
+            
+            return songs
+        except Exception as e:
+            logger.error(f"Error parsing RSS feed: {e}")
+            return []
+    
+    def _parse_song_title(self, title: str) -> tuple[str, str]:
+        """Parse song title to extract name and variant/performers."""
+        # Titles are in format "Song Name - variant/performers"
+        if ' - ' in title:
+            parts = title.split(' - ', 1)
+            return parts[0].strip(), parts[1].strip()
+        return title.strip(), ""
+    
+    def _extract_album_session(self, url: str) -> str:
+        """Extract album/session name from URL."""
+        # URL format: https://bigflavorband.com/audio/####/Session Name--Song.mp3
+        match = re.search(r'/audio/\d+/([^/]+?)--', url)
+        if match:
+            # Decode URL-encoded characters and clean up
+            session = match.group(1).replace('+', ' ').replace('%20', ' ')
+            return session
+        return "Unknown Session"
+    
+    def _parse_date(self, date_str: str) -> str:
+        """Parse publication date to ISO format."""
+        try:
+            # RSS date format: "Tue, 10 Jun 2025 02:57:24 GMT"
+            dt = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %Z")
+            return dt.strftime("%Y-%m-%d")
+        except:
+            return ""
+    
+    def _infer_genre(self, title: str, album: str) -> str:
+        """Infer genre from song title and album name."""
+        title_lower = title.lower()
+        album_lower = album.lower()
+        
+        # Check for genre keywords
+        if any(word in title_lower or word in album_lower for word in ['jazz', 'swing']):
+            return "Jazz"
+        elif any(word in title_lower or word in album_lower for word in ['blues', 'blue']):
+            return "Blues"
+        elif any(word in title_lower or word in album_lower for word in ['rock', 'metal']):
+            return "Rock"
+        elif any(word in title_lower or word in album_lower for word in ['acoustic', 'folk']):
+            return "Acoustic/Folk"
+        else:
+            return "Rock/Alternative"  # Default genre for Big Flavor
+    
+    def _infer_mood(self, title: str) -> str:
+        """Infer mood from song title."""
+        title_lower = title.lower()
+        
+        if any(word in title_lower for word in ['tired', 'sad', 'blue', 'dark', 'helpless']):
+            return "melancholic"
+        elif any(word in title_lower for word in ['happy', 'joy', 'fun', 'party', 'celebrate']):
+            return "upbeat"
+        elif any(word in title_lower for word in ['love', 'heart', 'kiss']):
+            return "romantic"
+        elif any(word in title_lower for word in ['rock', 'roll', 'metal', 'fire']):
+            return "energetic"
+        else:
+            return "reflective"
+    
+    def _generate_tags(self, title: str, album: str) -> list[str]:
+        """Generate tags from song title and album."""
+        tags = []
+        
+        # Add album as a tag
+        if album and album != "Unknown Session":
+            tags.append(album.replace(" ", "-").lower())
+        
+        # Add instrument/style tags from title
+        title_lower = title.lower()
+        if 'guitar' in title_lower or 'gtr' in title_lower:
+            tags.append("guitar")
+        if 'piano' in title_lower or 'keys' in title_lower:
+            tags.append("piano")
+        if 'drum' in title_lower:
+            tags.append("drums")
+        if 'bass' in title_lower:
+            tags.append("bass")
+        if 'vocal' in title_lower or 'sing' in title_lower:
+            tags.append("vocals")
+        if 'acoustic' in title_lower:
+            tags.append("acoustic")
+        if 'electric' in title_lower:
+            tags.append("electric")
+        if 'live' in title_lower:
+            tags.append("live")
+            
+        return tags
     
     def _get_mock_songs(self) -> list[dict]:
         """Return mock song data for testing."""
