@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "big-flavor": {
+      "command": "node",
+      "args": ["dist/mcp-server/index.js"],
+      "description": "Big Flavor Band song library and music management server",
+      "type": "stdio"
+    }
+  }
+}
