@@ -108,6 +108,15 @@ class DatabaseManager:
         
         return [dict(row) for row in rows]
     
+    async def get_all_song_ids(self) -> set:
+        """Get all song IDs in the database."""
+        query = "SELECT id FROM songs"
+        
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        
+        return {row['id'] for row in rows}
+    
     async def search_songs(
         self,
         genre: Optional[str] = None,

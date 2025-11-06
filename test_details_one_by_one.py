@@ -31,15 +31,21 @@ def main():
     # Choose number of songs
     print("\nHow many songs to process?")
     print("1. Just 3 songs (quick test)")
-    print("2. 20 songs (medium test)")
-    print("3. All songs (VERY slow - 30+ minutes)")
+    print("2. 30 songs starting from 'Going to California - raga' (test paging)")
+    print("3. 20 songs (medium test)")
+    print("4. All songs (VERY slow - 30+ minutes)")
     
-    choice = input("\nEnter choice (1-3): ").strip()
+    choice = input("\nEnter choice (1-4): ").strip()
     
+    start_from_song = None
     if choice == "1":
         max_scrolls = 1  # Just first screen
         limit = 3
     elif choice == "2":
+        max_scrolls = 10  # Enough scrolls to get 30 songs
+        limit = 30
+        start_from_song = "Going to California - raga"
+    elif choice == "3":
         max_scrolls = 5
         limit = 20
     else:
@@ -59,11 +65,13 @@ def main():
         scraper.navigate_to_songs()
         
         # Get songs with details one at a time
-        print(f"\nProcessing up to {limit if limit else 'all'} songs...")
+        if start_from_song:
+            print(f"\nStarting from song: {start_from_song}")
+        print(f"Processing up to {limit if limit else 'all'} songs...")
         print("Watch the browser - you'll see it click each song!")
         print()
         
-        songs = scraper.get_all_songs_with_details(max_scrolls=max_scrolls, limit=limit)
+        songs = scraper.get_all_songs_with_details(max_scrolls=max_scrolls, limit=limit, start_from_song=start_from_song)
         
         print(f"\n✓ Successfully processed {len(songs)} songs!")
         

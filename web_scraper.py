@@ -272,7 +272,7 @@ class BigFlavorScraper:
         logger.info(f"Successfully parsed {len(songs)} unique songs")
         return songs
     
-    def get_all_songs_with_details(self, max_scrolls: int = 10, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_all_songs_with_details(self, max_scrolls: int = 10, limit: Optional[int] = None, start_from_song: Optional[str] = None, existing_song_ids: Optional[set] = None) -> List[Dict[str, Any]]:
         """
         Get all songs with full details by clicking into each one as we scroll.
         This method processes songs one at a time to avoid virtualization issues.
@@ -280,11 +280,18 @@ class BigFlavorScraper:
         Args:
             max_scrolls: Maximum number of scroll attempts (None = keep scrolling until no new songs)
             limit: Maximum number of songs to collect (None = collect all songs)
+            start_from_song: Title of song to start from (will skip all songs before this one)
+            existing_song_ids: Set of song IDs already in database (will skip processing these)
             
         Returns:
             List of song dictionaries with complete data including edit page details
         """
-        logger.info("Fetching all songs with details (one at a time)")
+        if existing_song_ids is None:
+            existing_song_ids = set()
+        
+        logger.info(f"Fetching all songs with details (one at a time)")
+        if existing_song_ids:
+            logger.info(f"Skipping {len(existing_song_ids)} songs already in database")
         self.driver.get(self.BASE_URL)
         
         # Wait for Vaadin grid to load
@@ -297,6 +304,11 @@ class BigFlavorScraper:
         max_scroll_attempts = max_scrolls if max_scrolls else 500
         no_new_songs_count = 0
         max_no_new_songs = 10
+        last_processed_song = None  # Track the last song we processed
+        found_start_song = False if start_from_song else True  # Track if we've found the starting song
+        
+        if start_from_song:
+            logger.info(f"Will start processing from song: {start_from_song}")
         
         logger.info("Processing songs one at a time...")
         
@@ -313,12 +325,89 @@ class BigFlavorScraper:
             try:
                 song_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".v-grid-cell button.v-nativebutton")
                 
-                # Collect unprocessed song titles
-                unprocessed_songs = []
+                # Collect visible song titles in order
+                visible_songs = []
                 for button in song_buttons:
                     song_title = button.text.strip()
-                    if song_title and song_title not in all_songs_dict:
-                        unprocessed_songs.append(song_title)
+                    if song_title:
+                        visible_songs.append(song_title)
+                
+                # Check if we need to find the starting song
+                if not found_start_song and start_from_song:
+                    if start_from_song in visible_songs:
+                        found_start_song = True
+                        logger.info(f"Found starting song '{start_from_song}'")
+                        # Don't continue - fall through to process songs
+                    else:
+                        # Haven't found the start song yet, skip this batch and scroll
+                        logger.info(f"Start song '{start_from_song}' not visible yet, scrolling...")
+                        # Don't increment scroll_attempts while searching for start song
+                        # Just scroll and continue
+                        try:
+                            scroll_worked = self.driver.execute_script("""
+                                var grid = document.querySelector('.v-grid-tablewrapper');
+                                if (grid) {
+                                    var oldScroll = grid.scrollTop;
+                                    // Scroll more aggressively when searching for start song
+                                    grid.scrollTop = grid.scrollTop + 300;
+                                    return grid.scrollTop > oldScroll;
+                                }
+                                return false;
+                            """)
+                            time.sleep(0.5)
+                        except Exception as e:
+                            logger.debug(f"Scroll error: {e}")
+                        continue
+                
+                # Find where to start processing
+                start_index = 0
+                
+                # If we're looking for a start song and just found it, start from there
+                if start_from_song and start_from_song in visible_songs and not last_processed_song:
+                    start_index = visible_songs.index(start_from_song)
+                    logger.info(f"Starting from song '{start_from_song}' at index {start_index}")
+                elif last_processed_song:
+                    # Verify the last processed song is still visible
+                    if last_processed_song in visible_songs:
+                        last_index = visible_songs.index(last_processed_song)
+                        start_index = last_index + 1
+                        logger.info(f"Found last processed song '{last_processed_song}' at index {last_index}, continuing from index {start_index}")
+                    else:
+                        logger.warning(f"Last processed song '{last_processed_song}' not visible after scroll, starting from beginning of visible songs")
+                
+                # Process songs starting from the correct index
+                songs_to_process = visible_songs[start_index:]
+                unprocessed_songs = [s for s in songs_to_process if s not in all_songs_dict]
+                
+                logger.info(f"Visible songs: {len(visible_songs)}, Starting from index: {start_index}, Unprocessed: {len(unprocessed_songs)}")
+                
+                # Filter out songs we already have in database
+                if existing_song_ids:
+                    songs_needing_processing = []
+                    for song_title in unprocessed_songs:
+                        # Generate song ID from title (same logic as in load script)
+                        song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
+                        if song_id not in existing_song_ids:
+                            songs_needing_processing.append(song_title)
+                        else:
+                            logger.debug(f"Skipping '{song_title}' - already in database")
+                            # Mark as processed so we don't try to get it again
+                            all_songs_dict[song_title] = {'title': song_title, 'skipped': True}
+                    unprocessed_songs = songs_needing_processing
+                    logger.info(f"After filtering existing songs: {len(unprocessed_songs)} songs need processing")
+                
+                # If no unprocessed songs but we haven't hit our limit, we need to scroll to load more
+                if len(unprocessed_songs) == 0 and (not limit or len(all_songs_dict) < limit):
+                    logger.info("No unprocessed songs in current view, need to scroll to load more")
+                    # Don't process anything, just skip to scrolling
+                    songs_after = len(all_songs_dict)
+                    new_songs = songs_after - songs_before
+                    if new_songs == 0:
+                        no_new_songs_count += 1
+                    else:
+                        no_new_songs_count = 0
+                    # Skip to scrolling section
+                    continue
                 
                 # Process each unprocessed song
                 for song_title in unprocessed_songs:
@@ -343,10 +432,12 @@ class BigFlavorScraper:
                         
                         if song_data:
                             all_songs_dict[song_title] = song_data
+                            last_processed_song = song_title  # Update last processed
                             logger.info(f"  ✓ Got details for: {song_title}")
                         else:
                             # Still save basic info even if details fail
                             all_songs_dict[song_title] = {'title': song_title}
+                            last_processed_song = song_title  # Update last processed
                             logger.warning(f"  ✗ Could not get full details for: {song_title}")
                         
                         # Close the edit window by clicking the X button
@@ -357,6 +448,9 @@ class BigFlavorScraper:
                             logger.info("Closed edit window")
                         except Exception as close_err:
                             logger.warning(f"Could not find close button: {close_err}")
+                            # If close button not found, window may have auto-closed or browser issue
+                            # Don't try to continue processing, break out of this batch
+                            break
                         
                     except Exception as e:
                         logger.error(f"Error processing song '{song_title}': {e}")
@@ -367,7 +461,8 @@ class BigFlavorScraper:
                             time.sleep(0.5)
                         except:
                             pass
-                        continue
+                        # Break out of processing this batch if we hit an error
+                        break
                 
             except Exception as e:
                 logger.error(f"Error finding song buttons: {e}")
@@ -384,29 +479,46 @@ class BigFlavorScraper:
             else:
                 no_new_songs_count = 0
             
-            # Scroll down to load more songs
+            # Scroll down to load more songs using mouse wheel simulation
             try:
-                # Use JavaScript to scroll the grid
-                scroll_worked = self.driver.execute_script("""
-                    var grid = document.querySelector('.v-grid-tablewrapper');
-                    if (grid) {
-                        var oldScroll = grid.scrollTop;
-                        grid.scrollTop = grid.scrollTop + 500;
-                        return grid.scrollTop > oldScroll;
+                # Use JavaScript to scroll the grid's scrollable container
+                # This simulates a mouse wheel scroll which should trigger lazy loading
+                logger.info("Scrolling grid to load more songs...")
+                scroll_result = self.driver.execute_script("""
+                    var grid = document.querySelector('.v-grid');
+                    if (!grid) return {success: false, error: 'Grid not found'};
+                    
+                    // Find the scrollable element within the grid
+                    var scroller = grid.querySelector('.v-grid-scroller');
+                    if (!scroller) {
+                        scroller = grid.querySelector('.v-grid-body');
                     }
-                    return false;
+                    if (!scroller) {
+                        scroller = grid;
+                    }
+                    
+                    var oldScrollTop = scroller.scrollTop;
+                    
+                    // Scroll down by approximately 3 rows (assuming ~50px per row)
+                    scroller.scrollTop += 150;
+                    
+                    var newScrollTop = scroller.scrollTop;
+                    
+                    return {
+                        success: true,
+                        oldScroll: oldScrollTop,
+                        newScroll: newScrollTop,
+                        scrolled: newScrollTop - oldScrollTop
+                    };
                 """)
                 
-                time.sleep(0.5)
+                if scroll_result.get('success'):
+                    logger.info(f"Scrolled from {scroll_result['oldScroll']:.0f} to {scroll_result['newScroll']:.0f} ({scroll_result['scrolled']:.0f}px)")
+                else:
+                    logger.warning(f"Scroll failed: {scroll_result.get('error', 'Unknown error')}")
                 
-                # Also try keyboard scroll
-                try:
-                    grid_element = self.driver.find_element(By.CLASS_NAME, "v-grid")
-                    for _ in range(5):
-                        grid_element.send_keys(Keys.PAGE_DOWN)
-                    time.sleep(0.5)
-                except:
-                    pass
+                # Give the grid time to update its virtualized content
+                time.sleep(1.0)
                     
             except Exception as e:
                 logger.debug(f"Scroll error: {e}")
@@ -508,6 +620,15 @@ class BigFlavorScraper:
                 # Extract audio URL
                 audio_source = self.driver.find_element(By.CSS_SELECTOR, "audio source[type='audio/mpeg']")
                 song_data['audio_url'] = audio_source.get_attribute('src') or ''
+                
+                # Download the audio file if enabled
+                if self.download_audio and song_data['audio_url']:
+                    # Create a safe filename from the song title
+                    safe_title = re.sub(r'[<>:"/\\|?*]', '_', song_data.get('title', song_title))
+                    safe_title = safe_title[:200]  # Limit filename length
+                    local_path = self._download_audio(safe_title, song_data['audio_url'])
+                    if local_path:
+                        song_data['local_audio_path'] = local_path
             except:
                 pass
             
