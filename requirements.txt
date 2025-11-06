@@ -20,7 +20,12 @@ soundfile>=0.12.0  # For audio file I/O (required by librosa)
 # Database dependencies
 asyncpg>=0.29.0  # PostgreSQL async driver
 
+# Web scraping dependencies
+beautifulsoup4>=4.12.0  # For HTML parsing
+selenium>=4.15.0  # For dynamic web scraping
+webdriver-manager>=4.0.1  # For automatic driver management
+requests>=2.31.0  # For HTTP requests
+
 # Optional: For future enhancements
-# beautifulsoup4>=4.12.0  # For web scraping
 # pydub>=0.25.0  # For audio processing
 # scikit-learn>=1.3.0  # For ML-based recommendations
