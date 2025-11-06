@@ -12,9 +12,12 @@ asyncio
 # Standard library enhancements (included in Python 3.10+)
 # These are listed for documentation purposes
 
+# Audio analysis dependencies
+librosa>=0.10.0  # For audio analysis (BPM, genre detection)
+numpy>=1.24.0  # For numerical operations (required by librosa)
+soundfile>=0.12.0  # For audio file I/O (required by librosa)
+
 # Optional: For future enhancements
 # beautifulsoup4>=4.12.0  # For web scraping
-# librosa>=0.10.0  # For audio analysis
 # pydub>=0.25.0  # For audio processing
-# numpy>=1.24.0  # For numerical operations
 # scikit-learn>=1.3.0  # For ML-based recommendations

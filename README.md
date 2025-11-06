@@ -5,6 +5,7 @@ An AI-powered agent for managing the Big Flavor band's song library, with capabi
 ## 🎸 Features
 
 - **Real Song Library**: Access to **1,452 real songs** from bigflavorband.com via RSS feed
+- **Audio Analysis**: Automatically extract BPM, key, genre hints, and energy from MP3 files with local caching
 - **Smart Song Recommendations**: Get suggestions for what song to play next based on tempo, key, mood, and energy
 - **Album Curation**: Automatically create album suggestions from your song library with optimal track ordering
 - **Setlist Generation**: Create performance setlists with customizable energy flow patterns
@@ -12,6 +13,7 @@ An AI-powered agent for managing the Big Flavor band's song library, with capabi
 - **Flow Analysis**: Analyze how well songs transition together in albums or setlists
 - **MCP Server Integration**: Built with Model Context Protocol for AI agent connectivity
 - **Intelligent Metadata**: Automatically infers genre, mood, and tags from song titles and sessions
+- **Performance Optimized**: Cached audio analysis avoids re-analyzing unchanged files
 
 ## 📁 Project Structure
 
@@ -22,8 +24,11 @@ big-flavor-band-agent/
 ├── recommendation_engine.py   # Song recommendation logic
 ├── album_curator.py           # Album and setlist curation
 ├── audio_analyzer.py          # Audio engineering analysis
+├── audio_analysis_cache.py    # Audio analysis with caching
+├── pre_analyze_audio.py       # Utility to pre-analyze audio files
 ├── requirements.txt           # Python dependencies
 ├── config.json               # Configuration file
+├── AUDIO_ANALYSIS.md         # Audio analysis documentation
 └── README.md                 # This file
 ```
 
@@ -38,13 +43,26 @@ big-flavor-band-agent/
 
 1. Clone or download this repository
 
-2. Install dependencies:
+2. **Set up virtual environment** (recommended):
+```powershell
+# Create virtual environment
+python -m venv venv
+
+# Activate it
+.\venv\Scripts\Activate.ps1
+# or use the helper script: .\activate.ps1
+```
+
+3. Install dependencies:
 ```powershell
 pip install -r requirements.txt
 ```
+This will install all dependencies including librosa for audio analysis.
 
-3. Configure the agent (optional):
+4. Configure the agent (optional):
 Edit `config.json` to customize settings like the website URL and cache settings.
+
+> **Note**: A virtual environment is already set up for this project with all dependencies installed. See [VIRTUAL_ENV.md](VIRTUAL_ENV.md) for details.
 
 ### Running the Agent
 
@@ -77,6 +95,25 @@ The server exposes tools for:
 - `filter_songs_by_genre` - Filter by genre(s)
 - `filter_songs_by_tempo` - Filter by tempo range
 - `analyze_song_metadata` - Analyze song characteristics
+- `analyze_local_audio` - Analyze MP3 files to extract BPM, key, and genre
+- `get_audio_cache_stats` - View audio analysis cache statistics
+
+#### Audio Analysis Mode
+
+Pre-analyze audio files to populate the cache with BPM, key, and genre data:
+
+```powershell
+# Analyze all songs from RSS feed (this may take a while)
+python pre_analyze_audio.py
+
+# Analyze only first 5 songs (for testing)
+python pre_analyze_audio.py --max-files 5
+
+# Analyze local audio files
+python pre_analyze_audio.py --local-dir "path/to/audio/files"
+```
+
+See [AUDIO_ANALYSIS.md](AUDIO_ANALYSIS.md) for detailed documentation.
 
 ## 💡 Usage Examples
 

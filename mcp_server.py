@@ -17,6 +17,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from audio_analysis_cache import AudioAnalysisCache
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("big-flavor-mcp")
@@ -25,12 +27,14 @@ logger = logging.getLogger("big-flavor-mcp")
 class BigFlavorMCPServer:
     """MCP Server for Big Flavor band song library management."""
     
-    def __init__(self, base_url: str = "https://bigflavorband.com"):
+    def __init__(self, base_url: str = "https://bigflavorband.com", enable_audio_analysis: bool = True):
         self.base_url = base_url
         self.rss_url = f"{base_url}/rss"
         self.app = Server("big-flavor-band-server")
         self.songs_cache = []
         self.last_fetch_time = None
+        self.enable_audio_analysis = enable_audio_analysis
+        self.audio_cache = AudioAnalysisCache() if enable_audio_analysis else None
         self.setup_handlers()
     
     def setup_handlers(self):
@@ -123,6 +127,28 @@ class BigFlavorMCPServer:
                         "required": ["song_id"]
                     }
                 ),
+                Tool(
+                    name="analyze_local_audio",
+                    description="Analyze a local audio file to extract BPM, key, genre hints, and energy",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the local audio file (MP3, WAV, etc.)"
+                            }
+                        },
+                        "required": ["file_path"]
+                    }
+                ),
+                Tool(
+                    name="get_audio_cache_stats",
+                    description="Get statistics about the audio analysis cache",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    }
+                ),
             ]
         
         @self.app.call_tool()
@@ -144,6 +170,10 @@ class BigFlavorMCPServer:
                     )
                 elif name == "analyze_song_metadata":
                     result = await self.analyze_song_metadata(arguments["song_id"])
+                elif name == "analyze_local_audio":
+                    result = await self.analyze_local_audio(arguments["file_path"])
+                elif name == "get_audio_cache_stats":
+                    result = await self.get_audio_cache_stats()
                 else:
                     result = {"error": f"Unknown tool: {name}"}
                 
@@ -304,6 +334,49 @@ class BigFlavorMCPServer:
             ]
         }
     
+    async def analyze_local_audio(self, file_path: str) -> dict:
+        """
+        Analyze a local audio file to extract BPM, key, genre hints, and energy.
+        
+        Args:
+            file_path: Path to the local audio file
+            
+        Returns:
+            Analysis results
+        """
+        if not self.audio_cache:
+            return {
+                "error": "Audio analysis is disabled",
+                "message": "Enable audio analysis when initializing the server"
+            }
+        
+        try:
+            # The audio_url parameter is empty since this is a local file
+            analysis = self.audio_cache.analyze_audio_file(file_path, audio_url="")
+            
+            return {
+                "file_path": file_path,
+                "analysis": analysis,
+                "status": "success"
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing local audio file: {e}")
+            return {
+                "error": str(e),
+                "file_path": file_path,
+                "status": "error"
+            }
+    
+    async def get_audio_cache_stats(self) -> dict:
+        """Get statistics about the audio analysis cache."""
+        if not self.audio_cache:
+            return {
+                "error": "Audio analysis is disabled",
+                "message": "Enable audio analysis when initializing the server"
+            }
+        
+        return self.audio_cache.get_cache_stats()
+    
     def _parse_rss_feed(self, rss_content: str) -> list[dict]:
         """Parse RSS feed XML and extract song information."""
         try:
@@ -350,6 +423,12 @@ class BigFlavorMCPServer:
                         "mood": self._infer_mood(song_title),
                         "tags": self._generate_tags(song_title, album_session),
                     }
+                    
+                    # Enrich with audio analysis from cache if available
+                    if self.audio_cache and song["audio_url"]:
+                        cached_analysis = self.audio_cache.get_cached_analysis(song["audio_url"])
+                        if cached_analysis:
+                            song = self._enrich_song_with_analysis(song, cached_analysis)
                     
                     songs.append(song)
                 except Exception as e:
@@ -448,6 +527,55 @@ class BigFlavorMCPServer:
             tags.append("live")
             
         return tags
+    
+    def _enrich_song_with_analysis(self, song: dict, analysis: dict) -> dict:
+        """
+        Enrich song metadata with audio analysis results.
+        
+        Args:
+            song: Original song dictionary
+            analysis: Audio analysis results
+            
+        Returns:
+            Enriched song dictionary
+        """
+        # Add BPM if not already present or if analysis provides it
+        if analysis.get('bpm') is not None:
+            song['tempo_bpm'] = analysis['bpm']
+        
+        # Add key if available
+        if analysis.get('key'):
+            song['key'] = analysis['key']
+        
+        # Update energy level from analysis
+        if analysis.get('energy'):
+            song['energy'] = analysis['energy']
+        
+        # Add duration if available
+        if analysis.get('duration_seconds'):
+            song['duration_seconds'] = analysis['duration_seconds']
+        
+        # Enhance genre with hints from audio analysis
+        if analysis.get('genre_hints'):
+            # Keep the inferred genre but add analysis hints to tags
+            for hint in analysis['genre_hints']:
+                hint_tag = hint.lower().replace(' ', '-')
+                if hint_tag not in song.get('tags', []):
+                    song.setdefault('tags', []).append(hint_tag)
+            
+            # If no genre was inferred, use the first hint
+            if not song.get('genre') or song.get('genre') == 'Rock/Alternative':
+                if analysis['genre_hints']:
+                    song['genre'] = analysis['genre_hints'][0]
+        
+        # Add analysis metadata
+        song['audio_analysis'] = {
+            'analyzed': True,
+            'timestamp': analysis.get('analysis_timestamp', ''),
+            'source': 'cached'
+        }
+        
+        return song
     
     def _get_mock_songs(self) -> list[dict]:
         """Return mock song data for testing."""

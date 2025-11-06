@@ -49,6 +49,7 @@ logs/
 # Cache
 .cache/
 *.cache
+.audio_cache/
 
 # Testing
 .pytest_cache/
@@ -59,3 +60,11 @@ htmlcov/
 song_cache.json
 *.db
 *.sqlite
+
+# Temporary audio files (but keep audio_library/)
+temp_audio/
+
+# Audio library - MP3s are kept locally but not in git (too large)
+audio_library/*.mp3
+audio_library/*.wav
+audio_library/*.flac
