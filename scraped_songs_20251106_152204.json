@@ -1,0 +1,297 @@
+[
+  {
+    "id": "high_and_dry_tommy_wah",
+    "title": "High and Dry - Tommy Wah",
+    "session": "InPeachMint",
+    "recorded_on": "11/15/19",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/1965/InPeachMint--High%20and%20Dry%20-%20Tommy%20Wah.mp3",
+    "local_audio_path": "audio_library\\High and Dry - Tommy Wah.mp3",
+    "instruments": [
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      }
+    ]
+  },
+  {
+    "id": "lake_ella",
+    "title": "Lake Ella",
+    "session": "Breath of BLM",
+    "recorded_on": "7/10/20",
+    "is_original": true,
+    "audio_url": "https://bigflavorband.com/audio/1994/Breath%20of%20BLM--Lake%20Ella.mp3",
+    "local_audio_path": "audio_library\\Lake Ella.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Acoustic)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Acoustic)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Keyboard"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Acoustic)"
+      }
+    ]
+  },
+  {
+    "id": "lemonworld_lemonskittles",
+    "title": "Lemonworld - lemonskittles",
+    "session": "Skittle Essenza",
+    "recorded_on": "7/18/19",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/2058/Skittle%20Essenza--Lemonworld%20-%20lemonskittles.mp3",
+    "local_audio_path": "audio_library\\Lemonworld - lemonskittles.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Keyboard"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      }
+    ]
+  },
+  {
+    "id": "i_ll_fly_away_liked_the_finish",
+    "title": "I'll Fly Away - liked the finish",
+    "session": "Daddy",
+    "recorded_on": "4/14/17",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/1684/Daddy--I%20ll%20Fly%20Away%20-%20liked%20the%20finish.mp3",
+    "local_audio_path": "audio_library\\I'll Fly Away - liked the finish.mp3",
+    "instruments": [
+      {
+        "musician": "Rob Danek",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Mandolin"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Guitar (Acoustic)"
+      }
+    ]
+  },
+  {
+    "id": "in_my_time_of_dying_angry_version",
+    "title": "In My Time of Dying - angry version",
+    "session": "Chinese Bacon",
+    "recorded_on": "1/26/18",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/1757/Chinese%20Bacon--In%20My%20Time%20of%20Dying%20-%20angry%20version.mp3",
+    "local_audio_path": "audio_library\\In My Time of Dying - angry version.mp3",
+    "instruments": [
+      {
+        "musician": "Rob Danek",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Electric)"
+      }
+    ]
+  },
+  {
+    "id": "in_the_aeroplane_over_the_sea_basic",
+    "title": "In The Aeroplane Over The Sea - basic",
+    "session": "Covid Take 2",
+    "recorded_on": "4/10/20",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/1973/Covid%20Take%202--In%20The%20Aeroplane%20Over%20The%20Sea%20-%20basic.mp3",
+    "local_audio_path": "audio_library\\In The Aeroplane Over The Sea - basic.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Bass (Electric)"
+      }
+    ]
+  },
+  {
+    "id": "going_to_california_rich",
+    "title": "Going to California - rich",
+    "session": "Wild Acres Retreat",
+    "recorded_on": "5/22/22",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/2252/Wild%20Acres%20Retreat--Going%20to%20California%20-%20rich.mp3",
+    "local_audio_path": "audio_library\\Going to California - rich.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Mandolin"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      }
+    ]
+  },
+  {
+    "id": "have_you_forgotten_that_s_beautiful",
+    "title": "Have You Forgotten - that's beautiful",
+    "session": "KG - Bourbon Smash",
+    "recorded_on": "7/21/18",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/1799/KG%20-%20Bourbon%20Smash--Have%20You%20Forgotten%20-%20that%20s%20beautiful.mp3",
+    "local_audio_path": "audio_library\\Have You Forgotten - that's beautiful.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Guest  User",
+        "instrument": "Keyboard"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      }
+    ]
+  },
+  {
+    "id": "dim_light_fresh_polish",
+    "title": "Dim Light - fresh polish",
+    "session": "Lily Springs Farm - Day 2",
+    "recorded_on": "12/1/18",
+    "is_original": true,
+    "audio_url": "https://bigflavorband.com/audio/1837/Lily%20Springs%20Farm%20-%20Day%202--Dim%20Light%20-%20fresh%20polish.mp3",
+    "local_audio_path": "audio_library\\Dim Light - fresh polish.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Other"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      }
+    ]
+  },
+  {
+    "id": "lull_me_away_sharper",
+    "title": "Lull Me Away - Sharper"
+  }
+]

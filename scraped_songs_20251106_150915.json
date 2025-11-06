@@ -1,0 +1,136 @@
+[
+  {
+    "id": "more_people_aren_t_friends_driving",
+    "title": "More People Aren't Friends - driving",
+    "session": "Lily Springs Farm III",
+    "recorded_on": "3/19/21",
+    "is_original": true,
+    "audio_url": "https://bigflavorband.com/audio/2079/Lily%20Springs%20Farm%20III--More%20People%20Aren%20t%20Friends%20-%20driving.mp3",
+    "local_audio_path": "audio_library\\More People Aren't Friends - driving.mp3",
+    "instruments": [
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Guitar (Acoustic)"
+      }
+    ]
+  },
+  {
+    "id": "simply_entertaining_crazy_sam_kevin_tom",
+    "title": "Simply Entertaining, Crazy - Sam, Kevin, Tom",
+    "session": "Kevin's Bar+Cart Birthday Bash",
+    "recorded_on": "12/15/24",
+    "is_original": true,
+    "audio_url": "https://bigflavorband.com/audio/2469/Kevin%20s%20Bar+Cart%20Birthday%20Bash--Simply%20Entertaining,%20Crazy%20-%20Sam,%20Kevin,%20Tom.mp3",
+    "local_audio_path": "audio_library\\Simply Entertaining, Crazy - Sam, Kevin, Tom.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Harmonica"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Drums (Midi)"
+      }
+    ]
+  },
+  {
+    "id": "house_of_cards_ebow",
+    "title": "House of Cards - ebow",
+    "session": "Broken Pitchfork Retreat",
+    "recorded_on": "4/25/25",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/2528/Broken%20Pitchfork%20Retreat--House%20of%20Cards%20-%20ebow.mp3",
+    "local_audio_path": "audio_library\\House of Cards - ebow.mp3",
+    "instruments": [
+      {
+        "musician": "Rob Danek",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Acoustic)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      }
+    ]
+  },
+  {
+    "id": "planktonic_comes_a_time_kevin_tom_greg_effects",
+    "title": "Planktonic - Comes a Time - Kevin, Tom, Greg - effects",
+    "session": "20061102",
+    "recorded_on": "11/2/06",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/900/20061102--Planktonic%20-%20Comes%20a%20Time%20-%20Kevin,%20Tom,%20Greg%20-%20effects.mp3",
+    "local_audio_path": "audio_library\\Planktonic - Comes a Time - Kevin, Tom, Greg - effects.mp3",
+    "instruments": []
+  },
+  {
+    "id": "low",
+    "title": "Low",
+    "session": "The Late Start",
+    "recorded_on": "6/7/07",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/1027/The%20Late%20Start--Low.mp3",
+    "local_audio_path": "audio_library\\Low.mp3",
+    "instruments": [
+      {
+        "musician": "Rob Danek",
+        "instrument": "Unknown"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Unknown"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Unknown"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Unknown"
+      }
+    ]
+  },
+  {
+    "id": "more_people_aren_t_friends_acoustic_lead",
+    "title": "More People Aren't Friends - acoustic lead"
+  }
+]

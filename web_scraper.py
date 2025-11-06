@@ -310,16 +310,31 @@ class BigFlavorScraper:
         if start_from_song:
             logger.info(f"Will start processing from song: {start_from_song}")
         
-        logger.info("Processing songs one at a time...")
+        logger.info("Processing songs one by one, row by row...")
+        
+        # Track current position by song title (more reliable than index)
+        current_song_title = start_from_song if start_from_song else None
+        found_start = False if start_from_song else True
         
         while no_new_songs_count < max_no_new_songs and scroll_attempts < max_scroll_attempts:
-            # Check if we've reached the limit
-            if limit and len(all_songs_dict) >= limit:
-                logger.info(f"Reached limit of {limit} songs, stopping collection")
-                break
+            # Check if we've reached the limit (only count non-skipped songs)
+            if limit:
+                non_skipped_count = len([s for s in all_songs_dict.values() if not s.get('skipped')])
+                if non_skipped_count >= limit:
+                    logger.info(f"Reached limit of {limit} new songs, stopping collection")
+                    break
             
             scroll_attempts += 1
             songs_before = len(all_songs_dict)
+            
+            # Check if browser session is still valid
+            try:
+                # Quick check to see if driver is responsive
+                self.driver.current_url
+            except Exception as e:
+                logger.error(f"Browser session lost (invalid session id). Collected {len(all_songs_dict)} songs before crash.")
+                logger.info("This is normal after processing many songs. The data collected so far is still valid.")
+                break
             
             # Get currently visible song buttons (not parsed HTML, actual buttons in DOM)
             try:
@@ -381,88 +396,121 @@ class BigFlavorScraper:
                 
                 logger.info(f"Visible songs: {len(visible_songs)}, Starting from index: {start_index}, Unprocessed: {len(unprocessed_songs)}")
                 
+                # Log each song we're checking row-by-row
+                logger.info(f"--- Checking {len(songs_to_process)} songs starting from index {start_index} ---")
+                
                 # Filter out songs we already have in database
                 if existing_song_ids:
                     songs_needing_processing = []
-                    for song_title in unprocessed_songs:
+                    for idx, song_title in enumerate(songs_to_process, start=start_index):
                         # Generate song ID from title (same logic as in load script)
                         song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
+                        
+                        # Check if we've already processed this in current session
+                        if song_title in all_songs_dict:
+                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}'")
+                            continue
+                        
+                        # Check if it's in the database
                         if song_id not in existing_song_ids:
+                            logger.info(f"  [{idx:3d}] ✨ NEW SONG - will process: '{song_title}'")
                             songs_needing_processing.append(song_title)
                         else:
-                            logger.debug(f"Skipping '{song_title}' - already in database")
+                            logger.info(f"  [{idx:3d}] ⏭️  SKIP (in database): '{song_title}'")
                             # Mark as processed so we don't try to get it again
                             all_songs_dict[song_title] = {'title': song_title, 'skipped': True}
+                            last_processed_song = song_title  # Track as last processed for scrolling
                     unprocessed_songs = songs_needing_processing
                     logger.info(f"After filtering existing songs: {len(unprocessed_songs)} songs need processing")
+                else:
+                    # No database filter - just log what we're checking
+                    for idx, song_title in enumerate(songs_to_process, start=start_index):
+                        if song_title in all_songs_dict:
+                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}'")
+                        else:
+                            logger.info(f"  [{idx:3d}] 📝 WILL PROCESS: '{song_title}'")
+                    logger.info(f"Songs to process: {len(unprocessed_songs)}")
                 
                 # If no unprocessed songs but we haven't hit our limit, we need to scroll to load more
                 if len(unprocessed_songs) == 0 and (not limit or len(all_songs_dict) < limit):
                     logger.info("No unprocessed songs in current view, need to scroll to load more")
-                    # Don't process anything, just skip to scrolling
+                    # We found songs but skipped them all, so reset the counter (we're making progress)
                     songs_after = len(all_songs_dict)
                     new_songs = songs_after - songs_before
-                    if new_songs == 0:
-                        no_new_songs_count += 1
+                    if new_songs > 0:
+                        no_new_songs_count = 0  # We're finding songs (even if skipped)
                     else:
-                        no_new_songs_count = 0
-                    # Skip to scrolling section
-                    continue
-                
-                # Process each unprocessed song
-                for song_title in unprocessed_songs:
-                    # Check if we've reached the limit
-                    if limit and len(all_songs_dict) >= limit:
-                        logger.info(f"Reached limit of {limit} songs")
-                        break
-                    
-                    try:
-                        logger.info(f"Processing song: {song_title}")
+                        no_new_songs_count += 1  # Truly no new songs found
+                    # Don't continue yet - let the scroll happen below
+                    # Skip to after the processing section
+                else:
+                    # Process each unprocessed song
+                    for song_title in unprocessed_songs:
+                        # Check if we've reached the limit (only count non-skipped songs)
+                        if limit:
+                            non_skipped_count = len([s for s in all_songs_dict.values() if not s.get('skipped')])
+                            if non_skipped_count >= limit:
+                                logger.info(f"Reached limit of {limit} new songs")
+                                break
                         
-                        # Find and click the button (re-query each time as DOM changes)
-                        button = self.driver.find_element(
-                            By.XPATH,
-                            f"//button[@class='v-nativebutton' and text()='{song_title}']"
-                        )
-                        button.click()
-                        time.sleep(1)
-                        
-                        # Now get details from popup/edit page
-                        song_data = self._extract_song_details_from_popup(song_title)
-                        
-                        if song_data:
-                            all_songs_dict[song_title] = song_data
-                            last_processed_song = song_title  # Update last processed
-                            logger.info(f"  ✓ Got details for: {song_title}")
-                        else:
-                            # Still save basic info even if details fail
-                            all_songs_dict[song_title] = {'title': song_title}
-                            last_processed_song = song_title  # Update last processed
-                            logger.warning(f"  ✗ Could not get full details for: {song_title}")
-                        
-                        # Close the edit window by clicking the X button
                         try:
-                            close_button = self.driver.find_element(By.CSS_SELECTOR, ".v-window-closebox")
-                            close_button.click()
-                            time.sleep(0.5)
-                            logger.info("Closed edit window")
-                        except Exception as close_err:
-                            logger.warning(f"Could not find close button: {close_err}")
-                            # If close button not found, window may have auto-closed or browser issue
-                            # Don't try to continue processing, break out of this batch
+                            logger.info(f"Processing song: {song_title}")
+                            
+                            # Find and click the button (re-query each time as DOM changes)
+                            # Escape apostrophes in XPath by using concat() function
+                            if "'" in song_title:
+                                # For titles with apostrophes, use concat() to avoid XPath syntax errors
+                                parts = song_title.split("'")
+                                xpath_text = "concat('" + "', \"'\", '".join(parts) + "')"
+                                button = self.driver.find_element(
+                                    By.XPATH,
+                                    f"//button[@class='v-nativebutton' and text()={xpath_text}]"
+                                )
+                            else:
+                                button = self.driver.find_element(
+                                    By.XPATH,
+                                    f"//button[@class='v-nativebutton' and text()='{song_title}']"
+                                )
+                            button.click()
+                            time.sleep(1)
+                            
+                            # Now get details from popup/edit page
+                            song_data = self._extract_song_details_from_popup(song_title)
+                            
+                            if song_data:
+                                all_songs_dict[song_title] = song_data
+                                last_processed_song = song_title  # Update last processed
+                                logger.info(f"  ✓ Got details for: {song_title}")
+                            else:
+                                # Still save basic info even if details fail
+                                song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
+                                all_songs_dict[song_title] = {'id': song_id, 'title': song_title}
+                                last_processed_song = song_title  # Update last processed
+                                logger.warning(f"  ✗ Could not get full details for: {song_title}")
+                            
+                            # Close the edit window by clicking the X button
+                            try:
+                                close_button = self.driver.find_element(By.CSS_SELECTOR, ".v-window-closebox")
+                                close_button.click()
+                                time.sleep(0.5)
+                                logger.info("Closed edit window")
+                            except Exception as close_err:
+                                logger.warning(f"Could not find close button: {close_err}")
+                                # If close button not found, window may have auto-closed or browser issue
+                                # Don't try to continue processing, break out of this batch
+                                break
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing song '{song_title}': {e}")
+                            # Try to recover by closing any open windows
+                            try:
+                                close_button = self.driver.find_element(By.CSS_SELECTOR, ".v-window-closebox")
+                                close_button.click()
+                                time.sleep(0.5)
+                            except:
+                                pass
+                            # Break out of processing this batch if we hit an error
                             break
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing song '{song_title}': {e}")
-                        # Try to recover by closing any open windows
-                        try:
-                            close_button = self.driver.find_element(By.CSS_SELECTOR, ".v-window-closebox")
-                            close_button.click()
-                            time.sleep(0.5)
-                        except:
-                            pass
-                        # Break out of processing this batch if we hit an error
-                        break
                 
             except Exception as e:
                 logger.error(f"Error finding song buttons: {e}")
@@ -479,43 +527,123 @@ class BigFlavorScraper:
             else:
                 no_new_songs_count = 0
             
-            # Scroll down to load more songs using mouse wheel simulation
+            # Before scrolling, verify where we are in the list
+            # Re-query visible songs to confirm our position
             try:
-                # Use JavaScript to scroll the grid's scrollable container
-                # This simulates a mouse wheel scroll which should trigger lazy loading
+                verification_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".v-grid-cell button.v-nativebutton")
+                verification_songs = [b.text.strip() for b in verification_buttons if b.text.strip()]
+                
+                if last_processed_song:
+                    if last_processed_song in verification_songs:
+                        verify_index = verification_songs.index(last_processed_song)
+                        next_index = verify_index + 1
+                        
+                        if next_index < len(verification_songs):
+                            next_song = verification_songs[next_index]
+                            logger.info(f"✓ Position verified: Last='{last_processed_song}' (index {verify_index}), Next='{next_song}' (index {next_index})")
+                            
+                            # Check if next song is near the end of visible list
+                            # If we're within 5 songs of the end, scroll to load more
+                            if next_index >= len(verification_songs) - 5:
+                                logger.info(f"Near end of visible songs (index {next_index}/{len(verification_songs)}), will scroll")
+                            else:
+                                logger.info(f"Still have {len(verification_songs) - next_index} visible songs ahead, no scroll needed yet")
+                        else:
+                            logger.info(f"✓ Position verified: Last='{last_processed_song}' was the last visible song, will scroll")
+                    else:
+                        logger.warning(f"⚠ Position lost: Last processed song '{last_processed_song}' not in current view")
+                        logger.info(f"Current visible songs: {verification_songs[:5]}..." if len(verification_songs) > 5 else f"Current visible songs: {verification_songs}")
+            except Exception as e:
+                logger.debug(f"Position verification error: {e}")
+
+            
+            if scroll_attempts % 5 == 0 or new_songs > 0:
+                logger.info(f"Scroll {scroll_attempts}: Total songs processed: {songs_after} (+{new_songs} new)")
+            
+            # Check if we found new songs
+            if new_songs == 0:
+                no_new_songs_count += 1
+            else:
+                no_new_songs_count = 0
+            
+            # Scroll down to load more songs
+            # Strategy: Find the last processed song and scroll it toward the top to reveal more songs below
+            try:
                 logger.info("Scrolling grid to load more songs...")
+                
+                # Try to scroll to position the last processed song near the top
                 scroll_result = self.driver.execute_script("""
+                    var lastSongTitle = arguments[0];
                     var grid = document.querySelector('.v-grid');
-                    if (!grid) return {success: false, error: 'Grid not found'};
+                    if (!grid) return {success: false, reason: 'No grid found'};
                     
-                    // Find the scrollable element within the grid
-                    var scroller = grid.querySelector('.v-grid-scroller');
-                    if (!scroller) {
-                        scroller = grid.querySelector('.v-grid-body');
-                    }
-                    if (!scroller) {
-                        scroller = grid;
-                    }
+                    var scroller = grid.querySelector('.v-grid-scroller') || 
+                                   grid.querySelector('.v-grid-body') || 
+                                   grid;
                     
                     var oldScrollTop = scroller.scrollTop;
                     
-                    // Scroll down by approximately 3 rows (assuming ~50px per row)
-                    scroller.scrollTop += 150;
+                    // If we have a last processed song, try to find it and scroll past it
+                    if (lastSongTitle) {
+                        var buttons = document.querySelectorAll('.v-grid-cell button.v-nativebutton');
+                        for (var i = 0; i < buttons.length; i++) {
+                            if (buttons[i].textContent.trim() === lastSongTitle) {
+                                // Found it! Get the row position
+                                var row = buttons[i].closest('.v-grid-row');
+                                if (row) {
+                                    var rowTop = row.offsetTop;
+                                    var viewportHeight = scroller.clientHeight;
+                                    
+                                    // Scroll so this row is about 1/4 from the top of viewport
+                                    // This ensures we can see several songs below it
+                                    var targetScroll = rowTop - (viewportHeight / 4);
+                                    
+                                    // Make sure we're scrolling forward, not backward
+                                    if (targetScroll > oldScrollTop) {
+                                        scroller.scrollTop = targetScroll;
+                                        return {
+                                            success: true,
+                                            method: 'found_song',
+                                            song: lastSongTitle,
+                                            scrolled: scroller.scrollTop - oldScrollTop,
+                                            rowTop: rowTop,
+                                            viewportHeight: viewportHeight
+                                        };
+                                    } else {
+                                        // Already past this position, just scroll down a bit more
+                                        scroller.scrollTop = oldScrollTop + 400;
+                                        return {
+                                            success: true,
+                                            method: 'scroll_forward',
+                                            scrolled: 400
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
                     
-                    var newScrollTop = scroller.scrollTop;
+                    // If we didn't find the last song, just scroll down
+                    scroller.scrollTop += 400;
                     
                     return {
                         success: true,
-                        oldScroll: oldScrollTop,
-                        newScroll: newScrollTop,
-                        scrolled: newScrollTop - oldScrollTop
+                        method: 'fixed_scroll',
+                        scrolled: 400
                     };
-                """)
+                """, last_processed_song if last_processed_song else "")
                 
                 if scroll_result.get('success'):
-                    logger.info(f"Scrolled from {scroll_result['oldScroll']:.0f} to {scroll_result['newScroll']:.0f} ({scroll_result['scrolled']:.0f}px)")
+                    method = scroll_result.get('method', 'unknown')
+                    scrolled = scroll_result.get('scrolled', 0)
+                    if method == 'found_song':
+                        logger.info(f"Scrolled to position last song '{scroll_result.get('song')}' near top ({scrolled:.0f}px)")
+                    elif method == 'scroll_forward':
+                        logger.info(f"Already past last song position, scrolled forward {scrolled:.0f}px")
+                    else:
+                        logger.info(f"Last song not found, scrolled {scrolled:.0f}px")
                 else:
-                    logger.warning(f"Scroll failed: {scroll_result.get('error', 'Unknown error')}")
+                    logger.warning(f"Scroll failed: {scroll_result.get('reason', 'Unknown')}")
                 
                 # Give the grid time to update its virtualized content
                 time.sleep(1.0)
@@ -543,7 +671,13 @@ class BigFlavorScraper:
             # Wait a moment for popup to be ready
             time.sleep(1)
             
-            song_data = {'title': song_title}
+            # Generate song ID from title (same logic as in filtering)
+            song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
+            
+            song_data = {
+                'id': song_id,
+                'title': song_title
+            }
             
             # The popup is a v-menubar-popup with v-menubar-menuitem spans
             # The first menuitem should be the edit button with the song title

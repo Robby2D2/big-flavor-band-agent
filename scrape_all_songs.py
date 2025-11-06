@@ -44,7 +44,7 @@ async def main():
         # Initialize scraper
         print("Initializing web scraper...")
         scraper = BigFlavorScraper(
-            headless=True,  # Run in background
+            headless=False,  # Run visible for debugging scroll issues
             download_audio=True  # Download MP3 files
         )
         

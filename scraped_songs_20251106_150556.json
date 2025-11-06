@@ -1,0 +1,69 @@
+[
+  {
+    "title": "25th of December - KWETCW - extended",
+    "session": "Fernet Bianka",
+    "recorded_on": "8/19/22",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/2198/Fernet%20Bianka--25th%20of%20December%20-%20KWETCW%20-%20extended.mp3",
+    "local_audio_path": "audio_library\\25th of December - KWETCW - extended.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Acoustic)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      }
+    ]
+  },
+  {
+    "title": "Season of the Shark - da da",
+    "session": "Broken Pitchfork Retreat",
+    "recorded_on": "4/25/25",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/2527/Broken%20Pitchfork%20Retreat--Season%20of%20the%20Shark%20-%20da%20da.mp3",
+    "local_audio_path": "audio_library\\Season of the Shark - da da.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Keyboard"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      }
+    ]
+  },
+  {
+    "title": "Losing My Religion - just a dream"
+  }
+]

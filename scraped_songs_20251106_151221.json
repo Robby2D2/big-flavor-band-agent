@@ -1,0 +1,85 @@
+[
+  {
+    "id": "so_tired_to_the_9_s",
+    "title": "So Tired - to the 9's",
+    "session": "Wild Acres Retreat",
+    "recorded_on": "10/21/22",
+    "is_original": true,
+    "audio_url": "https://bigflavorband.com/audio/2215/Wild%20Acres%20Retreat--So%20Tired%20-%20to%20the%209%20s.mp3",
+    "local_audio_path": "audio_library\\So Tired - to the 9's.mp3",
+    "instruments": [
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Guitar (Electric)"
+      },
+      {
+        "musician": "Greg Wenz",
+        "instrument": "Drums (Midi)"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Bass (Electric)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Harmonica"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      },
+      {
+        "musician": "Tom Wadzinski",
+        "instrument": "Vocals (Backup)"
+      },
+      {
+        "musician": "Rob Danek",
+        "instrument": "Vocals (Backup)"
+      }
+    ]
+  },
+  {
+    "id": "lull_me_away_kwe",
+    "title": "Lull Me Away - KWE",
+    "session": "Wild Acres Retreat",
+    "recorded_on": "5/22/22",
+    "is_original": true,
+    "audio_url": "https://bigflavorband.com/audio/2246/Wild%20Acres%20Retreat--Lull%20Me%20Away%20-%20KWE.mp3",
+    "local_audio_path": "audio_library\\Lull Me Away - KWE.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      }
+    ]
+  },
+  {
+    "id": "here_s_to_you",
+    "title": "Here's to you",
+    "session": "By Heart",
+    "recorded_on": "8/3/19",
+    "is_original": false,
+    "audio_url": "https://bigflavorband.com/audio/1898/By%20Heart--Here%20s%20to%20you.mp3",
+    "local_audio_path": "audio_library\\Here's to you.mp3",
+    "instruments": [
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Guitar (Classical)"
+      },
+      {
+        "musician": "Kevin Eberman",
+        "instrument": "Vocals (Lead)"
+      }
+    ]
+  },
+  {
+    "id": "in_my_time_of_dying_rising",
+    "title": "In My Time of Dying - Rising",
+    "is_original": false,
+    "instruments": []
+  }
+]
