@@ -13,6 +13,7 @@ from urllib.parse import urljoin
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
@@ -75,6 +76,20 @@ class BigFlavorScraper:
             self.driver = None
             logger.info("Chrome WebDriver closed")
     
+    def close(self):
+        """Alias for stop() - close the browser"""
+        self.stop()
+    
+    def navigate_to_songs(self):
+        """Navigate to the songs page"""
+        if not self.driver:
+            self.start()
+        
+        # Navigate to main songs page
+        logger.info("Navigating to songs page...")
+        self.driver.get(self.BASE_URL)
+        time.sleep(2)  # Wait for page to load
+    
     def __enter__(self):
         """Context manager entry"""
         self.start()
@@ -123,9 +138,12 @@ class BigFlavorScraper:
             logger.error(f"Login failed: {e}")
             return False
     
-    def get_all_songs(self) -> List[Dict[str, Any]]:
+    def get_all_songs(self, max_scrolls: int = None) -> List[Dict[str, Any]]:
         """
-        Get list of all songs from the main page (Vaadin grid)
+        Get list of all songs from the main page (Vaadin grid with dynamic scrolling)
+        
+        Args:
+            max_scrolls: Maximum number of scroll attempts (None = keep scrolling until no new songs)
         
         Returns:
             List of song dictionaries with basic info
@@ -137,28 +155,398 @@ class BigFlavorScraper:
         wait = WebDriverWait(self.driver, 10)
         wait.until(EC.presence_of_element_located((By.CLASS_NAME, "v-grid-body")))
         
-        # Additional wait for content to render
+        # Additional wait for initial content to render
         time.sleep(2)
         
-        # Get page source and parse with BeautifulSoup
-        soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+        # Scroll through the grid to load all songs dynamically
+        # Vaadin grids use virtualization - only visible rows are in DOM
+        # We need to collect unique songs as we scroll
+        logger.info("Scrolling to load all songs...")
         
-        songs = []
+        all_songs_dict = {}  # Use dict to deduplicate by title
+        scroll_attempts = 0
+        max_scroll_attempts = max_scrolls if max_scrolls else 500  # Use provided or default
+        no_new_songs_count = 0
+        max_no_new_songs = 10  # Stop if we don't find new songs for 10 attempts
         
-        # Find all song rows in Vaadin grid (only data rows, not header rows)
-        song_rows = soup.find_all('tr', class_='v-grid-row-has-data')
-        
-        for row in song_rows:
+        while no_new_songs_count < max_no_new_songs and scroll_attempts < max_scroll_attempts:
+            scroll_attempts += 1
+            previous_unique_count = len(all_songs_dict)
+            
+            # Parse currently visible rows and add to our collection
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            current_rows = soup.find_all('tr', class_='v-grid-row-has-data')
+            
+            for row in current_rows:
+                try:
+                    song_data = self._parse_song_row(row)
+                    if song_data and song_data.get('title'):
+                        # Use title as key to deduplicate
+                        all_songs_dict[song_data['title']] = song_data
+                except Exception as e:
+                    logger.debug(f"Error parsing row during scroll: {e}")
+                    continue
+            
+            current_unique_count = len(all_songs_dict)
+            new_songs_this_scroll = current_unique_count - previous_unique_count
+            
+            if scroll_attempts % 10 == 0 or new_songs_this_scroll > 0:
+                logger.info(f"Scroll {scroll_attempts}: Total unique songs collected: {current_unique_count} (+{new_songs_this_scroll} new)")
+            
+            # Check if we found new songs
+            if new_songs_this_scroll == 0:
+                no_new_songs_count += 1
+                if no_new_songs_count % 3 == 0:
+                    logger.info(f"No new songs found (attempt {no_new_songs_count}/{max_no_new_songs})")
+            else:
+                no_new_songs_count = 0  # Reset counter if we got new songs
+            
+            # Try multiple scrolling methods
             try:
-                song_data = self._parse_song_row(row)
-                if song_data:
-                    songs.append(song_data)
+                # Method 1: Find the scrollable container and scroll it
+                scroll_worked = self.driver.execute_script("""
+                    // Try to find the actual scrollable element
+                    var scrollableElements = [
+                        document.querySelector('.v-grid-tablewrapper'),
+                        document.querySelector('.v-grid-scroller'),
+                        document.querySelector('.v-grid-scroller-vertical'),
+                        document.querySelector('.v-grid'),
+                        document.querySelector('.v-grid-body').parentElement
+                    ];
+                    
+                    var scrolled = false;
+                    for (var i = 0; i < scrollableElements.length; i++) {
+                        var elem = scrollableElements[i];
+                        if (elem && elem.scrollHeight > elem.clientHeight) {
+                            var oldScrollTop = elem.scrollTop;
+                            elem.scrollTop = elem.scrollHeight;
+                            if (elem.scrollTop > oldScrollTop) {
+                                scrolled = true;
+                                break;
+                            }
+                        }
+                    }
+                    return scrolled;
+                """)
+                
+                if scroll_worked:
+                    logger.info("Successfully scrolled grid container")
+                
+                # Method 2: Use Page Down key on the grid
+                try:
+                    grid_element = self.driver.find_element(By.CLASS_NAME, "v-grid")
+                    grid_element.click()  # Focus on the grid
+                    
+                    # Send multiple Page Down keys - send more for faster scrolling
+                    for _ in range(10):
+                        grid_element.send_keys(Keys.PAGE_DOWN)
+                        time.sleep(0.05)  # Very short delay between keys
+                    
+                    logger.debug("Sent PAGE_DOWN keys to grid")
+                except Exception as e:
+                    logger.debug(f"Could not send keys to grid: {e}")
+                
+                # Method 3: Scroll to last visible row
+                self.driver.execute_script("""
+                    var rows = document.querySelectorAll('.v-grid-row-has-data');
+                    if (rows.length > 0) {
+                        rows[rows.length - 1].scrollIntoView(false);
+                    }
+                """)
+                
             except Exception as e:
-                logger.error(f"Error parsing song row: {e}")
-                continue
+                logger.warning(f"Error during scroll: {e}")
+            
+            # Wait for potential new content to load - longer wait every 10 scrolls
+            if scroll_attempts % 10 == 0:
+                time.sleep(1.5)  # Longer wait periodically to let content catch up
+            else:
+                time.sleep(0.5)  # Normal wait
         
-        logger.info(f"Found {len(songs)} songs")
+        logger.info(f"Finished scrolling after {scroll_attempts} attempts")
+        logger.info(f"Total unique songs collected: {len(all_songs_dict)}")
+        
+        # Convert dict to list
+        songs = list(all_songs_dict.values())
+        
+        logger.info(f"Successfully parsed {len(songs)} unique songs")
         return songs
+    
+    def get_all_songs_with_details(self, max_scrolls: int = 10, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get all songs with full details by clicking into each one as we scroll.
+        This method processes songs one at a time to avoid virtualization issues.
+        
+        Args:
+            max_scrolls: Maximum number of scroll attempts (None = keep scrolling until no new songs)
+            limit: Maximum number of songs to collect (None = collect all songs)
+            
+        Returns:
+            List of song dictionaries with complete data including edit page details
+        """
+        logger.info("Fetching all songs with details (one at a time)")
+        self.driver.get(self.BASE_URL)
+        
+        # Wait for Vaadin grid to load
+        wait = WebDriverWait(self.driver, 10)
+        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "v-grid-body")))
+        time.sleep(2)
+        
+        all_songs_dict = {}  # Track songs we've already processed
+        scroll_attempts = 0
+        max_scroll_attempts = max_scrolls if max_scrolls else 500
+        no_new_songs_count = 0
+        max_no_new_songs = 10
+        
+        logger.info("Processing songs one at a time...")
+        
+        while no_new_songs_count < max_no_new_songs and scroll_attempts < max_scroll_attempts:
+            # Check if we've reached the limit
+            if limit and len(all_songs_dict) >= limit:
+                logger.info(f"Reached limit of {limit} songs, stopping collection")
+                break
+            
+            scroll_attempts += 1
+            songs_before = len(all_songs_dict)
+            
+            # Get currently visible song buttons (not parsed HTML, actual buttons in DOM)
+            try:
+                song_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".v-grid-cell button.v-nativebutton")
+                
+                # Collect unprocessed song titles
+                unprocessed_songs = []
+                for button in song_buttons:
+                    song_title = button.text.strip()
+                    if song_title and song_title not in all_songs_dict:
+                        unprocessed_songs.append(song_title)
+                
+                # Process each unprocessed song
+                for song_title in unprocessed_songs:
+                    # Check if we've reached the limit
+                    if limit and len(all_songs_dict) >= limit:
+                        logger.info(f"Reached limit of {limit} songs")
+                        break
+                    
+                    try:
+                        logger.info(f"Processing song: {song_title}")
+                        
+                        # Find and click the button (re-query each time as DOM changes)
+                        button = self.driver.find_element(
+                            By.XPATH,
+                            f"//button[@class='v-nativebutton' and text()='{song_title}']"
+                        )
+                        button.click()
+                        time.sleep(1)
+                        
+                        # Now get details from popup/edit page
+                        song_data = self._extract_song_details_from_popup(song_title)
+                        
+                        if song_data:
+                            all_songs_dict[song_title] = song_data
+                            logger.info(f"  ✓ Got details for: {song_title}")
+                        else:
+                            # Still save basic info even if details fail
+                            all_songs_dict[song_title] = {'title': song_title}
+                            logger.warning(f"  ✗ Could not get full details for: {song_title}")
+                        
+                        # Close the edit window by clicking the X button
+                        try:
+                            close_button = self.driver.find_element(By.CSS_SELECTOR, ".v-window-closebox")
+                            close_button.click()
+                            time.sleep(0.5)
+                            logger.info("Closed edit window")
+                        except Exception as close_err:
+                            logger.warning(f"Could not find close button: {close_err}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing song '{song_title}': {e}")
+                        # Try to recover by closing any open windows
+                        try:
+                            close_button = self.driver.find_element(By.CSS_SELECTOR, ".v-window-closebox")
+                            close_button.click()
+                            time.sleep(0.5)
+                        except:
+                            pass
+                        continue
+                
+            except Exception as e:
+                logger.error(f"Error finding song buttons: {e}")
+            
+            songs_after = len(all_songs_dict)
+            new_songs = songs_after - songs_before
+            
+            if scroll_attempts % 5 == 0 or new_songs > 0:
+                logger.info(f"Scroll {scroll_attempts}: Total songs processed: {songs_after} (+{new_songs} new)")
+            
+            # Check if we found new songs
+            if new_songs == 0:
+                no_new_songs_count += 1
+            else:
+                no_new_songs_count = 0
+            
+            # Scroll down to load more songs
+            try:
+                # Use JavaScript to scroll the grid
+                scroll_worked = self.driver.execute_script("""
+                    var grid = document.querySelector('.v-grid-tablewrapper');
+                    if (grid) {
+                        var oldScroll = grid.scrollTop;
+                        grid.scrollTop = grid.scrollTop + 500;
+                        return grid.scrollTop > oldScroll;
+                    }
+                    return false;
+                """)
+                
+                time.sleep(0.5)
+                
+                # Also try keyboard scroll
+                try:
+                    grid_element = self.driver.find_element(By.CLASS_NAME, "v-grid")
+                    for _ in range(5):
+                        grid_element.send_keys(Keys.PAGE_DOWN)
+                    time.sleep(0.5)
+                except:
+                    pass
+                    
+            except Exception as e:
+                logger.debug(f"Scroll error: {e}")
+        
+        logger.info(f"Finished processing after {scroll_attempts} attempts")
+        logger.info(f"Total songs collected: {len(all_songs_dict)}")
+        
+        return list(all_songs_dict.values())
+    
+    def _extract_song_details_from_popup(self, song_title: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract song details from the popup/edit page that's currently open.
+        Assumes the popup is already open from clicking the song.
+        
+        Args:
+            song_title: Title of the song (for logging)
+            
+        Returns:
+            Dictionary with song data, or None if extraction fails
+        """
+        try:
+            # Wait a moment for popup to be ready
+            time.sleep(1)
+            
+            song_data = {'title': song_title}
+            
+            # The popup is a v-menubar-popup with v-menubar-menuitem spans
+            # The first menuitem should be the edit button with the song title
+            edit_clicked = False
+            
+            try:
+                # Find the first menuitem in the popup (should be edit with song title)
+                logger.debug(f"Looking for first menu item in popup")
+                edit_menuitem = self.driver.find_element(
+                    By.CSS_SELECTOR,
+                    ".v-menubar-popup .v-menubar-menuitem:first-child"
+                )
+                logger.info(f"DEBUG: Found first menuitem, text: '{edit_menuitem.text[:100]}'")
+                edit_menuitem.click()
+                edit_clicked = True
+                logger.info(f"Successfully clicked edit menu item")
+                time.sleep(2)  # Wait for edit page to load
+            except Exception as e:
+                logger.debug(f"Failed to find/click first menuitem: {e}")
+            
+            if not edit_clicked:
+                try:
+                    # Alternative: Find menuitem containing the song title
+                    logger.debug(f"Looking for menuitem containing song title")
+                    edit_menuitem = self.driver.find_element(
+                        By.XPATH,
+                        f"//span[@class='v-menubar-menuitem']//span[contains(text(), '{song_title}')]/.."
+                    )
+                    logger.info(f"DEBUG: Found menuitem by title")
+                    edit_menuitem.click()
+                    edit_clicked = True
+                    logger.info(f"Successfully clicked edit menu item by title")
+                    time.sleep(2)
+                except Exception as e:
+                    logger.debug(f"Failed to find/click menuitem by title: {e}")
+            
+            if not edit_clicked:
+                logger.warning(f"Could not find/click edit button for: {song_title}")
+                return song_data
+            
+            # Now on edit page - extract data using Selenium (not BeautifulSoup)
+            # because values are populated by JavaScript
+            logger.debug("Extracting data from edit page using Selenium...")
+            
+            try:
+                # Extract session
+                session_input = self.driver.find_element(By.CSS_SELECTOR, "#sessionSelect input")
+                song_data['session'] = session_input.get_attribute('value') or ''
+            except:
+                pass
+            
+            try:
+                # Extract name (title)
+                name_input = self.driver.find_element(By.ID, "nameTextField")
+                song_data['title'] = name_input.get_attribute('value') or song_title
+            except:
+                pass
+            
+            try:
+                # Extract recorded date
+                recorded_input = self.driver.find_element(By.CSS_SELECTOR, "#recordedAtDateField input")
+                song_data['recorded_on'] = recorded_input.get_attribute('value') or ''
+            except:
+                pass
+            
+            try:
+                # Extract is_original checkbox
+                original_checkbox = self.driver.find_element(By.CSS_SELECTOR, "#originalCompositionMCheckBox input[type='checkbox']")
+                song_data['is_original'] = original_checkbox.is_selected()
+            except:
+                song_data['is_original'] = False
+            
+            try:
+                # Extract audio URL
+                audio_source = self.driver.find_element(By.CSS_SELECTOR, "audio source[type='audio/mpeg']")
+                song_data['audio_url'] = audio_source.get_attribute('src') or ''
+            except:
+                pass
+            
+            # Extract instruments using Selenium
+            song_data['instruments'] = self._extract_instruments_selenium()
+            
+            return song_data
+            
+        except Exception as e:
+            logger.error(f"Error extracting details from popup: {e}")
+            return None
+    
+    def _extract_instruments_selenium(self) -> List[Dict[str, str]]:
+        """Extract instruments using Selenium to read JavaScript-populated values"""
+        instruments = []
+        
+        try:
+            # Find all performer select inputs
+            for i in range(10):  # Check up to 10 performer slots
+                try:
+                    perf_input = self.driver.find_element(By.CSS_SELECTOR, f"#performerSelect-{i} input")
+                    inst_input = self.driver.find_element(By.CSS_SELECTOR, f"#instrumentSelect-{i} input")
+                    
+                    musician = (perf_input.get_attribute('value') or '').strip()
+                    instrument = (inst_input.get_attribute('value') or '').strip()
+                    
+                    # Add if musician has value (instrument is optional)
+                    if musician:
+                        instruments.append({
+                            'musician': musician,
+                            'instrument': instrument if instrument else 'Unknown'
+                        })
+                except:
+                    # No more performers
+                    break
+        except Exception as e:
+            logger.debug(f"Error extracting instruments: {e}")
+        
+        return instruments
     
     def _parse_song_row(self, row) -> Optional[Dict[str, Any]]:
         """
@@ -241,6 +629,111 @@ class BigFlavorScraper:
         
         return song_data if song_data.get('title') else None
     
+    def click_song_and_get_details(self, song_title: str) -> Dict[str, Any]:
+        """
+        Click on a song to open its popup, then click edit to get detailed information
+        
+        Args:
+            song_title: Title of the song to click
+            
+        Returns:
+            Dictionary with detailed song data from edit page
+        """
+        logger.info(f"Getting details for: {song_title}")
+        
+        try:
+            # Find and click the song title button in the grid
+            song_button = self.driver.find_element(
+                By.XPATH, 
+                f"//button[@class='v-nativebutton' and contains(text(), '{song_title}')]"
+            )
+            song_button.click()
+            logger.debug(f"Clicked song: {song_title}")
+            
+            # Wait for popup to appear
+            time.sleep(1)
+            
+            # Find and click the edit button (first row in popup)
+            # The edit icon/button should be in the popup that just appeared
+            try:
+                # Try to find edit button by looking for common patterns
+                edit_button = None
+                
+                # Method 1: Look for a button with edit icon or text
+                try:
+                    edit_button = self.driver.find_element(
+                        By.XPATH,
+                        "//span[@class='v-icon FontAwesome' and contains(., '')]/.."
+                    )
+                except NoSuchElementException:
+                    pass
+                
+                # Method 2: Look for first clickable row in popup
+                if not edit_button:
+                    try:
+                        edit_button = self.driver.find_element(
+                            By.CSS_SELECTOR,
+                            ".v-window .v-button, .v-window .v-menuitem"
+                        )
+                    except NoSuchElementException:
+                        pass
+                
+                if edit_button:
+                    edit_button.click()
+                    logger.debug("Clicked edit button")
+                    time.sleep(1)
+                else:
+                    logger.warning(f"Could not find edit button for: {song_title}")
+                    # Try to close popup and return empty
+                    self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                    return {}
+                
+            except Exception as e:
+                logger.warning(f"Error clicking edit button: {e}")
+                # Try to close popup
+                try:
+                    self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                except:
+                    pass
+                return {}
+            
+            # Now we should be on the edit page - extract details
+            time.sleep(1.5)
+            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            
+            details = {}
+            
+            # Extract form fields from edit page
+            details.update(self._extract_form_fields(soup))
+            
+            # Extract instruments and musicians
+            details['instruments'] = self._extract_instruments(soup)
+            
+            # Go back to main list
+            try:
+                # Try clicking back/close button
+                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                time.sleep(0.5)
+                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                time.sleep(0.5)
+            except:
+                pass
+            
+            return details
+            
+        except NoSuchElementException:
+            logger.warning(f"Could not find song button for: {song_title}")
+            return {}
+        except Exception as e:
+            logger.error(f"Error getting details for {song_title}: {e}")
+            # Try to get back to main page
+            try:
+                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                time.sleep(0.3)
+            except:
+                pass
+            return {}
+    
     def get_song_details(self, song_id: str, edit_url: str) -> Dict[str, Any]:
         """
         Get detailed information for a song from its edit page
@@ -290,39 +783,53 @@ class BigFlavorScraper:
         """Extract fields from the edit form"""
         fields = {}
         
-        # Extract title
-        title_input = soup.find('input', {'name': re.compile(r'title', re.I)})
-        if title_input:
-            fields['title'] = title_input.get('value', '')
+        # Extract session from filterselect with id="sessionSelect"
+        session_input = soup.find('input', {'class': 'v-filterselect-input'})
+        if session_input:
+            # The parent should have id="sessionSelect"
+            parent = session_input.find_parent('div', {'id': 'sessionSelect'})
+            if parent:
+                fields['session'] = session_input.get('value', '')
         
-        # Extract session
-        session_select = soup.find('select', {'name': re.compile(r'session', re.I)})
-        if session_select:
-            selected_option = session_select.find('option', selected=True)
-            if selected_option:
-                fields['session'] = selected_option.get_text(strip=True)
+        # Extract name (song title) from id="nameTextField"
+        name_input = soup.find('input', {'id': 'nameTextField'})
+        if name_input:
+            fields['title'] = name_input.get('value', '')
         
-        # Extract is_original checkbox
-        original_checkbox = soup.find('input', {'type': 'checkbox', 'name': re.compile(r'original', re.I)})
+        # Extract base name from id="baseNameTextField"
+        base_name_input = soup.find('input', {'id': 'baseNameTextField'})
+        if base_name_input:
+            fields['base_name'] = base_name_input.get('value', '')
+        
+        # Extract description from id="descriptionTextField"
+        desc_input = soup.find('input', {'id': 'descriptionTextField'})
+        if desc_input:
+            fields['description'] = desc_input.get('value', '')
+        
+        # Extract recorded date from id="recordedAtDateField"
+        recorded_input = soup.find('div', {'id': 'recordedAtDateField'})
+        if recorded_input:
+            date_field = recorded_input.find('input', {'class': 'v-datefield-textfield'})
+            if date_field:
+                fields['recorded_on'] = date_field.get('value', '')
+        
+        # Extract is_original checkbox from id="originalCompositionMCheckBox"
+        original_checkbox = soup.find('input', {'type': 'checkbox'})
         if original_checkbox:
-            fields['is_original'] = original_checkbox.has_attr('checked')
+            # Find the parent span with id="originalCompositionMCheckBox"
+            parent = original_checkbox.find_parent('span', {'id': 'originalCompositionMCheckBox'})
+            if parent:
+                fields['is_original'] = original_checkbox.has_attr('checked')
         
-        # Extract dates
-        recorded_on = soup.find('input', {'name': re.compile(r'recorded', re.I)})
-        if recorded_on:
-            fields['recorded_on'] = recorded_on.get('value', '')
+        # Extract MP3 URL from audio source
+        audio_source = soup.find('source', {'type': 'audio/mpeg'})
+        if audio_source:
+            fields['audio_url'] = audio_source.get('src', '')
         
-        uploaded_on = soup.find('input', {'name': re.compile(r'uploaded', re.I)})
-        if uploaded_on:
-            fields['uploaded_on'] = uploaded_on.get('value', '')
-        
-        # Extract rating
-        rating_input = soup.find('input', {'name': re.compile(r'rating', re.I)})
-        if rating_input:
-            try:
-                fields['rating'] = int(rating_input.get('value', 0))
-            except ValueError:
-                pass
+        # Extract mix name from id="mixNameTextField-0"
+        mix_name_input = soup.find('input', {'id': 'mixNameTextField-0'})
+        if mix_name_input:
+            fields['mix_name'] = mix_name_input.get('value', '')
         
         return fields
     
@@ -330,33 +837,39 @@ class BigFlavorScraper:
         """Extract instruments and musicians from the edit page"""
         instruments = []
         
-        # Look for instrument sections (adjust selector based on actual HTML)
-        instrument_rows = soup.find_all('tr', class_=re.compile(r'instrument', re.I))
+        # The performers grid has pairs of selects with IDs like:
+        # performerSelect-0, instrumentSelect-0
+        # performerSelect-1, instrumentSelect-1, etc.
         
-        for row in instrument_rows:
-            musician = row.find('td', class_=re.compile(r'musician', re.I))
-            instrument = row.find('td', class_=re.compile(r'instrument', re.I))
-            
-            if musician and instrument:
-                instruments.append({
-                    'musician': musician.get_text(strip=True),
-                    'instrument': instrument.get_text(strip=True)
-                })
+        # Find all performer selects
+        performer_divs = soup.find_all('div', {'id': lambda x: x and x.startswith('performerSelect-')})
         
-        # Alternative: look for select dropdowns
-        if not instruments:
-            musician_selects = soup.find_all('select', {'name': re.compile(r'musician', re.I)})
-            instrument_selects = soup.find_all('select', {'name': re.compile(r'instrument', re.I)})
+        for perf_div in performer_divs:
+            # Get the index from the ID
+            perf_id = perf_div.get('id', '')
+            index = perf_id.split('-')[-1] if '-' in perf_id else None
             
-            for mus_select, inst_select in zip(musician_selects, instrument_selects):
-                mus_option = mus_select.find('option', selected=True)
-                inst_option = inst_select.find('option', selected=True)
+            if index is None:
+                continue
+            
+            # Find the corresponding instrument select
+            inst_div = soup.find('div', {'id': f'instrumentSelect-{index}'})
+            
+            if inst_div:
+                # Get the input values
+                perf_input = perf_div.find('input', {'class': 'v-filterselect-input'})
+                inst_input = inst_div.find('input', {'class': 'v-filterselect-input'})
                 
-                if mus_option and inst_option:
-                    instruments.append({
-                        'musician': mus_option.get_text(strip=True),
-                        'instrument': inst_option.get_text(strip=True)
-                    })
+                if perf_input and inst_input:
+                    musician = perf_input.get('value', '').strip()
+                    instrument = inst_input.get('value', '').strip()
+                    
+                    # Only add if both have values (not empty/prompt)
+                    if musician and instrument and not inst_div.find('div', {'class': 'v-filterselect-prompt'}):
+                        instruments.append({
+                            'musician': musician,
+                            'instrument': instrument
+                        })
         
         return instruments
     
@@ -448,34 +961,47 @@ class BigFlavorScraper:
             logger.error(f"Failed to download audio for song {song_id}: {e}")
             return None
     
-    def scrape_all_songs(self) -> List[Dict[str, Any]]:
+    def scrape_all_songs(self, get_details: bool = False) -> List[Dict[str, Any]]:
         """
         Scrape all songs with full details
         
+        Args:
+            get_details: If True, click into each song to get edit page details
+            
         Returns:
             List of dictionaries with complete song data
         """
-        # Get list of all songs
+        # Get list of all songs from main table
         songs = self.get_all_songs()
         
-        # Get details for each song
+        if not get_details:
+            logger.info(f"Scraped {len(songs)} songs (without detailed information)")
+            return songs
+        
+        # Get details for each song by clicking into edit page
+        logger.info(f"Getting detailed information for {len(songs)} songs...")
         detailed_songs = []
+        
         for i, song in enumerate(songs, 1):
             try:
                 logger.info(f"Processing song {i}/{len(songs)}: {song.get('title', 'Unknown')}")
                 
-                if 'edit_url' in song:
-                    details = self.get_song_details(song['id'], song['edit_url'])
-                    # Merge basic info with details
-                    song.update(details)
+                # Click into song and get details from edit page
+                edit_details = self.click_song_and_get_details(song['title'])
+                
+                # Merge table data with edit page details
+                if edit_details:
+                    song.update(edit_details)
                 
                 detailed_songs.append(song)
                 
                 # Be polite - add delay between requests
-                time.sleep(1)
+                time.sleep(0.5)
                 
             except Exception as e:
                 logger.error(f"Error processing song {song.get('id', 'unknown')}: {e}")
+                # Still add the song with whatever data we have
+                detailed_songs.append(song)
                 continue
         
         return detailed_songs
