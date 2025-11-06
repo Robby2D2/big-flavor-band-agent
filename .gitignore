@@ -68,3 +68,7 @@ temp_audio/
 audio_library/*.mp3
 audio_library/*.wav
 audio_library/*.flac
+
+# Database
+sql/init/*.sql.bak
+postgres_data/

@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: bigflavor-postgres
+    environment:
+      POSTGRES_DB: bigflavor
+      POSTGRES_USER: bigflavor
+      POSTGRES_PASSWORD: bigflavor_dev_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bigflavor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
