@@ -414,6 +414,8 @@ class SongRAGSystem:
                 s.title,
                 s.genre,
                 s.audio_url,
+                s.mood,
+                s.energy,
                 ae.audio_path,
                 (ae.librosa_features->>'tempo')::float as tempo_bpm,
                 COUNT(*) OVER (PARTITION BY s.id) as match_count
@@ -422,7 +424,8 @@ class SongRAGSystem:
             WHERE 
                 s.title ILIKE ANY($1) OR
                 s.genre ILIKE ANY($1) OR
-                s.description ILIKE ANY($1)
+                s.mood ILIKE ANY($1) OR
+                s.energy ILIKE ANY($1)
             ORDER BY match_count DESC, s.title
             LIMIT $2
         """

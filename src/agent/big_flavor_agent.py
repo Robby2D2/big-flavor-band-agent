@@ -102,7 +102,6 @@ class BigFlavorAgent:
             # RAG SYSTEM TOOLS (search/retrieval - direct library access)
             {
                 "name": "search_by_audio_file",
-                "server": "rag",
                 "description": "Find songs similar to an uploaded audio file by comparing audio characteristics using AI embeddings. This is the most powerful search tool for finding songs by how they sound.",
                 "input_schema": {
                     "type": "object",
@@ -125,7 +124,6 @@ class BigFlavorAgent:
             },
             {
                 "name": "search_by_text_description",
-                "server": "rag",
                 "description": "Find songs matching a text description like 'ambient sleep music' or 'energetic workout beats'. Use this for natural language music queries.",
                 "input_schema": {
                     "type": "object",
@@ -144,7 +142,6 @@ class BigFlavorAgent:
             },
             {
                 "name": "search_by_tempo_range",
-                "server": "rag",
                 "description": "Find songs within a specific tempo range (BPM). Perfect for finding songs at a specific speed.",
                 "input_schema": {
                     "type": "object",
@@ -167,7 +164,6 @@ class BigFlavorAgent:
             },
             {
                 "name": "search_hybrid",
-                "server": "rag",
                 "description": "Search with multiple criteria: audio similarity, text description, tempo range. Most flexible and powerful search option.",
                 "input_schema": {
                     "type": "object",
@@ -199,7 +195,6 @@ class BigFlavorAgent:
             # PRODUCTION SERVER TOOLS (write/modify)
             {
                 "name": "analyze_audio",
-                "server": "mcp",
                 "description": "Extract tempo, key, beats, and other audio features from an audio file. Use this to understand the musical characteristics of a file.",
                 "input_schema": {
                     "type": "object",
@@ -214,7 +209,6 @@ class BigFlavorAgent:
             },
             {
                 "name": "match_tempo",
-                "server": "mcp",
                 "description": "Time-stretch audio to a specific BPM without changing pitch. Perfect for DJ mixing or tempo matching.",
                 "input_schema": {
                     "type": "object",
@@ -237,7 +231,6 @@ class BigFlavorAgent:
             },
             {
                 "name": "create_transition",
-                "server": "mcp",
                 "description": "Create a beat-matched DJ transition between two songs with crossfading.",
                 "input_schema": {
                     "type": "object",
@@ -264,7 +257,6 @@ class BigFlavorAgent:
             },
             {
                 "name": "apply_mastering",
-                "server": "mcp",
                 "description": "Apply professional mastering to make audio louder and more polished with compression and limiting.",
                 "input_schema": {
                     "type": "object",
@@ -287,19 +279,93 @@ class BigFlavorAgent:
             },
         ]
     
+    async def _perform_hybrid_search(self, tool_input: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Perform hybrid search combining multiple criteria.
+        
+        This method intelligently combines:
+        - Text description search
+        - Audio similarity search (if audio_path provided)
+        - Tempo range filtering (if min/max tempo provided)
+        
+        Args:
+            tool_input: Dict containing search parameters
+        
+        Returns:
+            List of matching songs
+        """
+        audio_path = tool_input.get("audio_path")
+        description = tool_input.get("description")
+        min_tempo = tool_input.get("min_tempo")
+        max_tempo = tool_input.get("max_tempo")
+        limit = tool_input.get("limit", 10)
+        
+        # Start with all songs or filtered by description
+        if description:
+            # Use text description search as base
+            results = await self.rag_system.search_by_text_description(
+                description=description,
+                limit=limit * 3  # Get more results to filter
+            )
+        elif audio_path:
+            # Use audio similarity as base
+            import os
+            if not os.path.exists(audio_path):
+                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            results = await self.rag_system.search_by_audio_similarity(
+                query_audio_path=audio_path,
+                limit=limit * 3
+            )
+        else:
+            # Just use tempo range
+            results = await self.rag_system.search_by_tempo_range(
+                min_tempo=min_tempo,
+                max_tempo=max_tempo,
+                limit=limit
+            )
+            return results
+        
+        # Apply tempo filtering if specified
+        if min_tempo is not None or max_tempo is not None:
+            filtered_results = []
+            for song in results:
+                tempo = song.get('tempo_bpm')
+                if tempo is None:
+                    continue
+                    
+                if min_tempo is not None and tempo < min_tempo:
+                    continue
+                if max_tempo is not None and tempo > max_tempo:
+                    continue
+                    
+                filtered_results.append(song)
+            results = filtered_results
+        
+        # Limit final results
+        return results[:limit]
+    
     async def _call_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> Any:
         """Route tool call to appropriate handler."""
-        # Determine which system handles this tool
-        tool_def = next((t for t in self._get_available_tools() if t["name"] == tool_name), None)
+        # Define RAG tools (search/retrieval)
+        rag_tools = {
+            "search_by_audio_file",
+            "search_by_text_description",
+            "search_by_tempo_range",
+            "search_hybrid"
+        }
         
-        if not tool_def:
-            return {"error": f"Unknown tool: {tool_name}"}
+        # Define Production tools (audio processing)
+        production_tools = {
+            "analyze_audio",
+            "match_tempo",
+            "create_transition",
+            "apply_mastering"
+        }
         
-        server_type = tool_def.get("server", "unknown")
-        logger.info(f"Calling {server_type} tool: {tool_name}")
+        logger.info(f"Calling tool: {tool_name}")
         
         try:
-            if server_type == "rag":
+            if tool_name in rag_tools:
                 # Direct RAG system library calls
                 if tool_name == "search_by_audio_file":
                     results = await self.rag_system.search_by_audio_similarity(
@@ -349,7 +415,7 @@ class BigFlavorAgent:
                 else:
                     result = {"error": f"Unknown RAG tool: {tool_name}"}
                     
-            elif server_type == "mcp":
+            elif tool_name in production_tools:
                 # Route to Production server
                 if tool_name == "analyze_audio":
                     result = await self.production_server.analyze_audio(
@@ -377,7 +443,7 @@ class BigFlavorAgent:
                 else:
                     result = {"error": f"Unknown production tool: {tool_name}"}
             else:
-                result = {"error": f"Unknown server type: {server_type}"}
+                result = {"error": f"Unknown tool: {tool_name}"}
             
             logger.info(f"Tool {tool_name} returned successfully")
             return result
@@ -522,7 +588,8 @@ Always be helpful, accurate, and creative in helping users discover and work wit
             logger.error(f"Error in chat: {e}")
             return {
                 "response": f"Error: {str(e)}",
-                "error": str(e)
+                "error": str(e),
+                "total_cost": self._estimate_cost()
             }
     
     def _estimate_cost(self) -> Dict[str, float]:
