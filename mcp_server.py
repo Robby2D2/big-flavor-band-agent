@@ -257,6 +257,24 @@ class BigFlavorMCPServer:
                         "properties": {},
                     }
                 ),
+                Tool(
+                    name="smart_search",
+                    description="Intelligent search that understands natural language queries like 'songs to help me sleep', 'upbeat morning songs', 'chill acoustic vibes'. Uses genre, mood, and tempo to find matching songs.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Natural language query (e.g., 'relaxing songs for sleep', 'energetic workout music')"
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Maximum number of results (default: 10)"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                ),
             ]
         
         @self.app.call_tool()
@@ -310,6 +328,12 @@ class BigFlavorMCPServer:
                 elif name == "find_songs_without_embeddings":
                     await self.initialize_rag()
                     result = await self.find_songs_without_embeddings()
+                elif name == "smart_search":
+                    await self.initialize_rag()
+                    result = await self.smart_search(
+                        arguments["query"],
+                        arguments.get("limit", 10)
+                    )
                 else:
                     result = {"error": f"Unknown tool: {name}"}
                 
@@ -325,29 +349,46 @@ class BigFlavorMCPServer:
                 )]
     
     async def get_song_library(self) -> dict:
-        """Fetch the complete song library from RSS feed."""
+        """Fetch the complete song library from database."""
         try:
-            logger.info(f"Fetching song library from {self.rss_url}")
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(self.rss_url)
-                response.raise_for_status()
+            await self.initialize_rag()
+            
+            if not self.db_manager:
+                return {
+                    "status": "error",
+                    "error": "Database not available"
+                }
+            
+            logger.info("Fetching song library from database")
+            
+            async with self.db_manager.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT 
+                        id, 
+                        title, 
+                        genre, 
+                        audio_url,
+                        scraped_at
+                    FROM songs 
+                    ORDER BY title
+                """)
                 
-                # Parse RSS feed
-                self.songs_cache = self._parse_rss_feed(response.text)
+                songs = [dict(row) for row in rows]
+                self.songs_cache = songs
                 self.last_fetch_time = datetime.now()
                 
-                logger.info(f"Successfully fetched {len(self.songs_cache)} songs from RSS feed")
+                logger.info(f"Successfully fetched {len(songs)} songs from database")
                 
                 return {
                     "status": "success",
-                    "source": "bigflavorband.com RSS feed",
-                    "total_songs": len(self.songs_cache),
+                    "source": "database",
+                    "total_songs": len(songs),
                     "last_updated": self.last_fetch_time.isoformat(),
-                    "songs": self.songs_cache
+                    "songs": songs
                 }
         except Exception as e:
-            logger.error(f"Error fetching song library from RSS: {e}")
-            # Return mock data if RSS is unavailable
+            logger.error(f"Error fetching song library from database: {e}")
+            # Return error
             if not self.songs_cache:
                 self.songs_cache = self._get_mock_songs()
             return {
@@ -358,24 +399,53 @@ class BigFlavorMCPServer:
             }
     
     async def search_songs(self, query: str) -> dict:
-        """Search songs by query string."""
-        if not self.songs_cache:
-            await self.get_song_library()
-        
-        query_lower = query.lower()
-        results = [
-            song for song in self.songs_cache
-            if query_lower in song.get("title", "").lower()
-            or query_lower in song.get("genre", "").lower()
-            or query_lower in song.get("mood", "").lower()
-            or query_lower in " ".join(song.get("tags", [])).lower()
-        ]
-        
-        return {
-            "query": query,
-            "results_count": len(results),
-            "songs": results
-        }
+        """Search songs by query string using database."""
+        try:
+            await self.initialize_rag()
+            
+            if not self.db_manager:
+                return {
+                    "status": "error",
+                    "error": "Database not available"
+                }
+            
+            logger.info(f"Searching songs for query: {query}")
+            query_lower = query.lower()
+            
+            # Search in database
+            async with self.db_manager.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT 
+                        id, 
+                        title, 
+                        genre, 
+                        audio_url
+                    FROM songs 
+                    WHERE 
+                        LOWER(title) LIKE $1
+                        OR LOWER(genre) LIKE $1
+                    ORDER BY title
+                    LIMIT 100
+                """, f"%{query_lower}%")
+                
+                results = [dict(row) for row in rows]
+            
+            logger.info(f"Found {len(results)} songs matching query")
+            
+            return {
+                "query": query,
+                "results_count": len(results),
+                "songs": results
+            }
+        except Exception as e:
+            logger.error(f"Error searching songs: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "query": query,
+                "results_count": 0,
+                "songs": []
+            }
     
     async def get_song_details(self, song_id: str) -> dict:
         """Get detailed information about a specific song."""
@@ -987,6 +1057,169 @@ class BigFlavorMCPServer:
             return {
                 "error": str(e),
                 "songs": []
+            }
+    
+    async def smart_search(self, query: str, limit: int = 10) -> dict:
+        """
+        Smart natural language search that interprets queries like
+        'songs for sleeping', 'upbeat workout music', etc.
+        
+        Args:
+            query: Natural language query
+            limit: Maximum number of results
+        
+        Returns:
+            Dictionary with search results
+        """
+        if not self.db_manager:
+            return {
+                "error": "Database not available",
+                "results": []
+            }
+        
+        try:
+            query_lower = query.lower()
+            logger.info(f"Smart search for: {query}")
+            
+            # Interpret the query
+            genre_filter = None
+            tempo_min = None
+            tempo_max = None
+            keywords = []
+            
+            # Sleep/relaxing queries
+            if any(word in query_lower for word in ['sleep', 'relax', 'calm', 'chill', 'mellow', 'quiet']):
+                tempo_max = 90
+                keywords.extend(['acoustic', 'ambient', 'ballad'])
+            
+            # Energetic/workout queries
+            elif any(word in query_lower for word in ['workout', 'energy', 'upbeat', 'pump', 'active', 'running']):
+                tempo_min = 120
+                keywords.extend(['rock', 'electronic', 'metal'])
+            
+            # Morning/wake up queries
+            elif any(word in query_lower for word in ['morning', 'wake', 'start']):
+                tempo_min = 100
+                tempo_max = 140
+                keywords.extend(['pop', 'rock', 'indie'])
+            
+            # Party queries
+            elif any(word in query_lower for word in ['party', 'dance', 'celebration']):
+                tempo_min = 110
+                keywords.extend(['rock', 'pop', 'dance'])
+            
+            # Genre-specific
+            if 'rock' in query_lower:
+                genre_filter = 'Rock'
+            elif 'jazz' in query_lower:
+                genre_filter = 'Jazz'
+            elif 'blues' in query_lower:
+                genre_filter = 'Blues'
+            elif 'acoustic' in query_lower:
+                keywords.append('acoustic')
+            
+            # Build database query
+            conditions = []
+            params = []
+            param_counter = 1
+            
+            # Always join audio_embeddings if we need tempo filtering
+            needs_audio_join = tempo_min is not None or tempo_max is not None
+            
+            if genre_filter:
+                conditions.append(f"LOWER(s.genre) LIKE ${param_counter}")
+                params.append(f"%{genre_filter.lower()}%")
+                param_counter += 1
+            
+            if tempo_min is not None:
+                # Filter by tempo from librosa_features JSONB
+                conditions.append(f"(ae.librosa_features->>'tempo')::float >= ${param_counter}")
+                params.append(tempo_min)
+                param_counter += 1
+            
+            if tempo_max is not None:
+                conditions.append(f"(ae.librosa_features->>'tempo')::float <= ${param_counter}")
+                params.append(tempo_max)
+                param_counter += 1
+            
+            # Add keyword search in title or genre
+            # For tempo/genre filters, keywords are just suggestions (don't filter by them)
+            # For no other filters, keywords become the main filter
+            use_keywords_as_filter = not (tempo_min is not None or tempo_max is not None or genre_filter)
+            
+            if keywords and use_keywords_as_filter:
+                keyword_conditions = " OR ".join([f"LOWER(s.title) LIKE ${param_counter + i} OR LOWER(s.genre) LIKE ${param_counter + i}" for i in range(len(keywords))])
+                conditions.append(f"({keyword_conditions})")
+                params.extend([f"%{kw}%" for kw in keywords])
+                param_counter += len(keywords)
+            
+            # Build final query
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            
+            if needs_audio_join:
+                # INNER JOIN to ensure we only get songs with embeddings
+                query_sql = f"""
+                    SELECT DISTINCT
+                        s.id,
+                        s.title,
+                        s.genre,
+                        s.audio_url,
+                        (ae.librosa_features->>'tempo')::float as tempo_bpm
+                    FROM songs s
+                    INNER JOIN audio_embeddings ae ON s.id = ae.song_id
+                    WHERE {where_clause}
+                    ORDER BY tempo_bpm ASC
+                    LIMIT ${param_counter}
+                """
+            else:
+                # No tempo filtering, just search songs
+                query_sql = f"""
+                    SELECT DISTINCT
+                        s.id,
+                        s.title,
+                        s.genre,
+                        s.audio_url,
+                        NULL as tempo_bpm
+                    FROM songs s
+                    WHERE {where_clause}
+                    ORDER BY s.title
+                    LIMIT ${param_counter}
+                """
+            params.append(limit)
+            
+            # Log the query for debugging
+            logger.info(f"Smart search SQL: {query_sql}")
+            logger.info(f"Smart search params: {params}")
+            
+            async with self.db_manager.pool.acquire() as conn:
+                rows = await conn.fetch(query_sql, *params)
+                results = [dict(row) for row in rows]
+            
+            logger.info(f"Smart search found {len(results)} results")
+            
+            return {
+                "status": "success",
+                "query": query,
+                "interpreted_filters": {
+                    "genre": genre_filter,
+                    "tempo_min": tempo_min,
+                    "tempo_max": tempo_max,
+                    "keywords": keywords
+                },
+                "total_results": len(results),
+                "songs": results,  # Claude expects "songs" key
+                "results": results  # Keep for backward compatibility
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in smart search: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "error": str(e),
+                "songs": [],
+                "results": []
             }
     
     async def run(self):

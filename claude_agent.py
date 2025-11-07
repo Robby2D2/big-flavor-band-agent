@@ -18,6 +18,15 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Import database for accessing real songs
+try:
+    from database import DatabaseManager
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
+    logger = logging.getLogger("claude-agent")
+    logger.warning("Database not available - will use limited functionality")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -32,12 +41,13 @@ class ClaudeMusicAgent:
     for intelligent music discovery and recommendations.
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, load_songs: bool = True):
         """
         Initialize Claude agent.
         
         Args:
             api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
+            load_songs: Whether to load real songs from database
         """
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -51,8 +61,35 @@ class ClaudeMusicAgent:
         self.conversation_history = []
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.song_library = []
+        self.db_manager = None
         
         logger.info(f"Claude Music Agent initialized with model: {self.model}")
+        
+        # Load real songs if database is available
+        if load_songs and DATABASE_AVAILABLE:
+            asyncio.create_task(self._load_songs())
+    
+    async def _load_songs(self):
+        """Load songs from database."""
+        try:
+            self.db_manager = DatabaseManager()
+            await self.db_manager.connect()
+            
+            async with self.db_manager.pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, title, genre, audio_url 
+                    FROM songs 
+                    ORDER BY title
+                    LIMIT 1500
+                """)
+                
+                self.song_library = [dict(row) for row in rows]
+                logger.info(f"Loaded {len(self.song_library)} songs from database")
+                
+        except Exception as e:
+            logger.error(f"Failed to load songs from database: {e}")
+            self.song_library = []
     
     def _estimate_cost(self) -> Dict[str, float]:
         """
@@ -170,23 +207,55 @@ class ClaudeMusicAgent:
     
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for music assistant."""
-        return """You are an expert music assistant for the Big Flavor Band, a talented cover band with an extensive song library.
+        base_prompt = """You are an expert music assistant for the Big Flavor Band, a talented cover band with an extensive song library.
+
+CRITICAL INSTRUCTIONS:
+- You can ONLY recommend songs that exist in the Big Flavor Band's actual catalog
+- NEVER make up or hallucinate song names
+- If you don't have access to the song list, tell the user you need the song database loaded
+- Only suggest songs from the provided song list below
 
 Your capabilities:
 - Help users discover songs from the Big Flavor Band's 1,300+ song catalog
 - Provide song recommendations based on genre, mood, tempo, and sonic similarity
-- Search for songs using semantic audio search (find songs that SOUND similar)
+- Search for songs using the provided song list
 - Analyze audio characteristics like tempo (BPM), key, energy, and mood
-- Create themed playlists and setlists
-- Answer questions about specific songs and their metadata
+- Create themed playlists and setlists using ONLY real songs from the catalog
+- Answer questions about specific songs from the catalog
 
-You have access to advanced RAG (Retrieval-Augmented Generation) tools that can:
-1. Search songs by how they sound (audio embeddings)
-2. Find similar songs based on actual sonic characteristics
-3. Search by tempo and similarity simultaneously
-4. Provide detailed song statistics and metadata
+Be helpful, enthusiastic, and knowledgeable about music. When users ask for recommendations, explain WHY you're suggesting certain songs based on their characteristics.
 
-Be helpful, enthusiastic, and knowledgeable about music. When users ask for recommendations, explain WHY you're suggesting certain songs based on their sonic characteristics."""
+REMEMBER: Only recommend songs that appear in the song list provided to you. Do not invent song names."""
+
+        # Add actual song list if available
+        if self.song_library:
+            song_list = "\n\n=== BIG FLAVOR BAND SONG CATALOG ===\n"
+            song_list += f"Total songs available: {len(self.song_library)}\n\n"
+            
+            # Add a sample of songs (limit to avoid token limits)
+            # Group by genre for easier reference
+            by_genre = {}
+            for song in self.song_library[:500]:  # Limit to 500 songs to save tokens
+                genre = song.get('genre', 'Unknown')
+                if genre not in by_genre:
+                    by_genre[genre] = []
+                by_genre[genre].append(f"- {song['title']}")
+            
+            for genre, songs in sorted(by_genre.items()):
+                song_list += f"\n{genre} Songs:\n"
+                song_list += "\n".join(songs[:30])  # Limit songs per genre
+                if len(songs) > 30:
+                    song_list += f"\n... and {len(songs) - 30} more {genre} songs"
+                song_list += "\n"
+            
+            if len(self.song_library) > 500:
+                song_list += f"\n\n(Showing first 500 of {len(self.song_library)} total songs)"
+            
+            base_prompt += song_list
+        else:
+            base_prompt += "\n\n⚠️  WARNING: Song database not yet loaded. Ask user to wait for songs to load or suggest they restart with database connection."
+        
+        return base_prompt
 
     async def discover_similar_songs(
         self,
@@ -293,7 +362,17 @@ async def interactive_demo():
         return
     
     try:
-        agent = ClaudeMusicAgent()
+        # Initialize agent (without auto-loading)
+        agent = ClaudeMusicAgent(load_songs=False)
+        
+        # Load songs
+        print("📚 Loading Big Flavor Band song catalog...")
+        await agent._load_songs()
+        
+        if agent.song_library:
+            print(f"✅ Loaded {len(agent.song_library)} songs!\n")
+        else:
+            print("⚠️  No songs loaded - agent will have limited functionality\n")
         
         # Initial greeting
         print("🤖 Agent: Hi! I'm your Big Flavor Band music assistant powered by Claude 3 Haiku.")
@@ -340,6 +419,11 @@ async def interactive_demo():
     
     except ValueError as e:
         print(f"❌ {e}")
+    finally:
+        # Cleanup database connection
+        if 'agent' in locals() and agent.db_manager:
+            await agent.db_manager.close()
+            print("Database connection closed.")
 
 
 async def example_usage():
@@ -349,26 +433,36 @@ async def example_usage():
     print("=" * 80 + "\n")
     
     # Initialize agent
-    agent = ClaudeMusicAgent()
+    agent = ClaudeMusicAgent(load_songs=False)
     
-    # Example 1: Find similar songs
-    print("📝 Example 1: Finding similar songs")
-    print("-" * 80)
-    result = await agent.discover_similar_songs("upbeat rock songs with high energy", limit=3)
-    if result["status"] == "success":
-        print(result["response"])
-        print(f"\n💰 Cost so far: ${result['cost_estimate']['total_cost_usd']:.4f}\n")
+    # Load songs
+    print("📚 Loading song catalog...")
+    await agent._load_songs()
+    print(f"✅ Loaded {len(agent.song_library)} songs\n")
     
-    # Example 2: Create a playlist
-    print("\n📝 Example 2: Creating a themed playlist")
-    print("-" * 80)
-    result = await agent.create_playlist("chill acoustic afternoon vibes", song_count=5)
-    if result["status"] == "success":
-        print(result["response"])
-        print(f"\n💰 Cost so far: ${result['cost_estimate']['total_cost_usd']:.4f}\n")
-    
-    # Show final cost summary
-    agent.print_cost_summary()
+    try:
+        # Example 1: Find similar songs
+        print("📝 Example 1: Finding similar songs")
+        print("-" * 80)
+        result = await agent.discover_similar_songs("upbeat rock songs with high energy", limit=3)
+        if result["status"] == "success":
+            print(result["response"])
+            print(f"\n💰 Cost so far: ${result['cost_estimate']['total_cost_usd']:.4f}\n")
+        
+        # Example 2: Create a playlist
+        print("\n📝 Example 2: Creating a themed playlist")
+        print("-" * 80)
+        result = await agent.create_playlist("chill acoustic afternoon vibes", song_count=5)
+        if result["status"] == "success":
+            print(result["response"])
+            print(f"\n💰 Cost so far: ${result['cost_estimate']['total_cost_usd']:.4f}\n")
+        
+        # Show final cost summary
+        agent.print_cost_summary()
+    finally:
+        # Cleanup
+        if agent.db_manager:
+            await agent.db_manager.close()
 
 
 async def main():
