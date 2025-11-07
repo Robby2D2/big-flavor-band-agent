@@ -160,21 +160,34 @@ class ClaudeMCPAgent:
                 }
             },
             {
-                "name": "smart_search",
-                "description": "Intelligent search that understands natural language queries like 'songs to help me sleep', 'upbeat morning music', 'energetic workout songs'. This is the BEST tool for natural language queries about mood, energy, or use case.",
+                "name": "search_by_filters",
+                "description": "Search songs by specific musical criteria. YOU interpret user intent and choose filter values. Examples: 'sleep songs' → tempo_max=90, 'workout' → tempo_min=120, 'chill jazz' → genre='jazz' + tempo_max=100. Use your knowledge of music to pick appropriate filters!",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "query": {
+                        "tempo_min": {
+                            "type": "number",
+                            "description": "Minimum tempo in BPM. Guidelines: 120+ energetic/workout, 110+ dance/party, 100+ upbeat"
+                        },
+                        "tempo_max": {
+                            "type": "number",
+                            "description": "Maximum tempo in BPM. Guidelines: 90 or less for sleep/relax/calm, 100 for mellow, 110 for moderate"
+                        },
+                        "genre": {
                             "type": "string",
-                            "description": "Natural language query (e.g., 'relaxing songs for sleep', 'energetic workout music', 'chill morning vibes')"
+                            "description": "Genre filter (partial match). Examples: 'rock', 'jazz', 'blues', 'acoustic'"
+                        },
+                        "title_keywords": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Keywords to search in title/genre. Only used if no tempo/genre filters provided."
                         },
                         "limit": {
                             "type": "number",
-                            "description": "Maximum number of results (default: 10)"
+                            "description": "Maximum results (default: 10)"
                         }
                     },
-                    "required": ["query"]
+                    "required": []
                 }
             },
         ]
@@ -209,9 +222,12 @@ class ClaudeMCPAgent:
                 )
             elif tool_name == "get_embedding_stats":
                 result = await self.mcp_server.get_embedding_stats()
-            elif tool_name == "smart_search":
-                result = await self.mcp_server.smart_search(
-                    tool_input["query"],
+            elif tool_name == "search_by_filters":
+                result = await self.mcp_server.search_by_filters(
+                    tool_input.get("tempo_min"),
+                    tool_input.get("tempo_max"),
+                    tool_input.get("genre"),
+                    tool_input.get("title_keywords"),
                     tool_input.get("limit", 10)
                 )
             else:
@@ -263,23 +279,29 @@ class ClaudeMCPAgent:
         system_prompt = """You are an expert music assistant for the Big Flavor Band with access to powerful search tools.
 
 IMPORTANT: You have access to real tools that can search the actual Big Flavor Band catalog:
-- smart_search: USE THIS for natural language queries like "songs for sleep", "workout music", etc.
+- search_by_filters: YOUR MAIN TOOL - You interpret user intent and choose appropriate filter parameters
 - get_song_library: Get all 1,300+ songs (use sparingly, it's a lot of data)
 - search_songs: Text-based search by exact title/genre
 - get_similar_songs: Find songs similar to a given song (USE THIS for recommendations!)
 - search_by_tempo_and_similarity: Find songs by BPM
 - get_embedding_stats: Check system statistics
 
-CRITICAL RULES:
-1. For queries like "find songs for [activity/mood]", ALWAYS use smart_search first
-2. For "similar to [song]", use search_songs to find the song, then get_similar_songs
-3. NEVER make up or hallucinate song names
-4. Only recommend songs that you find using the tools
+CRITICAL RULES FOR search_by_filters:
+1. YOU must interpret what the user wants and choose appropriate filter values
+2. Tempo guidelines:
+   - Sleep/relax/calm: tempo_max=90 (very slow, under 90 BPM)
+   - Mellow/chill: tempo_max=100
+   - Moderate: tempo_min=100, tempo_max=120
+   - Energetic/workout: tempo_min=120 (fast, 120+ BPM)
+   - Dance/party: tempo_min=110
+3. Use your music knowledge to interpret genres
+4. NEVER make up or hallucinate song names - only recommend songs from tool results
 5. If a tool returns no results, tell the user honestly
 
-Examples:
-- "songs to help me sleep" → use smart_search with query "sleep"
-- "energetic workout songs" → use smart_search with query "energetic workout"
+Examples of YOUR interpretation:
+- "songs to help me sleep" → search_by_filters(tempo_max=90)
+- "energetic workout songs" → search_by_filters(tempo_min=120)
+- "chill jazz" → search_by_filters(genre="jazz", tempo_max=100)
 - "songs like Summer Groove" → search_songs "Summer Groove", then get_similar_songs with that ID
 
 Be helpful and enthusiastic, but ONLY suggest songs that the tools actually return!"""

@@ -6,7 +6,7 @@ A Model Context Protocol server for managing the Big Flavor band's song library.
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, List
 from urllib.parse import urljoin
 from datetime import datetime
 import xml.etree.ElementTree as ET
@@ -258,21 +258,34 @@ class BigFlavorMCPServer:
                     }
                 ),
                 Tool(
-                    name="smart_search",
-                    description="Intelligent search that understands natural language queries like 'songs to help me sleep', 'upbeat morning songs', 'chill acoustic vibes'. Uses genre, mood, and tempo to find matching songs.",
+                    name="search_by_filters",
+                    description="Search songs by specific musical criteria. YOU (the LLM) should interpret user intent and choose appropriate filter values. Examples: 'sleep songs' → tempo_max=90, 'workout songs' → tempo_min=120, 'jazz' → genre='jazz'. Combine filters for best results.",
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "query": {
+                            "tempo_min": {
+                                "type": "number",
+                                "description": "Minimum tempo in BPM. Use for energetic/fast songs (e.g., 120+ for workout, 110+ for dance)"
+                            },
+                            "tempo_max": {
+                                "type": "number",
+                                "description": "Maximum tempo in BPM. Use for calm/slow songs (e.g., 90 for sleep/relax, 100 for mellow)"
+                            },
+                            "genre": {
                                 "type": "string",
-                                "description": "Natural language query (e.g., 'relaxing songs for sleep', 'energetic workout music')"
+                                "description": "Genre filter (partial match, case-insensitive). E.g., 'rock', 'jazz', 'blues', 'acoustic'"
+                            },
+                            "title_keywords": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Keywords to search in title/genre (OR condition). Only used if no tempo/genre filters."
                             },
                             "limit": {
                                 "type": "number",
                                 "description": "Maximum number of results (default: 10)"
                             }
                         },
-                        "required": ["query"]
+                        "required": []
                     }
                 ),
             ]
@@ -328,10 +341,13 @@ class BigFlavorMCPServer:
                 elif name == "find_songs_without_embeddings":
                     await self.initialize_rag()
                     result = await self.find_songs_without_embeddings()
-                elif name == "smart_search":
+                elif name == "search_by_filters":
                     await self.initialize_rag()
-                    result = await self.smart_search(
-                        arguments["query"],
+                    result = await self.search_by_filters(
+                        arguments.get("tempo_min"),
+                        arguments.get("tempo_max"),
+                        arguments.get("genre"),
+                        arguments.get("title_keywords"),
                         arguments.get("limit", 10)
                     )
                 else:
@@ -1059,13 +1075,22 @@ class BigFlavorMCPServer:
                 "songs": []
             }
     
-    async def smart_search(self, query: str, limit: int = 10) -> dict:
+    async def search_by_filters(
+        self, 
+        tempo_min: Optional[int] = None,
+        tempo_max: Optional[int] = None,
+        genre: Optional[str] = None,
+        title_keywords: Optional[List[str]] = None,
+        limit: int = 10
+    ) -> dict:
         """
-        Smart natural language search that interprets queries like
-        'songs for sleeping', 'upbeat workout music', etc.
+        Generic search by multiple filters. Let the LLM decide the parameters.
         
         Args:
-            query: Natural language query
+            tempo_min: Minimum tempo in BPM (e.g., 120 for energetic songs)
+            tempo_max: Maximum tempo in BPM (e.g., 90 for calm/sleep songs)
+            genre: Genre to filter by (case-insensitive partial match)
+            title_keywords: Keywords to search in title or genre (OR condition)
             limit: Maximum number of results
         
         Returns:
@@ -1074,49 +1099,12 @@ class BigFlavorMCPServer:
         if not self.db_manager:
             return {
                 "error": "Database not available",
+                "songs": [],
                 "results": []
             }
         
         try:
-            query_lower = query.lower()
-            logger.info(f"Smart search for: {query}")
-            
-            # Interpret the query
-            genre_filter = None
-            tempo_min = None
-            tempo_max = None
-            keywords = []
-            
-            # Sleep/relaxing queries
-            if any(word in query_lower for word in ['sleep', 'relax', 'calm', 'chill', 'mellow', 'quiet']):
-                tempo_max = 90
-                keywords.extend(['acoustic', 'ambient', 'ballad'])
-            
-            # Energetic/workout queries
-            elif any(word in query_lower for word in ['workout', 'energy', 'upbeat', 'pump', 'active', 'running']):
-                tempo_min = 120
-                keywords.extend(['rock', 'electronic', 'metal'])
-            
-            # Morning/wake up queries
-            elif any(word in query_lower for word in ['morning', 'wake', 'start']):
-                tempo_min = 100
-                tempo_max = 140
-                keywords.extend(['pop', 'rock', 'indie'])
-            
-            # Party queries
-            elif any(word in query_lower for word in ['party', 'dance', 'celebration']):
-                tempo_min = 110
-                keywords.extend(['rock', 'pop', 'dance'])
-            
-            # Genre-specific
-            if 'rock' in query_lower:
-                genre_filter = 'Rock'
-            elif 'jazz' in query_lower:
-                genre_filter = 'Jazz'
-            elif 'blues' in query_lower:
-                genre_filter = 'Blues'
-            elif 'acoustic' in query_lower:
-                keywords.append('acoustic')
+            logger.info(f"Filter search: tempo_min={tempo_min}, tempo_max={tempo_max}, genre={genre}, keywords={title_keywords}")
             
             # Build database query
             conditions = []
@@ -1126,13 +1114,12 @@ class BigFlavorMCPServer:
             # Always join audio_embeddings if we need tempo filtering
             needs_audio_join = tempo_min is not None or tempo_max is not None
             
-            if genre_filter:
+            if genre:
                 conditions.append(f"LOWER(s.genre) LIKE ${param_counter}")
-                params.append(f"%{genre_filter.lower()}%")
+                params.append(f"%{genre.lower()}%")
                 param_counter += 1
             
             if tempo_min is not None:
-                # Filter by tempo from librosa_features JSONB
                 conditions.append(f"(ae.librosa_features->>'tempo')::float >= ${param_counter}")
                 params.append(tempo_min)
                 param_counter += 1
@@ -1142,16 +1129,15 @@ class BigFlavorMCPServer:
                 params.append(tempo_max)
                 param_counter += 1
             
-            # Add keyword search in title or genre
-            # For tempo/genre filters, keywords are just suggestions (don't filter by them)
-            # For no other filters, keywords become the main filter
-            use_keywords_as_filter = not (tempo_min is not None or tempo_max is not None or genre_filter)
+            # Add keyword search in title or genre (optional)
+            # Keywords are only used if no other filters are specified
+            use_keywords_as_filter = not (tempo_min is not None or tempo_max is not None or genre)
             
-            if keywords and use_keywords_as_filter:
-                keyword_conditions = " OR ".join([f"LOWER(s.title) LIKE ${param_counter + i} OR LOWER(s.genre) LIKE ${param_counter + i}" for i in range(len(keywords))])
+            if title_keywords and use_keywords_as_filter:
+                keyword_conditions = " OR ".join([f"LOWER(s.title) LIKE ${param_counter + i} OR LOWER(s.genre) LIKE ${param_counter + i}" for i in range(len(title_keywords))])
                 conditions.append(f"({keyword_conditions})")
-                params.extend([f"%{kw}%" for kw in keywords])
-                param_counter += len(keywords)
+                params.extend([f"%{kw}%" for kw in title_keywords])
+                param_counter += len(title_keywords)
             
             # Build final query
             where_clause = " AND ".join(conditions) if conditions else "1=1"
@@ -1187,32 +1173,30 @@ class BigFlavorMCPServer:
                 """
             params.append(limit)
             
-            # Log the query for debugging
-            logger.info(f"Smart search SQL: {query_sql}")
-            logger.info(f"Smart search params: {params}")
+            logger.info(f"Filter search SQL: {query_sql}")
+            logger.info(f"Filter search params: {params}")
             
             async with self.db_manager.pool.acquire() as conn:
                 rows = await conn.fetch(query_sql, *params)
                 results = [dict(row) for row in rows]
             
-            logger.info(f"Smart search found {len(results)} results")
+            logger.info(f"Filter search found {len(results)} results")
             
             return {
                 "status": "success",
-                "query": query,
-                "interpreted_filters": {
-                    "genre": genre_filter,
+                "filters_applied": {
+                    "genre": genre,
                     "tempo_min": tempo_min,
                     "tempo_max": tempo_max,
-                    "keywords": keywords
+                    "title_keywords": title_keywords
                 },
                 "total_results": len(results),
-                "songs": results,  # Claude expects "songs" key
+                "songs": results,
                 "results": results  # Keep for backward compatibility
             }
             
         except Exception as e:
-            logger.error(f"Error in smart search: {e}")
+            logger.error(f"Error in filter search: {e}")
             import traceback
             traceback.print_exc()
             return {
