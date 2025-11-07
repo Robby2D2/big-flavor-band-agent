@@ -55,7 +55,9 @@ def print_results(results: List[Dict[str, Any]], title: str = "Results"):
         
         # Show some librosa features if available
         if 'librosa_features' in result and result['librosa_features']:
-            features = result['librosa_features']
+            import json
+            # librosa_features might be stored as JSON string
+            features = json.loads(result['librosa_features']) if isinstance(result['librosa_features'], str) else result['librosa_features']
             if 'estimated_key' in features:
                 print(f"   Key: {features['estimated_key']}")
             if 'spectral_centroid_mean' in features:

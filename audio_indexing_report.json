@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-11-06T20:30:59.735050",
+  "total_processed": 1315,
+  "successful": 1315,
+  "failed_count": 0,
+  "failed_files": [],
+  "elapsed_minutes": 26.639075133333332,
+  "use_clap": true,
+  "initial_stats": {
+    "songs_with_audio_embeddings": 5,
+    "songs_with_text_embeddings": 0,
+    "total_songs": 1332,
+    "avg_tempo": 119.86017612281398
+  },
+  "final_stats": {
+    "songs_with_audio_embeddings": 1319,
+    "songs_with_text_embeddings": 0,
+    "total_songs": 1332,
+    "avg_tempo": 119.02861444774413
+  }
+}
