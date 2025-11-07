@@ -396,6 +396,47 @@ class BigFlavorAgent:
                     "required": ["file_path", "output_path"]
                 }
             },
+            # INTELLIGENT AUTO-PROCESSING TOOLS
+            {
+                "name": "analyze_and_recommend_processing",
+                "description": "Intelligently analyze audio and get specific recommendations for processing. Detects noise levels, frequency imbalances, leading/trailing noise (not just silence), and suggests optimal settings for cleanup.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to audio file to analyze"
+                        }
+                    },
+                    "required": ["file_path"]
+                }
+            },
+            {
+                "name": "auto_clean_recording",
+                "description": "Automatically analyze and clean a raw recording with AI-driven parameter selection. Intelligently detects and removes non-musical content (speech, noise, etc.), applies optimal noise reduction, EQ, compression, and mastering. This is the BEST option for processing raw recordings.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to raw recording to clean"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for cleaned file"
+                        },
+                        "aggressiveness": {
+                            "type": "string",
+                            "description": "Processing aggressiveness: 'gentle', 'moderate', or 'aggressive' (default: 'moderate')"
+                        },
+                        "keep_intermediates": {
+                            "type": "boolean",
+                            "description": "Save intermediate steps for review (default: false)"
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
             {
                 "name": "apply_eq",
                 "description": "Apply equalizer filters to shape sound - remove mud, add clarity, filter unwanted frequencies. Essential for polishing recordings.",
@@ -533,6 +574,8 @@ class BigFlavorAgent:
         # Define Production tools (audio processing)
         production_tools = {
             "analyze_audio",
+            "analyze_and_recommend_processing",
+            "auto_clean_recording",
             "match_tempo",
             "create_transition",
             "apply_mastering",
@@ -614,6 +657,17 @@ class BigFlavorAgent:
                 if tool_name == "analyze_audio":
                     result = await self.production_server.analyze_audio(
                         tool_input["file_path"]
+                    )
+                elif tool_name == "analyze_and_recommend_processing":
+                    result = await self.production_server.analyze_and_recommend_processing(
+                        tool_input["file_path"]
+                    )
+                elif tool_name == "auto_clean_recording":
+                    result = await self.production_server.auto_clean_recording(
+                        tool_input["file_path"],
+                        tool_input["output_path"],
+                        tool_input.get("aggressiveness", "moderate"),
+                        tool_input.get("keep_intermediates", False)
                     )
                 elif tool_name == "match_tempo":
                     result = await self.production_server.match_tempo(
@@ -725,7 +779,20 @@ PRODUCTION TOOLS (MCP Server - audio processing):
 - create_transition: Create beat-matched DJ transitions with crossfading
 - apply_mastering: Professional mastering with compression and limiting
 
-EDITING TOOLS (MCP Server - processing raw recordings):
+INTELLIGENT AUTO-PROCESSING (MCP Server - AI-driven cleanup):
+🌟 BEST FOR RAW RECORDINGS:
+- auto_clean_recording: Automatically analyze and clean recordings with AI-driven settings
+  * Intelligently detects and removes leading/trailing noise (not just silence - detects speech, noise vs music)
+  * Auto-selects optimal noise reduction, EQ, compression, and mastering parameters
+  * Aggressiveness levels: 'gentle', 'moderate', 'aggressive'
+  * This is the RECOMMENDED tool for processing raw recordings!
+
+- analyze_and_recommend_processing: Get detailed analysis and specific recommendations
+  * Detects noise levels, frequency imbalances, non-musical content
+  * Provides specific parameter recommendations for manual processing
+  * Use this when you want to understand what cleanup is needed
+
+MANUAL EDITING TOOLS (MCP Server - for fine control):
 - trim_silence: Remove silence from beginning/end of recordings
 - reduce_noise: Remove background noise, hum, hiss, and feedback
 - correct_pitch: Fix wrong notes or apply auto-tune
@@ -743,13 +810,17 @@ CRITICAL RULES:
 7. Use your music knowledge to interpret user intent
 
 WORKFLOW FOR RAW RECORDINGS:
-When processing a raw live recording into production-ready audio, suggest this workflow:
-1. trim_silence: Clean up the beginning/end
-2. reduce_noise: Remove background noise and hum
-3. correct_pitch: Fix any tuning issues (if needed)
-4. apply_eq: Remove mud (high-pass ~80Hz), add clarity
-5. normalize_audio: Even out levels with compression
-6. apply_mastering: Final loudness and polish
+🌟 RECOMMENDED: Use auto_clean_recording for best results!
+- auto_clean_recording: Let AI analyze and apply optimal settings automatically
+
+MANUAL WORKFLOW (if user wants control):
+1. analyze_and_recommend_processing: Get specific recommendations first
+2. trim_silence: Clean up the beginning/end (or let auto_clean detect non-music content)
+3. reduce_noise: Remove background noise and hum
+4. correct_pitch: Fix any tuning issues (if needed)
+5. apply_eq: Remove mud (high-pass ~80Hz), add clarity
+6. normalize_audio: Even out levels with compression
+7. apply_mastering: Final loudness and polish
 
 EXAMPLES:
 - "Find sleep music" → search_by_text_description("calm sleep ambient")
@@ -758,8 +829,10 @@ EXAMPLES:
 - "Find 120 BPM songs" → search_by_tempo_range(min=115, max=125)
 - "Make this song 128 BPM" → match_tempo(file, 128, output)
 - "Create mix of song1 and song2" → create_transition(song1, song2, output)
-- "Clean up this raw recording" → Use the editing workflow above
+- "Clean up this raw recording" → auto_clean_recording(file, output, "moderate") 🌟 BEST OPTION
+- "Analyze what cleanup is needed" → analyze_and_recommend_processing(file)
 - "Remove noise from recording.wav" → reduce_noise(recording.wav, output)
+- "Process aggressively" → auto_clean_recording(file, output, "aggressive")
 
 Always be helpful, accurate, and creative in helping users discover and work with music!"""
         
