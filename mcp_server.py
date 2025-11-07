@@ -1,25 +1,22 @@
 """
 Big Flavor Band MCP Server
-A Model Context Protocol server for managing the Big Flavor band's song library.
+A Model Context Protocol server for audio production and analysis operations.
+This server handles WRITE/PRODUCTION operations only.
+READ/SEARCH operations are handled by the RAG system.
 """
 
 import asyncio
 import json
 import logging
 from typing import Any, Optional, List
-from urllib.parse import urljoin
-from datetime import datetime
-import xml.etree.ElementTree as ET
-import re
+from pathlib import Path
 
-import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from audio_analysis_cache import AudioAnalysisCache
 from database import DatabaseManager
-from rag_system import SongRAGSystem
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,140 +24,113 @@ logger = logging.getLogger("big-flavor-mcp")
 
 
 class BigFlavorMCPServer:
-    """MCP Server for Big Flavor band song library management."""
+    """MCP Server for Big Flavor audio production and analysis operations."""
     
-    def __init__(
-        self, 
-        base_url: str = "https://bigflavorband.com", 
-        enable_audio_analysis: bool = True,
-        enable_rag: bool = True
-    ):
-        self.base_url = base_url
-        self.rss_url = f"{base_url}/rss"
+    def __init__(self, enable_audio_analysis: bool = True):
         self.app = Server("big-flavor-band-server")
-        self.songs_cache = []
-        self.last_fetch_time = None
         self.enable_audio_analysis = enable_audio_analysis
         self.audio_cache = AudioAnalysisCache() if enable_audio_analysis else None
-        self.enable_rag = enable_rag
         self.db_manager = None
-        self.rag_system = None
         self.setup_handlers()
     
-    async def initialize_rag(self):
-        """Initialize RAG system with database connection."""
-        if self.enable_rag and self.rag_system is None:
-            try:
-                self.db_manager = DatabaseManager()
-                await self.db_manager.connect()
-                self.rag_system = SongRAGSystem(self.db_manager, use_clap=True)
-                logger.info("RAG system initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize RAG system: {e}")
-                self.enable_rag = False
+    async def initialize(self):
+        """Initialize database connection."""
+        try:
+            self.db_manager = DatabaseManager()
+            await self.db_manager.connect()
+            logger.info("Database connection initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
     
     def setup_handlers(self):
-        """Set up MCP request handlers."""
+        """Set up MCP request handlers for production/write operations."""
         
         @self.app.list_tools()
         async def list_tools() -> list[Tool]:
-            """List available tools for the Big Flavor band agent."""
+            """List available audio production tools."""
             return [
                 Tool(
-                    name="get_song_library",
-                    description="Fetch the complete song library from bigflavorband.com",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    }
-                ),
-                Tool(
-                    name="search_songs",
-                    description="Search for songs by title, artist, genre, or mood",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query for song title, genre, or mood"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                ),
-                Tool(
-                    name="get_song_details",
-                    description="Get detailed information about a specific song",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "song_id": {
-                                "type": "string",
-                                "description": "Unique identifier for the song"
-                            }
-                        },
-                        "required": ["song_id"]
-                    }
-                ),
-                Tool(
-                    name="filter_songs_by_genre",
-                    description="Filter songs by specific genre(s)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "genres": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "List of genres to filter by"
-                            }
-                        },
-                        "required": ["genres"]
-                    }
-                ),
-                Tool(
-                    name="filter_songs_by_tempo",
-                    description="Filter songs by tempo range (BPM)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "min_tempo": {
-                                "type": "number",
-                                "description": "Minimum tempo in BPM"
-                            },
-                            "max_tempo": {
-                                "type": "number",
-                                "description": "Maximum tempo in BPM"
-                            }
-                        },
-                        "required": ["min_tempo", "max_tempo"]
-                    }
-                ),
-                Tool(
-                    name="analyze_song_metadata",
-                    description="Analyze metadata of a song including key, tempo, energy, mood",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "song_id": {
-                                "type": "string",
-                                "description": "Song identifier to analyze"
-                            }
-                        },
-                        "required": ["song_id"]
-                    }
-                ),
-                Tool(
-                    name="analyze_local_audio",
-                    description="Analyze a local audio file to extract BPM, key, genre hints, and energy",
+                    name="analyze_audio",
+                    description="Extract tempo, key, beats, and other audio features from an audio file",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "file_path": {
                                 "type": "string",
-                                "description": "Path to the local audio file (MP3, WAV, etc.)"
+                                "description": "Path to the audio file (MP3, WAV, etc.)"
                             }
                         },
                         "required": ["file_path"]
+                    }
+                ),
+                Tool(
+                    name="match_tempo",
+                    description="Time-stretch audio to a specific BPM without changing pitch",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the audio file to time-stretch"
+                            },
+                            "target_bpm": {
+                                "type": "number",
+                                "description": "Target tempo in BPM"
+                            },
+                            "output_path": {
+                                "type": "string",
+                                "description": "Output path for the processed file"
+                            }
+                        },
+                        "required": ["file_path", "target_bpm", "output_path"]
+                    }
+                ),
+                Tool(
+                    name="create_transition",
+                    description="Create a beat-matched DJ transition between two songs",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "song1_path": {
+                                "type": "string",
+                                "description": "Path to the first song"
+                            },
+                            "song2_path": {
+                                "type": "string",
+                                "description": "Path to the second song"
+                            },
+                            "transition_duration": {
+                                "type": "number",
+                                "description": "Duration of transition in seconds (default: 8)"
+                            },
+                            "output_path": {
+                                "type": "string",
+                                "description": "Output path for the transition"
+                            }
+                        },
+                        "required": ["song1_path", "song2_path", "output_path"]
+                    }
+                ),
+                Tool(
+                    name="apply_mastering",
+                    description="Apply professional mastering to make audio louder and more polished",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the audio file to master"
+                            },
+                            "target_loudness": {
+                                "type": "number",
+                                "description": "Target LUFS loudness (default: -14.0)"
+                            },
+                            "output_path": {
+                                "type": "string",
+                                "description": "Output path for the mastered file"
+                            }
+                        },
+                        "required": ["file_path", "output_path"]
                     }
                 ),
                 Tool(
@@ -171,133 +141,14 @@ class BigFlavorMCPServer:
                         "properties": {},
                     }
                 ),
-                Tool(
-                    name="semantic_search_by_audio",
-                    description="Find songs that sound similar to a reference audio file using AI embeddings",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "audio_path": {
-                                "type": "string",
-                                "description": "Path to the reference audio file"
-                            },
-                            "limit": {
-                                "type": "number",
-                                "description": "Maximum number of results to return (default: 10)"
-                            },
-                            "similarity_threshold": {
-                                "type": "number",
-                                "description": "Minimum similarity score 0-1 (default: 0.5)"
-                            }
-                        },
-                        "required": ["audio_path"]
-                    }
-                ),
-                Tool(
-                    name="get_similar_songs",
-                    description="Find songs similar to a given song using embeddings",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "song_id": {
-                                "type": "string",
-                                "description": "ID of the reference song"
-                            },
-                            "limit": {
-                                "type": "number",
-                                "description": "Maximum number of results to return (default: 10)"
-                            },
-                            "similarity_threshold": {
-                                "type": "number",
-                                "description": "Minimum similarity score 0-1 (default: 0.5)"
-                            }
-                        },
-                        "required": ["song_id"]
-                    }
-                ),
-                Tool(
-                    name="search_by_tempo_and_similarity",
-                    description="Find songs with similar tempo and optionally similar sound",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "target_tempo": {
-                                "type": "number",
-                                "description": "Target tempo in BPM"
-                            },
-                            "reference_audio_path": {
-                                "type": "string",
-                                "description": "Optional: path to audio file for sonic similarity"
-                            },
-                            "tempo_tolerance": {
-                                "type": "number",
-                                "description": "BPM tolerance (default: 10.0)"
-                            },
-                            "limit": {
-                                "type": "number",
-                                "description": "Maximum number of results (default: 10)"
-                            }
-                        },
-                        "required": ["target_tempo"]
-                    }
-                ),
-                Tool(
-                    name="get_embedding_stats",
-                    description="Get statistics about indexed song embeddings in the RAG system",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    }
-                ),
-                Tool(
-                    name="find_songs_without_embeddings",
-                    description="Find songs that haven't been indexed yet in the RAG system",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    }
-                ),
-                Tool(
-                    name="search_by_filters",
-                    description="Search songs by specific musical criteria. YOU (the LLM) should interpret user intent and choose appropriate filter values. Examples: 'sleep songs' → tempo_max=90, 'workout songs' → tempo_min=120, 'jazz' → genre='jazz'. Combine filters for best results.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "tempo_min": {
-                                "type": "number",
-                                "description": "Minimum tempo in BPM. Use for energetic/fast songs (e.g., 120+ for workout, 110+ for dance)"
-                            },
-                            "tempo_max": {
-                                "type": "number",
-                                "description": "Maximum tempo in BPM. Use for calm/slow songs (e.g., 90 for sleep/relax, 100 for mellow)"
-                            },
-                            "genre": {
-                                "type": "string",
-                                "description": "Genre filter (partial match, case-insensitive). E.g., 'rock', 'jazz', 'blues', 'acoustic'"
-                            },
-                            "title_keywords": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Keywords to search in title/genre (OR condition). Only used if no tempo/genre filters."
-                            },
-                            "limit": {
-                                "type": "number",
-                                "description": "Maximum number of results (default: 10)"
-                            }
-                        },
-                        "required": []
-                    }
-                ),
             ]
         
         @self.app.call_tool()
         async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             """Handle tool execution requests."""
             try:
-                if name == "get_song_library":
-                    result = await self.get_song_library()
-                elif name == "search_songs":
-                    result = await self.search_songs(arguments["query"])
+                if name == "analyze_audio":
+                    result = await self.analyze_audio(arguments["file_path"])
                 elif name == "get_song_details":
                     result = await self.get_song_details(arguments["song_id"])
                 elif name == "filter_songs_by_genre":

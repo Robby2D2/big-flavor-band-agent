@@ -323,6 +323,111 @@ class SongRAGSystem:
         logger.info(f"Hybrid search found {len(results)} results")
         return results
     
+    async def search_by_tempo_range(
+        self,
+        min_tempo: Optional[float] = None,
+        max_tempo: Optional[float] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Find songs within a specific tempo range (BPM).
+        
+        Args:
+            min_tempo: Minimum tempo in BPM (optional)
+            max_tempo: Maximum tempo in BPM (optional)
+            limit: Maximum number of results
+        
+        Returns:
+            List of matching songs
+        """
+        conditions = []
+        params = []
+        param_count = 0
+        
+        if min_tempo is not None:
+            param_count += 1
+            conditions.append(f"(ae.librosa_features->>'tempo')::float >= ${param_count}")
+            params.append(min_tempo)
+        
+        if max_tempo is not None:
+            param_count += 1
+            conditions.append(f"(ae.librosa_features->>'tempo')::float <= ${param_count}")
+            params.append(max_tempo)
+        
+        where_clause = " AND ".join(conditions) if conditions else "TRUE"
+        param_count += 1
+        params.append(limit)
+        
+        query = f"""
+            SELECT 
+                s.id,
+                s.title,
+                s.genre,
+                ae.audio_path,
+                (ae.librosa_features->>'tempo')::float as tempo_bpm
+            FROM songs s
+            JOIN audio_embeddings ae ON s.id = ae.song_id
+            WHERE {where_clause}
+            ORDER BY tempo_bpm
+            LIMIT ${param_count}
+        """
+        
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+        
+        results = [dict(row) for row in rows]
+        logger.info(f"Tempo range search found {len(results)} results")
+        return results
+    
+    async def search_by_text_description(
+        self,
+        description: str,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Find songs matching a text description like 'ambient sleep music' or 'energetic workout beats'.
+        Uses simple keyword matching across title, genre, and tags.
+        
+        Args:
+            description: Text description of desired music
+            limit: Maximum number of results
+        
+        Returns:
+            List of matching songs
+        """
+        # Extract keywords from description
+        keywords = description.lower().split()
+        
+        # Build search query with keyword matching
+        query = """
+            SELECT DISTINCT
+                s.id,
+                s.title,
+                s.genre,
+                s.audio_url,
+                ae.audio_path,
+                (ae.librosa_features->>'tempo')::float as tempo_bpm,
+                COUNT(*) OVER (PARTITION BY s.id) as match_count
+            FROM songs s
+            LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
+            WHERE 
+                s.title ILIKE ANY($1) OR
+                s.genre ILIKE ANY($1) OR
+                s.description ILIKE ANY($1)
+            ORDER BY match_count DESC, s.title
+            LIMIT $2
+        """
+        
+        # Create LIKE patterns for each keyword
+        patterns = [f"%{keyword}%" for keyword in keywords]
+        
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, patterns, limit)
+        
+        results = [dict(row) for row in rows]
+        logger.info(f"Text description search found {len(results)} results for '{description}'")
+        return results
+    
     async def search_by_tempo_and_audio(
         self,
         target_tempo: float,
