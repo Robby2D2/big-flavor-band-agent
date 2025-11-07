@@ -141,6 +141,24 @@ class BigFlavorAgent:
                 }
             },
             {
+                "name": "find_song_by_title",
+                "description": "Find songs in the library by title. Use fuzzy matching to find songs even if the title is not exact. This is useful when the user mentions a song title and you need to find similar songs in the library.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Song title to search for (supports partial/fuzzy matching)"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results (default: 10)"
+                        }
+                    },
+                    "required": ["title"]
+                }
+            },
+            {
                 "name": "search_by_tempo_range",
                 "description": "Find songs within a specific tempo range (BPM). Perfect for finding songs at a specific speed.",
                 "input_schema": {
@@ -350,6 +368,7 @@ class BigFlavorAgent:
         rag_tools = {
             "search_by_audio_file",
             "search_by_text_description",
+            "find_song_by_title",
             "search_by_tempo_range",
             "search_hybrid"
         }
@@ -376,6 +395,18 @@ class BigFlavorAgent:
                     result = {
                         "status": "success",
                         "query_audio": tool_input["audio_path"],
+                        "results_count": len(results),
+                        "songs": results
+                    }
+                elif tool_name == "find_song_by_title":
+                    results = await self.rag_system.find_song_by_title(
+                        tool_input["title"],
+                        limit=tool_input.get("limit", 10),
+                        fuzzy=True
+                    )
+                    result = {
+                        "status": "success",
+                        "query_title": tool_input["title"],
                         "results_count": len(results),
                         "songs": results
                     }
@@ -477,6 +508,7 @@ class BigFlavorAgent:
 
 SEARCH TOOLS (RAG System - direct library access):
 - search_by_audio_file: Find songs that SOUND similar (most powerful for sonic matching)
+- find_song_by_title: Find songs by title (use this FIRST when user mentions a song name)
 - search_by_text_description: Natural language search ("chill jazz", "upbeat workout")
 - search_by_tempo_range: Find songs by BPM
 - search_hybrid: Combine multiple criteria for best results
@@ -489,13 +521,16 @@ PRODUCTION TOOLS (MCP Server - audio processing):
 
 CRITICAL RULES:
 1. Use search tools to FIND songs, use production tools to MODIFY audio
-2. NEVER make up or hallucinate song information
-3. Only recommend songs from actual search results
-4. If no results found, tell the user honestly
-5. Use your music knowledge to interpret user intent
+2. When user mentions a song title, FIRST use find_song_by_title to look it up in the library
+3. If find_song_by_title returns results, use the audio_path from those results for similarity searches
+4. NEVER make up or hallucinate song information
+5. Only recommend songs from actual search results
+6. If no results found, tell the user honestly
+7. Use your music knowledge to interpret user intent
 
 EXAMPLES:
 - "Find sleep music" → search_by_text_description("calm sleep ambient")
+- "Find songs like Going to California" → find_song_by_title("Going to California") then search_by_audio_file(result.audio_path)
 - "Find songs like this.mp3" → search_by_audio_file("this.mp3")
 - "Find 120 BPM songs" → search_by_tempo_range(min=115, max=125)
 - "Make this song 128 BPM" → match_tempo(file, 128, output)

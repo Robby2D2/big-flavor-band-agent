@@ -1,6 +1,9 @@
 -- Enable pgvector extension
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- Enable pg_trgm extension for text similarity search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 -- Songs table
 CREATE TABLE songs (
     id VARCHAR(50) PRIMARY KEY,

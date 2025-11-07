@@ -479,6 +479,72 @@ class SongRAGSystem:
         results = [dict(row) for row in rows]
         return results
     
+    async def find_song_by_title(
+        self,
+        title: str,
+        limit: int = 10,
+        fuzzy: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Find songs by title with optional fuzzy matching.
+        
+        Args:
+            title: Song title to search for
+            limit: Maximum number of results
+            fuzzy: If True, use fuzzy matching (ILIKE); if False, exact match
+        
+        Returns:
+            List of matching songs with their audio paths
+        """
+        if fuzzy:
+            # Use ILIKE for case-insensitive fuzzy matching
+            # Order by length to prefer closer matches
+            query = """
+                SELECT 
+                    s.id,
+                    s.title,
+                    s.genre,
+                    s.audio_url,
+                    s.mood,
+                    s.energy,
+                    ae.audio_path,
+                    (ae.librosa_features->>'tempo')::float as tempo_bpm,
+                    LENGTH(s.title) as title_length
+                FROM songs s
+                LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
+                WHERE s.title ILIKE $1
+                ORDER BY title_length, s.title
+                LIMIT $2
+            """
+            pattern = f"%{title}%"
+            
+            async with self.db.pool.acquire() as conn:
+                rows = await conn.fetch(query, pattern, limit)
+        else:
+            # Exact match
+            query = """
+                SELECT 
+                    s.id,
+                    s.title,
+                    s.genre,
+                    s.audio_url,
+                    s.mood,
+                    s.energy,
+                    ae.audio_path,
+                    (ae.librosa_features->>'tempo')::float as tempo_bpm
+                FROM songs s
+                LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
+                WHERE s.title = $1
+                LIMIT $2
+            """
+            
+            async with self.db.pool.acquire() as conn:
+                rows = await conn.fetch(query, title, limit)
+        
+        results = [dict(row) for row in rows]
+        logger.info(f"Title search for '{title}' found {len(results)} results")
+        return results
+    
     async def get_song_embedding(self, song_id: str) -> Optional[Dict[str, Any]]:
         """
         Get stored embedding for a song.
