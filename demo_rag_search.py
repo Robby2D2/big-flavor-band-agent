@@ -21,7 +21,7 @@ logger = logging.getLogger("demo")
 
 
 def print_results(results: List[Dict[str, Any]], title: str = "Results"):
-    """Pretty print search results."""
+    """Pretty print search results with ALL available information."""
     print(f"\n{'='*70}")
     print(f"  {title}")
     print('='*70)
@@ -32,7 +32,9 @@ def print_results(results: List[Dict[str, Any]], title: str = "Results"):
     
     for i, result in enumerate(results, 1):
         print(f"\n{i}. {result.get('title', 'Unknown Title')}")
+        print(f"   Song ID: {result.get('song_id', 'N/A')}")
         
+        # Similarity scores
         if 'similarity' in result:
             print(f"   Similarity: {result['similarity']:.3f}")
         
@@ -41,27 +43,74 @@ def print_results(results: List[Dict[str, Any]], title: str = "Results"):
             if 'audio_similarity' in result:
                 print(f"   Audio: {result['audio_similarity']:.3f} | Text: {result['text_similarity']:.3f}")
         
+        # Basic song info
         if 'genre' in result and result['genre']:
             print(f"   Genre: {result['genre']}")
         
+        if 'rating' in result and result['rating'] is not None:
+            print(f"   Rating: {'⭐' * result['rating']} ({result['rating']}/5)")
+        
+        if 'session' in result and result['session']:
+            print(f"   Session: {result['session']}")
+        
+        if 'is_original' in result and result['is_original'] is not None:
+            print(f"   Original: {'Yes' if result['is_original'] else 'No (Cover)'}")
+        
+        if 'track_number' in result and result['track_number']:
+            print(f"   Track #: {result['track_number']}")
+        
+        # Dates
+        if 'recorded_on' in result and result['recorded_on']:
+            print(f"   Recorded: {result['recorded_on']}")
+        
+        if 'uploaded_on' in result and result['uploaded_on']:
+            print(f"   Uploaded: {result['uploaded_on']}")
+        
+        # Audio features
         if 'tempo_bpm' in result and result['tempo_bpm']:
             print(f"   Tempo: {result['tempo_bpm']:.1f} BPM")
         
         if 'tempo_diff' in result:
             print(f"   Tempo difference: ±{result['tempo_diff']:.1f} BPM")
         
-        if 'audio_path' in result:
+        if 'audio_path' in result and result['audio_path']:
             print(f"   File: {Path(result['audio_path']).name}")
         
-        # Show some librosa features if available
+        # Detailed librosa features if available
         if 'librosa_features' in result and result['librosa_features']:
-            import json
             # librosa_features might be stored as JSON string
             features = json.loads(result['librosa_features']) if isinstance(result['librosa_features'], str) else result['librosa_features']
+            
+            print(f"\n   Audio Analysis:")
             if 'estimated_key' in features:
-                print(f"   Key: {features['estimated_key']}")
+                print(f"     Key: {features['estimated_key']}")
+            if 'duration' in features:
+                print(f"     Duration: {features['duration']:.1f}s")
             if 'spectral_centroid_mean' in features:
-                print(f"   Brightness: {features['spectral_centroid_mean']:.0f} Hz")
+                print(f"     Brightness: {features['spectral_centroid_mean']:.0f} Hz")
+            if 'rms_mean' in features:
+                print(f"     Energy (RMS): {features['rms_mean']:.4f}")
+            if 'zcr_mean' in features:
+                print(f"     Zero Crossing Rate: {features['zcr_mean']:.4f}")
+            if 'spectral_rolloff_mean' in features:
+                print(f"     Spectral Rolloff: {features['spectral_rolloff_mean']:.0f} Hz")
+            if 'spectral_bandwidth_mean' in features:
+                print(f"     Spectral Bandwidth: {features['spectral_bandwidth_mean']:.0f} Hz")
+        
+        # Show any additional fields that might be present
+        excluded_keys = {
+            'title', 'song_id', 'similarity', 'combined_score', 'audio_similarity', 
+            'text_similarity', 'genre', 'rating', 'session', 'is_original', 
+            'track_number', 'recorded_on', 'uploaded_on', 'tempo_bpm', 'tempo_diff', 
+            'audio_path', 'librosa_features'
+        }
+        
+        extra_fields = {k: v for k, v in result.items() if k not in excluded_keys and v is not None}
+        if extra_fields:
+            print(f"\n   Additional Info:")
+            for key, value in extra_fields.items():
+                if isinstance(value, (int, float, str, bool)):
+                    print(f"     {key}: {value}")
 
 
 async def demo_audio_similarity_search(rag: SongRAGSystem, audio_library: Path):

@@ -101,7 +101,13 @@ RETURNS TABLE (
     tempo_bpm FLOAT,
     audio_path TEXT,
     similarity FLOAT,
-    librosa_features JSONB
+    librosa_features JSONB,
+    rating INTEGER,
+    session VARCHAR(100),
+    uploaded_on TIMESTAMP,
+    recorded_on DATE,
+    is_original BOOLEAN,
+    track_number INTEGER
 ) AS $$
 BEGIN
     RETURN QUERY
@@ -112,7 +118,13 @@ BEGIN
         s.tempo_bpm,
         ae.audio_path,
         1 - (ae.combined_embedding <=> query_embedding) AS similarity,
-        ae.librosa_features
+        ae.librosa_features,
+        s.rating,
+        s.session,
+        s.uploaded_on,
+        s.recorded_on,
+        s.is_original,
+        s.track_number
     FROM audio_embeddings ae
     JOIN songs s ON ae.song_id = s.id
     WHERE 1 - (ae.combined_embedding <=> query_embedding) >= similarity_threshold
@@ -164,14 +176,25 @@ RETURNS TABLE (
     genre VARCHAR(100),
     combined_score FLOAT,
     audio_similarity FLOAT,
-    text_similarity FLOAT
+    text_similarity FLOAT,
+    rating INTEGER,
+    session VARCHAR(100),
+    uploaded_on TIMESTAMP,
+    recorded_on DATE,
+    is_original BOOLEAN,
+    track_number INTEGER,
+    tempo_bpm FLOAT,
+    audio_path TEXT,
+    librosa_features JSONB
 ) AS $$
 BEGIN
     RETURN QUERY
     WITH audio_scores AS (
         SELECT 
             ae.song_id,
-            1 - (ae.combined_embedding <=> audio_query_embedding) AS audio_sim
+            1 - (ae.combined_embedding <=> audio_query_embedding) AS audio_sim,
+            ae.audio_path,
+            ae.librosa_features
         FROM audio_embeddings ae
     ),
     text_scores AS (
@@ -187,7 +210,16 @@ BEGIN
         s.genre,
         (COALESCE(a.audio_sim, 0) * audio_weight + COALESCE(t.text_sim, 0) * text_weight) AS combined_score,
         COALESCE(a.audio_sim, 0) AS audio_similarity,
-        COALESCE(t.text_sim, 0) AS text_similarity
+        COALESCE(t.text_sim, 0) AS text_similarity,
+        s.rating,
+        s.session,
+        s.uploaded_on,
+        s.recorded_on,
+        s.is_original,
+        s.track_number,
+        s.tempo_bpm,
+        a.audio_path,
+        a.librosa_features
     FROM songs s
     LEFT JOIN audio_scores a ON s.id = a.song_id
     LEFT JOIN text_scores t ON s.id = t.song_id
@@ -209,7 +241,16 @@ RETURNS TABLE (
     title VARCHAR(255),
     tempo_bpm FLOAT,
     tempo_diff FLOAT,
-    audio_similarity FLOAT
+    audio_similarity FLOAT,
+    genre VARCHAR(100),
+    rating INTEGER,
+    session VARCHAR(100),
+    uploaded_on TIMESTAMP,
+    recorded_on DATE,
+    is_original BOOLEAN,
+    track_number INTEGER,
+    audio_path TEXT,
+    librosa_features JSONB
 ) AS $$
 BEGIN
     IF query_embedding IS NULL THEN
@@ -219,7 +260,16 @@ BEGIN
             s.title,
             s.tempo_bpm,
             ABS(s.tempo_bpm - target_tempo) AS tempo_diff,
-            NULL::FLOAT AS audio_similarity
+            NULL::FLOAT AS audio_similarity,
+            s.genre,
+            s.rating,
+            s.session,
+            s.uploaded_on,
+            s.recorded_on,
+            s.is_original,
+            s.track_number,
+            NULL::TEXT AS audio_path,
+            NULL::JSONB AS librosa_features
         FROM songs s
         WHERE s.tempo_bpm BETWEEN (target_tempo - tempo_tolerance) AND (target_tempo + tempo_tolerance)
         ORDER BY tempo_diff
@@ -231,7 +281,16 @@ BEGIN
             s.title,
             s.tempo_bpm,
             ABS(s.tempo_bpm - target_tempo) AS tempo_diff,
-            1 - (ae.combined_embedding <=> query_embedding) AS audio_similarity
+            1 - (ae.combined_embedding <=> query_embedding) AS audio_similarity,
+            s.genre,
+            s.rating,
+            s.session,
+            s.uploaded_on,
+            s.recorded_on,
+            s.is_original,
+            s.track_number,
+            ae.audio_path,
+            ae.librosa_features
         FROM songs s
         JOIN audio_embeddings ae ON s.id = ae.song_id
         WHERE s.tempo_bpm BETWEEN (target_tempo - tempo_tolerance) AND (target_tempo + tempo_tolerance)
