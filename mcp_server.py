@@ -18,6 +18,8 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from audio_analysis_cache import AudioAnalysisCache
+from database import DatabaseManager
+from rag_system import SongRAGSystem
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +29,12 @@ logger = logging.getLogger("big-flavor-mcp")
 class BigFlavorMCPServer:
     """MCP Server for Big Flavor band song library management."""
     
-    def __init__(self, base_url: str = "https://bigflavorband.com", enable_audio_analysis: bool = True):
+    def __init__(
+        self, 
+        base_url: str = "https://bigflavorband.com", 
+        enable_audio_analysis: bool = True,
+        enable_rag: bool = True
+    ):
         self.base_url = base_url
         self.rss_url = f"{base_url}/rss"
         self.app = Server("big-flavor-band-server")
@@ -35,7 +42,22 @@ class BigFlavorMCPServer:
         self.last_fetch_time = None
         self.enable_audio_analysis = enable_audio_analysis
         self.audio_cache = AudioAnalysisCache() if enable_audio_analysis else None
+        self.enable_rag = enable_rag
+        self.db_manager = None
+        self.rag_system = None
         self.setup_handlers()
+    
+    async def initialize_rag(self):
+        """Initialize RAG system with database connection."""
+        if self.enable_rag and self.rag_system is None:
+            try:
+                self.db_manager = DatabaseManager()
+                await self.db_manager.connect()
+                self.rag_system = SongRAGSystem(self.db_manager, use_clap=True)
+                logger.info("RAG system initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize RAG system: {e}")
+                self.enable_rag = False
     
     def setup_handlers(self):
         """Set up MCP request handlers."""
@@ -149,6 +171,92 @@ class BigFlavorMCPServer:
                         "properties": {},
                     }
                 ),
+                Tool(
+                    name="semantic_search_by_audio",
+                    description="Find songs that sound similar to a reference audio file using AI embeddings",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "audio_path": {
+                                "type": "string",
+                                "description": "Path to the reference audio file"
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Maximum number of results to return (default: 10)"
+                            },
+                            "similarity_threshold": {
+                                "type": "number",
+                                "description": "Minimum similarity score 0-1 (default: 0.5)"
+                            }
+                        },
+                        "required": ["audio_path"]
+                    }
+                ),
+                Tool(
+                    name="get_similar_songs",
+                    description="Find songs similar to a given song using embeddings",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "song_id": {
+                                "type": "string",
+                                "description": "ID of the reference song"
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Maximum number of results to return (default: 10)"
+                            },
+                            "similarity_threshold": {
+                                "type": "number",
+                                "description": "Minimum similarity score 0-1 (default: 0.5)"
+                            }
+                        },
+                        "required": ["song_id"]
+                    }
+                ),
+                Tool(
+                    name="search_by_tempo_and_similarity",
+                    description="Find songs with similar tempo and optionally similar sound",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "target_tempo": {
+                                "type": "number",
+                                "description": "Target tempo in BPM"
+                            },
+                            "reference_audio_path": {
+                                "type": "string",
+                                "description": "Optional: path to audio file for sonic similarity"
+                            },
+                            "tempo_tolerance": {
+                                "type": "number",
+                                "description": "BPM tolerance (default: 10.0)"
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Maximum number of results (default: 10)"
+                            }
+                        },
+                        "required": ["target_tempo"]
+                    }
+                ),
+                Tool(
+                    name="get_embedding_stats",
+                    description="Get statistics about indexed song embeddings in the RAG system",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    }
+                ),
+                Tool(
+                    name="find_songs_without_embeddings",
+                    description="Find songs that haven't been indexed yet in the RAG system",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    }
+                ),
             ]
         
         @self.app.call_tool()
@@ -174,6 +282,34 @@ class BigFlavorMCPServer:
                     result = await self.analyze_local_audio(arguments["file_path"])
                 elif name == "get_audio_cache_stats":
                     result = await self.get_audio_cache_stats()
+                elif name == "semantic_search_by_audio":
+                    await self.initialize_rag()
+                    result = await self.semantic_search_by_audio(
+                        arguments["audio_path"],
+                        arguments.get("limit", 10),
+                        arguments.get("similarity_threshold", 0.5)
+                    )
+                elif name == "get_similar_songs":
+                    await self.initialize_rag()
+                    result = await self.get_similar_songs(
+                        arguments["song_id"],
+                        arguments.get("limit", 10),
+                        arguments.get("similarity_threshold", 0.5)
+                    )
+                elif name == "search_by_tempo_and_similarity":
+                    await self.initialize_rag()
+                    result = await self.search_by_tempo_and_similarity(
+                        arguments["target_tempo"],
+                        arguments.get("reference_audio_path"),
+                        arguments.get("tempo_tolerance", 10.0),
+                        arguments.get("limit", 10)
+                    )
+                elif name == "get_embedding_stats":
+                    await self.initialize_rag()
+                    result = await self.get_embedding_stats()
+                elif name == "find_songs_without_embeddings":
+                    await self.initialize_rag()
+                    result = await self.find_songs_without_embeddings()
                 else:
                     result = {"error": f"Unknown tool: {name}"}
                 
@@ -647,19 +783,231 @@ class BigFlavorMCPServer:
             }
         ]
     
+    # ==================== RAG System Methods ====================
+    
+    async def semantic_search_by_audio(
+        self, 
+        audio_path: str,
+        limit: int = 10,
+        similarity_threshold: float = 0.5
+    ) -> dict:
+        """
+        Find songs that sound similar to a reference audio file.
+        
+        Args:
+            audio_path: Path to reference audio file
+            limit: Maximum number of results
+            similarity_threshold: Minimum similarity score (0-1)
+        
+        Returns:
+            Dictionary with search results and metadata
+        """
+        if not self.enable_rag or self.rag_system is None:
+            return {
+                "error": "RAG system not enabled or not initialized",
+                "results": []
+            }
+        
+        try:
+            logger.info(f"Semantic audio search for: {audio_path}")
+            results = await self.rag_system.search_by_audio_similarity(
+                audio_path,
+                limit=limit,
+                similarity_threshold=similarity_threshold
+            )
+            
+            return {
+                "query_audio": audio_path,
+                "total_results": len(results),
+                "similarity_threshold": similarity_threshold,
+                "results": results
+            }
+        except Exception as e:
+            logger.error(f"Error in semantic audio search: {e}")
+            return {
+                "error": str(e),
+                "results": []
+            }
+    
+    async def get_similar_songs(
+        self,
+        song_id: str,
+        limit: int = 10,
+        similarity_threshold: float = 0.5
+    ) -> dict:
+        """
+        Find songs similar to a given song using embeddings.
+        
+        Args:
+            song_id: ID of reference song
+            limit: Maximum number of results
+            similarity_threshold: Minimum similarity score (0-1)
+        
+        Returns:
+            Dictionary with similar songs
+        """
+        if not self.enable_rag or self.rag_system is None:
+            return {
+                "error": "RAG system not enabled or not initialized",
+                "results": []
+            }
+        
+        try:
+            # Get the embedding for this song
+            embedding_data = await self.rag_system.get_song_embedding(song_id)
+            
+            if not embedding_data:
+                return {
+                    "error": f"No embedding found for song {song_id}",
+                    "results": []
+                }
+            
+            # Parse the embedding vector
+            import ast
+            combined_embedding = ast.literal_eval(embedding_data['combined_embedding'])
+            
+            # Search using this embedding
+            results = await self.rag_system.search_by_embedding(
+                combined_embedding,
+                limit=limit + 1,  # +1 because the song itself will be in results
+                similarity_threshold=similarity_threshold
+            )
+            
+            # Filter out the query song itself
+            filtered_results = [r for r in results if r.get('song_id') != song_id][:limit]
+            
+            return {
+                "reference_song_id": song_id,
+                "total_results": len(filtered_results),
+                "similarity_threshold": similarity_threshold,
+                "results": filtered_results
+            }
+        except Exception as e:
+            logger.error(f"Error finding similar songs: {e}")
+            return {
+                "error": str(e),
+                "results": []
+            }
+    
+    async def search_by_tempo_and_similarity(
+        self,
+        target_tempo: float,
+        reference_audio_path: Optional[str] = None,
+        tempo_tolerance: float = 10.0,
+        limit: int = 10
+    ) -> dict:
+        """
+        Find songs with similar tempo and optionally similar sound.
+        
+        Args:
+            target_tempo: Target BPM
+            reference_audio_path: Optional audio file for sonic similarity
+            tempo_tolerance: BPM tolerance (±)
+            limit: Maximum number of results
+        
+        Returns:
+            Dictionary with matching songs
+        """
+        if not self.enable_rag or self.rag_system is None:
+            return {
+                "error": "RAG system not enabled or not initialized",
+                "results": []
+            }
+        
+        try:
+            logger.info(f"Tempo search: {target_tempo} BPM (±{tempo_tolerance})")
+            
+            results = await self.rag_system.search_by_tempo_and_audio(
+                target_tempo=target_tempo,
+                reference_audio_path=reference_audio_path,
+                tempo_tolerance=tempo_tolerance,
+                limit=limit
+            )
+            
+            return {
+                "target_tempo": target_tempo,
+                "tempo_tolerance": tempo_tolerance,
+                "reference_audio": reference_audio_path,
+                "total_results": len(results),
+                "results": results
+            }
+        except Exception as e:
+            logger.error(f"Error in tempo search: {e}")
+            return {
+                "error": str(e),
+                "results": []
+            }
+    
+    async def get_embedding_stats(self) -> dict:
+        """
+        Get statistics about indexed song embeddings.
+        
+        Returns:
+            Dictionary with embedding statistics
+        """
+        if not self.enable_rag or self.rag_system is None:
+            return {
+                "error": "RAG system not enabled or not initialized"
+            }
+        
+        try:
+            stats = await self.rag_system.get_embedding_stats()
+            return {
+                "status": "success",
+                "statistics": stats
+            }
+        except Exception as e:
+            logger.error(f"Error getting embedding stats: {e}")
+            return {
+                "error": str(e)
+            }
+    
+    async def find_songs_without_embeddings(self) -> dict:
+        """
+        Find songs that haven't been indexed yet.
+        
+        Returns:
+            Dictionary with unindexed songs
+        """
+        if not self.enable_rag or self.rag_system is None:
+            return {
+                "error": "RAG system not enabled or not initialized",
+                "songs": []
+            }
+        
+        try:
+            songs = await self.rag_system.find_songs_without_embeddings()
+            return {
+                "status": "success",
+                "total_unindexed": len(songs),
+                "songs": songs
+            }
+        except Exception as e:
+            logger.error(f"Error finding unindexed songs: {e}")
+            return {
+                "error": str(e),
+                "songs": []
+            }
+    
     async def run(self):
         """Run the MCP server."""
-        async with stdio_server() as (read_stream, write_stream):
-            await self.app.run(
-                read_stream,
-                write_stream,
-                self.app.create_initialization_options()
-            )
+        try:
+            async with stdio_server() as (read_stream, write_stream):
+                await self.app.run(
+                    read_stream,
+                    write_stream,
+                    self.app.create_initialization_options()
+                )
+        finally:
+            # Cleanup database connection
+            if self.db_manager:
+                await self.db_manager.close()
+                logger.info("Database connection closed")
 
 
 async def main():
     """Main entry point for the MCP server."""
-    server = BigFlavorMCPServer()
+    server = BigFlavorMCPServer(enable_rag=True)
     await server.run()
 
 
