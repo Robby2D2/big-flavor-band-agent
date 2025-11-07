@@ -22,6 +22,7 @@ asyncio
 librosa>=0.10.0  # For audio analysis (BPM, genre detection)
 numpy>=1.24.0  # For numerical operations (required by librosa)
 soundfile>=0.12.0  # For audio file I/O (required by librosa)
+scipy>=1.11.0  # For signal processing and filters
 
 # RAG and embedding dependencies
 torch>=2.0.0  # PyTorch for deep learning models

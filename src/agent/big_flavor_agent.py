@@ -295,6 +295,163 @@ class BigFlavorAgent:
                     "required": ["file_path", "output_path"]
                 }
             },
+            # EDITING TOOLS (processing raw recordings)
+            {
+                "name": "trim_silence",
+                "description": "Remove silence from beginning and end of audio. Perfect for cleaning up raw recordings.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to audio file to trim"
+                        },
+                        "threshold_db": {
+                            "type": "number",
+                            "description": "Silence threshold in dB (default: -40)"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for trimmed file"
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
+            {
+                "name": "reduce_noise",
+                "description": "Remove background noise, hum, hiss, and feedback from audio recordings. Essential for cleaning raw live recordings.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to audio file to clean"
+                        },
+                        "noise_profile_duration": {
+                            "type": "number",
+                            "description": "Duration in seconds to sample for noise profile (default: 1.0)"
+                        },
+                        "reduction_strength": {
+                            "type": "number",
+                            "description": "Noise reduction strength 0-1 (default: 0.7)"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for cleaned file"
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
+            {
+                "name": "correct_pitch",
+                "description": "Apply pitch correction to fix wrong notes or tuning issues. Can auto-tune to nearest notes or shift by specific semitones.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to audio file to correct"
+                        },
+                        "semitones": {
+                            "type": "number",
+                            "description": "Semitones to shift (default: 0 for auto-tune)"
+                        },
+                        "auto_tune": {
+                            "type": "boolean",
+                            "description": "Enable automatic pitch correction to nearest notes (default: false)"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for corrected file"
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
+            {
+                "name": "normalize_audio",
+                "description": "Normalize audio levels and apply compression for consistent volume. Important step for production-ready audio.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to audio file to normalize"
+                        },
+                        "target_level_db": {
+                            "type": "number",
+                            "description": "Target peak level in dB (default: -3)"
+                        },
+                        "apply_compression": {
+                            "type": "boolean",
+                            "description": "Apply compression for dynamic range control (default: true)"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for normalized file"
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
+            {
+                "name": "apply_eq",
+                "description": "Apply equalizer filters to shape sound - remove mud, add clarity, filter unwanted frequencies. Essential for polishing recordings.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to audio file to EQ"
+                        },
+                        "high_pass_freq": {
+                            "type": "number",
+                            "description": "High-pass filter frequency in Hz (removes low rumble, default: 30)"
+                        },
+                        "low_pass_freq": {
+                            "type": "number",
+                            "description": "Low-pass filter frequency in Hz (removes high noise, optional)"
+                        },
+                        "boost_freq": {
+                            "type": "number",
+                            "description": "Frequency in Hz to boost (optional)"
+                        },
+                        "boost_db": {
+                            "type": "number",
+                            "description": "Boost amount in dB (default: 3)"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for EQ'd file"
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
+            {
+                "name": "remove_artifacts",
+                "description": "Detect and remove clicks, pops, and digital glitches from audio. Cleans up recording artifacts.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to audio file to clean"
+                        },
+                        "sensitivity": {
+                            "type": "number",
+                            "description": "Detection sensitivity 0-1 (default: 0.5)"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for cleaned file"
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
         ]
     
     async def _perform_hybrid_search(self, tool_input: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -378,7 +535,13 @@ class BigFlavorAgent:
             "analyze_audio",
             "match_tempo",
             "create_transition",
-            "apply_mastering"
+            "apply_mastering",
+            "trim_silence",
+            "reduce_noise",
+            "correct_pitch",
+            "normalize_audio",
+            "apply_eq",
+            "remove_artifacts"
         }
         
         logger.info(f"Calling tool: {tool_name}")
@@ -471,6 +634,49 @@ class BigFlavorAgent:
                         tool_input.get("target_loudness", -14.0),
                         tool_input["output_path"]
                     )
+                # EDITING TOOLS
+                elif tool_name == "trim_silence":
+                    result = await self.production_server.trim_silence(
+                        tool_input["file_path"],
+                        tool_input.get("threshold_db", -40),
+                        tool_input["output_path"]
+                    )
+                elif tool_name == "reduce_noise":
+                    result = await self.production_server.reduce_noise(
+                        tool_input["file_path"],
+                        tool_input.get("noise_profile_duration", 1.0),
+                        tool_input.get("reduction_strength", 0.7),
+                        tool_input["output_path"]
+                    )
+                elif tool_name == "correct_pitch":
+                    result = await self.production_server.correct_pitch(
+                        tool_input["file_path"],
+                        tool_input.get("semitones", 0),
+                        tool_input.get("auto_tune", False),
+                        tool_input["output_path"]
+                    )
+                elif tool_name == "normalize_audio":
+                    result = await self.production_server.normalize_audio(
+                        tool_input["file_path"],
+                        tool_input.get("target_level_db", -3),
+                        tool_input.get("apply_compression", True),
+                        tool_input["output_path"]
+                    )
+                elif tool_name == "apply_eq":
+                    result = await self.production_server.apply_eq(
+                        tool_input["file_path"],
+                        tool_input.get("high_pass_freq", 30),
+                        tool_input.get("low_pass_freq"),
+                        tool_input.get("boost_freq"),
+                        tool_input.get("boost_db", 3),
+                        tool_input["output_path"]
+                    )
+                elif tool_name == "remove_artifacts":
+                    result = await self.production_server.remove_artifacts(
+                        tool_input["file_path"],
+                        tool_input.get("sensitivity", 0.5),
+                        tool_input["output_path"]
+                    )
                 else:
                     result = {"error": f"Unknown production tool: {tool_name}"}
             else:
@@ -519,14 +725,31 @@ PRODUCTION TOOLS (MCP Server - audio processing):
 - create_transition: Create beat-matched DJ transitions with crossfading
 - apply_mastering: Professional mastering with compression and limiting
 
+EDITING TOOLS (MCP Server - processing raw recordings):
+- trim_silence: Remove silence from beginning/end of recordings
+- reduce_noise: Remove background noise, hum, hiss, and feedback
+- correct_pitch: Fix wrong notes or apply auto-tune
+- normalize_audio: Normalize levels and apply compression
+- apply_eq: Shape sound with EQ filters (remove mud, add clarity)
+- remove_artifacts: Remove clicks, pops, and glitches
+
 CRITICAL RULES:
-1. Use search tools to FIND songs, use production tools to MODIFY audio
+1. Use search tools to FIND songs, use production/editing tools to MODIFY audio
 2. When user mentions a song title, FIRST use find_song_by_title to look it up in the library
 3. If find_song_by_title returns results, use the audio_path from those results for similarity searches
 4. NEVER make up or hallucinate song information
 5. Only recommend songs from actual search results
 6. If no results found, tell the user honestly
 7. Use your music knowledge to interpret user intent
+
+WORKFLOW FOR RAW RECORDINGS:
+When processing a raw live recording into production-ready audio, suggest this workflow:
+1. trim_silence: Clean up the beginning/end
+2. reduce_noise: Remove background noise and hum
+3. correct_pitch: Fix any tuning issues (if needed)
+4. apply_eq: Remove mud (high-pass ~80Hz), add clarity
+5. normalize_audio: Even out levels with compression
+6. apply_mastering: Final loudness and polish
 
 EXAMPLES:
 - "Find sleep music" → search_by_text_description("calm sleep ambient")
@@ -535,6 +758,8 @@ EXAMPLES:
 - "Find 120 BPM songs" → search_by_tempo_range(min=115, max=125)
 - "Make this song 128 BPM" → match_tempo(file, 128, output)
 - "Create mix of song1 and song2" → create_transition(song1, song2, output)
+- "Clean up this raw recording" → Use the editing workflow above
+- "Remove noise from recording.wav" → reduce_noise(recording.wav, output)
 
 Always be helpful, accurate, and creative in helping users discover and work with music!"""
         
