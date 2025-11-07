@@ -1,0 +1,207 @@
+# RAG System Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         AUDIO FILES (.mp3)                          │
+│                     ~/audio_library/*.mp3                           │
+│                        (~1200 songs)                                │
+└────────────────────────┬────────────────────────────────────────────┘
+                         │
+                         │ index_audio_library.py
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│              AUDIO EMBEDDING EXTRACTOR                              │
+│                                                                      │
+│  ┌──────────────────────────┐    ┌────────────────────────────┐   │
+│  │   Librosa Analysis       │    │   CLAP Deep Learning       │   │
+│  │  ─────────────────       │    │   ─────────────────        │   │
+│  │  • Tempo (BPM)           │    │   • 512-dim semantic       │   │
+│  │  • Key estimation        │    │     embedding              │   │
+│  │  • MFCCs (13 coef)       │    │   • Trained on 400k+       │   │
+│  │  • Chroma (12 classes)   │    │     hours of audio         │   │
+│  │  • Spectral features     │    │   • Audio-text aligned     │   │
+│  │  • Tonnetz (6 dims)      │    │   • GPU accelerated        │   │
+│  │                          │    │                            │   │
+│  │  37-dimensional vector   │    │  512-dimensional vector    │   │
+│  └────────────┬─────────────┘    └────────────┬───────────────┘   │
+│               │                                │                    │
+│               └────────────┬───────────────────┘                    │
+│                            ▼                                        │
+│                  ┌──────────────────┐                              │
+│                  │ Combine & Norm   │                              │
+│                  │  (weighted avg)  │                              │
+│                  └────────┬─────────┘                              │
+│                           │                                         │
+│                  549-dimensional embedding                         │
+│                  (37 librosa + 512 CLAP)                           │
+└────────────────────────┬───────────────────────────────────────────┘
+                         │
+                         │ Store embeddings
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│              POSTGRESQL + PGVECTOR DATABASE                         │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ audio_embeddings                                             │  │
+│  │  ├─ song_id (FK to songs)                                    │  │
+│  │  ├─ audio_path (unique)                                      │  │
+│  │  ├─ combined_embedding: vector(549) ◄─ IVFFlat index       │  │
+│  │  ├─ clap_embedding: vector(512)                              │  │
+│  │  └─ librosa_features: JSONB                                  │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ text_embeddings                                              │  │
+│  │  ├─ song_id (FK to songs)                                    │  │
+│  │  ├─ content_type (title/genre/description)                   │  │
+│  │  ├─ content (text)                                           │  │
+│  │  └─ text_embedding: vector(1536) ◄─ IVFFlat index          │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ SQL Functions                                                │  │
+│  │  • search_similar_songs_by_audio(embedding, limit)           │  │
+│  │  • search_similar_songs_by_text(embedding, types, limit)     │  │
+│  │  • search_songs_hybrid(audio, text, weights, limit)          │  │
+│  │  • search_by_tempo_and_audio(tempo, tolerance, emb, limit)   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  Vector Similarity: cosine distance <=>                             │
+│  Search Speed: <50ms for 1000s of songs                             │
+└────────────────────────┬───────────────────────────────────────────┘
+                         │
+                         │ rag_system.py
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      RAG SYSTEM API                                 │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │ Search Methods                                               │  │
+│  │                                                              │  │
+│  │  1. search_by_audio_similarity(audio_path, limit, threshold)│  │
+│  │     → Find songs that sound similar                         │  │
+│  │                                                              │  │
+│  │  2. search_by_text(text_embedding, types, limit)            │  │
+│  │     → Find songs by metadata/description                    │  │
+│  │                                                              │  │
+│  │  3. search_hybrid(audio_emb, text_emb, weights, limit)      │  │
+│  │     → Combine audio + text with configurable weights        │  │
+│  │                                                              │  │
+│  │  4. search_by_tempo_and_audio(tempo, tolerance, ref, limit) │  │
+│  │     → Tempo-matched + sonically similar                     │  │
+│  │                                                              │  │
+│  │  5. index_audio_file(path, song_id)                         │  │
+│  │     → Add new song to index                                 │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└────────────────────────┬───────────────────────────────────────────┘
+                         │
+                         │ Applications
+                         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        USE CASES                                    │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
+│  │   Similar    │  │  Playlist    │  │     MCP      │             │
+│  │    Song      │  │  Generator   │  │   Server     │             │
+│  │  Discovery   │  │              │  │ Integration  │             │
+│  └──────────────┘  └──────────────┘  └──────────────┘             │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
+│  │  Recommend-  │  │    Music     │  │   Setlist    │             │
+│  │   ation      │  │  Analysis    │  │  Generator   │             │
+│  │   Engine     │  │              │  │              │             │
+│  └──────────────┘  └──────────────┘  └──────────────┘             │
+└─────────────────────────────────────────────────────────────────────┘
+
+
+EXAMPLE QUERY FLOW:
+═══════════════════
+
+User Query: "Find songs similar to Helpless.mp3"
+    │
+    ▼
+┌─────────────────────────────────────┐
+│ 1. Extract audio features           │
+│    Librosa: 37 dims                 │
+│    CLAP: 512 dims                   │
+│    Combined: 549 dims               │
+└────────────┬────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────┐
+│ 2. Query pgvector database          │
+│    SELECT * FROM                    │
+│    search_similar_songs_by_audio(   │
+│      embedding, limit=10, thresh=0.5│
+│    )                                │
+│    [Cosine similarity search]       │
+└────────────┬────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────┐
+│ 3. Return ranked results            │
+│    • Song A (similarity: 0.89)      │
+│    • Song B (similarity: 0.85)      │
+│    • Song C (similarity: 0.81)      │
+│    ...                              │
+└─────────────────────────────────────┘
+
+
+PERFORMANCE CHARACTERISTICS:
+═══════════════════════════
+
+Indexing (per song):
+├─ GPU + CLAP:      2-5 seconds
+├─ CPU + CLAP:      10-30 seconds
+└─ Librosa only:    1-2 seconds
+
+Search (1000 songs):
+├─ Audio similarity:  <50ms
+├─ Hybrid search:     <100ms
+└─ With filters:      <80ms
+
+Storage (per song):
+├─ Audio embedding:   2.5 KB
+├─ Text embedding:    6 KB
+└─ Librosa JSON:      ~1 KB
+
+Total for 1200 songs: ~10 MB
+
+
+KEY FEATURES:
+════════════
+
+✓ Multimodal embeddings (audio + text)
+✓ Fast vector similarity search (<50ms)
+✓ GPU-accelerated extraction
+✓ Scalable to millions of songs
+✓ Tempo-aware search
+✓ Hybrid weighted queries
+✓ Batch processing
+✓ Cache optimization
+✓ PostgreSQL integration (no separate vector DB)
+
+
+TECHNOLOGY STACK:
+════════════════
+
+Audio Processing:
+├─ Librosa:        Traditional DSP features
+├─ CLAP:           Deep learning embeddings
+└─ NumPy:          Numerical operations
+
+Database:
+├─ PostgreSQL:     ACID storage
+├─ pgvector:       Vector similarity extension
+└─ IVFFlat:        Approximate nearest neighbor
+
+Deep Learning:
+├─ PyTorch:        Neural network runtime
+├─ Transformers:   HuggingFace models
+└─ LAION:          CLAP pre-trained weights
+
+Python:
+├─ asyncio:        Async I/O
+├─ asyncpg:        PostgreSQL driver
+└─ logging:        Diagnostics
+```
