@@ -3,10 +3,15 @@ Database manager for PostgreSQL with pgvector
 """
 
 import logging
+import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import asyncpg
 import json
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 logger = logging.getLogger("database")
 
@@ -16,17 +21,18 @@ class DatabaseManager:
     
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 5432,
-        database: str = "bigflavor",
-        user: str = "bigflavor",
-        password: str = "bigflavor_dev_pass"
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        database: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None
     ):
-        self.host = host
-        self.port = port
-        self.database = database
-        self.user = user
-        self.password = password
+        # Use environment variables as defaults, fall back to provided values or hardcoded defaults
+        self.host = host or os.getenv("DB_HOST", "localhost")
+        self.port = port or int(os.getenv("DB_PORT", "5432"))
+        self.database = database or os.getenv("DB_NAME", "bigflavor")
+        self.user = user or os.getenv("DB_USER", "bigflavor")
+        self.password = password or os.getenv("DB_PASSWORD", "bigflavor_dev_pass")
         self.pool: Optional[asyncpg.Pool] = None
     
     async def connect(self):
