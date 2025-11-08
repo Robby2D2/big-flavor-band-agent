@@ -21,8 +21,8 @@ if str(project_root) not in sys.path:
 # Import from database package
 from database import DatabaseManager
 
-# Import audio embedding extractor from project root
-from audio_embedding_extractor import AudioEmbeddingExtractor
+# Import audio embedding extractor
+from src.rag.audio_embedding_extractor import AudioEmbeddingExtractor
 
 logger = logging.getLogger("rag-system")
 
@@ -181,6 +181,170 @@ class SongRAGSystem:
         except Exception as e:
             logger.error(f"Failed to index text for song {song_id}: {e}")
             return False
+    
+    async def extract_and_index_lyrics(
+        self,
+        audio_path: str,
+        song_id: str,
+        separate_vocals: bool = True,
+        min_confidence: float = 0.5,
+        generate_embedding: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Extract lyrics from audio and index them for RAG search.
+        
+        Args:
+            audio_path: Path to audio file
+            song_id: Song ID
+            separate_vocals: Whether to use Demucs for vocal separation
+            min_confidence: Minimum transcription confidence threshold
+            generate_embedding: Whether to generate text embedding (requires OpenAI API)
+            
+        Returns:
+            Dictionary with extraction results and metadata
+        """
+        try:
+            # Import lyrics extractor
+            from src.rag.lyrics_extractor import LyricsExtractor
+            
+            # Initialize lyrics extractor
+            lyrics_extractor = LyricsExtractor(
+                whisper_model_size='base',
+                use_gpu=True,
+                min_confidence=min_confidence
+            )
+            
+            # Check if extractor is available
+            if not lyrics_extractor.is_available():
+                logger.warning("Lyrics extractor not available (missing dependencies)")
+                return {
+                    'success': False,
+                    'error': 'Lyrics extractor dependencies not installed',
+                    'song_id': song_id
+                }
+            
+            # Extract lyrics
+            logger.info(f"Extracting lyrics for song {song_id}: {audio_path}")
+            result = lyrics_extractor.extract_lyrics(
+                audio_path,
+                separate_vocals=separate_vocals
+            )
+            
+            # Check if extraction was successful
+            if 'error' in result and result['error']:
+                logger.error(f"Lyrics extraction failed for {song_id}: {result['error']}")
+                return {
+                    'success': False,
+                    'error': result['error'],
+                    'song_id': song_id
+                }
+            
+            lyrics = result.get('lyrics', '').strip()
+            confidence = result.get('confidence', 0.0)
+            
+            if not lyrics:
+                logger.warning(f"No lyrics extracted for song {song_id}")
+                return {
+                    'success': False,
+                    'error': 'No lyrics found',
+                    'song_id': song_id,
+                    'confidence': confidence
+                }
+            
+            # Store lyrics without embedding first
+            if not generate_embedding:
+                # Store with null embedding (can be generated later)
+                success = await self.index_text_content(
+                    song_id=song_id,
+                    content_type='lyrics',
+                    content=lyrics,
+                    text_embedding=[0.0] * 1536  # Placeholder
+                )
+                
+                return {
+                    'success': success,
+                    'song_id': song_id,
+                    'lyrics': lyrics,
+                    'confidence': confidence,
+                    'segments': len(result.get('segments', [])),
+                    'embedding_generated': False
+                }
+            
+            # Generate text embedding (requires OpenAI API)
+            # TODO: Add OpenAI embedding generation
+            logger.warning("Text embedding generation not yet implemented")
+            
+            return {
+                'success': True,
+                'song_id': song_id,
+                'lyrics': lyrics,
+                'confidence': confidence,
+                'segments': len(result.get('segments', [])),
+                'embedding_generated': False,
+                'note': 'Lyrics extracted but embedding generation not implemented'
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to extract and index lyrics for {song_id}: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'song_id': song_id
+            }
+    
+    async def batch_extract_lyrics(
+        self,
+        audio_files: List[Tuple[str, str]],
+        separate_vocals: bool = True,
+        min_confidence: float = 0.5
+    ) -> Dict[str, Any]:
+        """
+        Extract lyrics from multiple audio files in batch.
+        
+        Args:
+            audio_files: List of (audio_path, song_id) tuples
+            separate_vocals: Whether to use vocal separation
+            min_confidence: Minimum transcription confidence
+            
+        Returns:
+            Statistics about lyrics extraction
+        """
+        total = len(audio_files)
+        success_count = 0
+        failed = []
+        low_confidence = []
+        
+        logger.info(f"Starting batch lyrics extraction for {total} audio files")
+        
+        for i, (audio_path, song_id) in enumerate(audio_files, 1):
+            logger.info(f"Processing lyrics {i}/{total}: {Path(audio_path).name}")
+            
+            result = await self.extract_and_index_lyrics(
+                audio_path,
+                song_id,
+                separate_vocals=separate_vocals,
+                min_confidence=min_confidence,
+                generate_embedding=False  # Skip embedding for batch processing
+            )
+            
+            if result['success']:
+                success_count += 1
+                if result.get('confidence', 0) < 0.7:
+                    low_confidence.append((song_id, result.get('confidence', 0)))
+            else:
+                failed.append((audio_path, song_id, result.get('error', 'Unknown')))
+        
+        stats = {
+            'total': total,
+            'success': success_count,
+            'failed': len(failed),
+            'low_confidence_count': len(low_confidence),
+            'failed_files': failed,
+            'low_confidence_songs': low_confidence
+        }
+        
+        logger.info(f"Batch lyrics extraction complete: {success_count}/{total} successful")
+        return stats
     
     async def search_by_audio_similarity(
         self,
