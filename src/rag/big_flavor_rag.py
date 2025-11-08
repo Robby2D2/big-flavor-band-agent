@@ -192,7 +192,8 @@ class SongRAGSystem:
         vad_filter: bool = False,
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
-        apply_voice_filter: bool = False
+        apply_voice_filter: bool = False,
+        whisper_model_size: str = 'base'
     ) -> Dict[str, Any]:
         """
         Extract lyrics from audio and index them for RAG search.
@@ -207,6 +208,7 @@ class SongRAGSystem:
             vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
             vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
             apply_voice_filter: Apply voice frequency bandpass filter (80-8000 Hz)
+            whisper_model_size: Whisper model size ('tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3')
             
         Returns:
             Dictionary with extraction results and metadata
@@ -217,7 +219,7 @@ class SongRAGSystem:
             
             # Initialize lyrics extractor (only load demucs if vocal separation requested)
             lyrics_extractor = LyricsExtractor(
-                whisper_model_size='base',
+                whisper_model_size=whisper_model_size,
                 use_gpu=True,
                 min_confidence=min_confidence,
                 load_demucs=separate_vocals
@@ -317,7 +319,8 @@ class SongRAGSystem:
         vad_filter: bool = False,
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
-        apply_voice_filter: bool = False
+        apply_voice_filter: bool = False,
+        whisper_model_size: str = 'base'
     ) -> Dict[str, Any]:
         """
         Extract lyrics from multiple audio files in batch.
@@ -330,6 +333,7 @@ class SongRAGSystem:
             vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
             vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
             apply_voice_filter: Apply voice frequency bandpass filter (80-8000 Hz)
+            whisper_model_size: Whisper model size ('tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3')
             
         Returns:
             Statistics about lyrics extraction
@@ -353,7 +357,8 @@ class SongRAGSystem:
                 vad_filter=vad_filter,
                 vad_min_silence_ms=vad_min_silence_ms,
                 vad_threshold=vad_threshold,
-                apply_voice_filter=apply_voice_filter
+                apply_voice_filter=apply_voice_filter,
+                whisper_model_size=whisper_model_size
             )
             
             if result['success']:

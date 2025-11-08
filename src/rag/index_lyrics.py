@@ -160,7 +160,8 @@ async def index_lyrics_batch(
     vad_filter: bool = False,
     vad_min_silence_ms: int = 2000,
     vad_threshold: float = 0.3,
-    apply_voice_filter: bool = False
+    apply_voice_filter: bool = False,
+    whisper_model_size: str = 'base'
 ):
     """
     Index lyrics for songs in the audio library.
@@ -263,7 +264,8 @@ async def index_lyrics_batch(
             vad_filter=vad_filter,
             vad_min_silence_ms=vad_min_silence_ms,
             vad_threshold=vad_threshold,
-            apply_voice_filter=apply_voice_filter
+            apply_voice_filter=apply_voice_filter,
+            whisper_model_size=whisper_model_size
         )
         
         # Display results
@@ -307,12 +309,13 @@ async def index_lyrics_batch(
         await db.close()
 
 
-async def test_single_song(audio_path: str):
+async def test_single_song(audio_path: str, whisper_model_size: str = 'base'):
     """
-    Test lyrics extraction on a single audio file.
+    Test lyrics extraction on a single audio file (does not write to database).
     
     Args:
         audio_path: Path to audio file
+        whisper_model_size: Whisper model size ('tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3')
     """
     print("\n" + "="*70)
     print("Single Song Lyrics Extraction Test")
@@ -324,42 +327,35 @@ async def test_single_song(audio_path: str):
         return
     
     print(f"\nProcessing: {audio_file.name}")
-    
-    # Initialize database
-    db = DatabaseManager()
-    await db.connect()
+    print(f"Whisper Model: {whisper_model_size}")
+    print(f"Settings: No VAD, No voice filter, No Demucs separation")
     
     try:
-        # Initialize RAG system
-        rag = SongRAGSystem(db, use_clap=False)
+        # Import and initialize lyrics extractor directly (no database needed)
+        from src.rag.lyrics_extractor import LyricsExtractor
         
-        # Try to find song ID
-        query = """
-            SELECT id, title FROM songs
-            WHERE audio_url LIKE $1
-            LIMIT 1
-        """
+        print("\nInitializing Whisper model...")
+        lyrics_extractor = LyricsExtractor(
+            whisper_model_size=whisper_model_size,
+            use_gpu=True,
+            min_confidence=0.5,
+            load_demucs=False  # Don't load Demucs for testing
+        )
         
-        async with db.pool.acquire() as conn:
-            row = await conn.fetchrow(query, f"%{audio_file.name}%")
-        
-        if row:
-            song_id = row['id']
-            title = row['title']
-            print(f"Found in database: {title} (ID: {song_id})")
-        else:
-            song_id = f"test_{audio_file.stem}"
-            print(f"Not in database, using temporary ID: {song_id}")
+        if not lyrics_extractor.is_available():
+            print("\n❌ Lyrics extractor not available (missing dependencies)")
+            return
         
         print("\nExtracting lyrics...")
         
-        # Extract lyrics
-        result = await rag.extract_and_index_lyrics(
+        # Extract lyrics without database indexing
+        result = lyrics_extractor.extract_lyrics(
             audio_path=str(audio_file),
-            song_id=song_id,
-            separate_vocals=True,
-            min_confidence=0.5,
-            generate_embedding=False
+            separate_vocals=False,
+            vad_filter=False,
+            vad_min_silence_ms=2000,
+            vad_threshold=0.3,
+            apply_voice_filter=False
         )
         
         # Display results
@@ -367,19 +363,26 @@ async def test_single_song(audio_path: str):
         print("Results")
         print("="*70)
         
-        if result['success']:
+        # Display results
+        print("\n" + "="*70)
+        print("Results")
+        print("="*70)
+        
+        if result.get('error'):
+            print(f"\n❌ Extraction failed: {result.get('error', 'Unknown error')}")
+        else:
             print(f"\n✓ Lyrics extracted successfully!")
             print(f"\nConfidence: {result.get('confidence', 0):.1%}")
-            print(f"Segments: {result.get('segments', 0)}")
+            print(f"Segments: {result.get('segment_count', 0)}")
             print(f"\n{'='*70}")
             print("LYRICS")
             print(f"{'='*70}\n")
             print(result.get('lyrics', ''))
-        else:
-            print(f"\n❌ Extraction failed: {result.get('error', 'Unknown error')}")
         
-    finally:
-        await db.close()
+    except Exception as e:
+        print(f"\n❌ Error during extraction: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 async def main():
@@ -399,11 +402,14 @@ async def main():
     parser.add_argument('--vad-silence', type=int, default=2000, help='Min silence duration in ms for VAD filtering (default 2000 = 2 seconds)')
     parser.add_argument('--vad-threshold', type=float, default=0.3, help='VAD threshold 0.0-1.0, lower=more sensitive (default 0.3)')
     parser.add_argument('--voice-filter', action='store_true', help='Apply voice frequency bandpass filter (80-8000 Hz)')
+    parser.add_argument('--whisper-model', default='base', 
+                       choices=['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'],
+                       help='Whisper model size (default: base, recommended: small for better accuracy)')
     
     args = parser.parse_args()
     
     if args.test:
-        await test_single_song(args.test)
+        await test_single_song(args.test, whisper_model_size=args.whisper_model)
     elif args.status:
         db = DatabaseManager()
         await db.connect()
@@ -426,7 +432,8 @@ async def main():
             vad_filter=args.vad,
             vad_min_silence_ms=args.vad_silence,
             vad_threshold=args.vad_threshold,
-            apply_voice_filter=args.voice_filter
+            apply_voice_filter=args.voice_filter,
+            whisper_model_size=args.whisper_model
         )
 
 
