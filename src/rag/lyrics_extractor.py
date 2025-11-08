@@ -46,7 +46,7 @@ class LyricsExtractor:
     
     def __init__(
         self,
-        whisper_model_size: str = "base",
+        whisper_model_size: str = "large-v3",
         use_gpu: bool = True,
         demucs_model: str = "htdemucs",
         min_confidence: float = 0.5,
@@ -566,7 +566,7 @@ def main():
     
     # Initialize extractor
     extractor = LyricsExtractor(
-        whisper_model_size='base',  # Good balance of speed/accuracy
+        whisper_model_size='large-v3',  # Most accurate model
         use_gpu=False,  # CPU mode for compatibility
         demucs_model='htdemucs',
         load_demucs=args.separate_vocals  # Only load demucs if vocal separation requested

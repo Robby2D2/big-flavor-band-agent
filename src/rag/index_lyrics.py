@@ -161,7 +161,7 @@ async def index_lyrics_batch(
     vad_min_silence_ms: int = 2000,
     vad_threshold: float = 0.3,
     apply_voice_filter: bool = False,
-    whisper_model_size: str = 'base'
+    whisper_model_size: str = 'large-v3'
 ):
     """
     Index lyrics for songs in the audio library.
@@ -309,7 +309,7 @@ async def index_lyrics_batch(
         await db.close()
 
 
-async def test_single_song(audio_path: str, whisper_model_size: str = 'base'):
+async def test_single_song(audio_path: str, whisper_model_size: str = 'large-v3'):
     """
     Test lyrics extraction on a single audio file (does not write to database).
     
@@ -333,20 +333,28 @@ async def test_single_song(audio_path: str, whisper_model_size: str = 'base'):
     try:
         # Import and initialize lyrics extractor directly (no database needed)
         from src.rag.lyrics_extractor import LyricsExtractor
+        import time
         
-        print("\nInitializing Whisper model...")
+        print("\n[TIMING] Starting model initialization...")
+        init_start = time.time()
+        
+        print("[TIMING] Importing LyricsExtractor class...")
+        print("[TIMING] Creating LyricsExtractor instance...")
         lyrics_extractor = LyricsExtractor(
             whisper_model_size=whisper_model_size,
             use_gpu=True,
             min_confidence=0.5,
             load_demucs=False  # Don't load Demucs for testing
         )
+        init_time = time.time() - init_start
+        print(f"[TIMING] [OK] Model initialization completed in {init_time:.2f} seconds")
         
         if not lyrics_extractor.is_available():
-            print("\n❌ Lyrics extractor not available (missing dependencies)")
+            print("\n[ERROR] Lyrics extractor not available (missing dependencies)")
             return
         
-        print("\nExtracting lyrics...")
+        print("\n[TIMING] Starting lyrics extraction...")
+        extract_start = time.time()
         
         # Extract lyrics without database indexing
         result = lyrics_extractor.extract_lyrics(
@@ -357,32 +365,60 @@ async def test_single_song(audio_path: str, whisper_model_size: str = 'base'):
             vad_threshold=0.3,
             apply_voice_filter=False
         )
+        extract_time = time.time() - extract_start
+        print(f"[TIMING] [OK] Lyrics extraction completed in {extract_time:.2f} seconds")
         
         # Display results
-        print("\n" + "="*70)
-        print("Results")
-        print("="*70)
-        
-        # Display results
+        print("\n[TIMING] Preparing results for display...")
         print("\n" + "="*70)
         print("Results")
         print("="*70)
         
         if result.get('error'):
-            print(f"\n❌ Extraction failed: {result.get('error', 'Unknown error')}")
+            print(f"\n[ERROR] Extraction failed: {result.get('error', 'Unknown error')}")
         else:
-            print(f"\n✓ Lyrics extracted successfully!")
+            print(f"\n[OK] Lyrics extracted successfully!")
             print(f"\nConfidence: {result.get('confidence', 0):.1%}")
             print(f"Segments: {result.get('segment_count', 0)}")
-            print(f"\n{'='*70}")
-            print("LYRICS")
-            print(f"{'='*70}\n")
-            print(result.get('lyrics', ''))
+            print(f"Characters: {len(result.get('lyrics', ''))}")
+            
+            # Save lyrics to file for comparison
+            output_file = f"lyrics_output_{whisper_model_size}.txt"
+            try:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(f"Model: {whisper_model_size}\n")
+                    f.write(f"Confidence: {result.get('confidence', 0):.1%}\n")
+                    f.write(f"Segments: {result.get('segment_count', 0)}\n")
+                    f.write(f"Characters: {len(result.get('lyrics', ''))}\n")
+                    f.write("="*70 + "\n")
+                    f.write(result.get('lyrics', ''))
+                print(f"\nLyrics saved to: {output_file}")
+            except Exception as e:
+                print(f"\nWarning: Could not save lyrics to file: {e}")
+        
+        print("\n[TIMING] Cleaning up resources...")
+        cleanup_start = time.time()
+        del lyrics_extractor
+        
+        # Force GPU memory cleanup
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except:
+            pass
+            
+        cleanup_time = time.time() - cleanup_start
+        print(f"[TIMING] [OK] Cleanup completed in {cleanup_time:.2f} seconds")
+        print(f"[TIMING] Total time: {init_time + extract_time + cleanup_time:.2f} seconds")
         
     except Exception as e:
-        print(f"\n❌ Error during extraction: {e}")
+        print(f"\n[ERROR] Error during extraction: {e}")
         import traceback
         traceback.print_exc()
+        import sys
+        sys.exit(1)
 
 
 async def main():
@@ -402,14 +438,16 @@ async def main():
     parser.add_argument('--vad-silence', type=int, default=2000, help='Min silence duration in ms for VAD filtering (default 2000 = 2 seconds)')
     parser.add_argument('--vad-threshold', type=float, default=0.3, help='VAD threshold 0.0-1.0, lower=more sensitive (default 0.3)')
     parser.add_argument('--voice-filter', action='store_true', help='Apply voice frequency bandpass filter (80-8000 Hz)')
-    parser.add_argument('--whisper-model', default='base', 
+    parser.add_argument('--whisper-model', default='large-v3', 
                        choices=['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'],
-                       help='Whisper model size (default: base, recommended: small for better accuracy)')
+                       help='Whisper model size (default: large-v3, most accurate)')
     
     args = parser.parse_args()
     
     if args.test:
         await test_single_song(args.test, whisper_model_size=args.whisper_model)
+        print("\n[TIMING] Test completed successfully")
+        return  # Exit cleanly
     elif args.status:
         db = DatabaseManager()
         await db.connect()
@@ -438,4 +476,16 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        # Ensure GPU resources are fully released before exit
+        try:
+            import torch
+            import gc
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            gc.collect()
+        except:
+            pass

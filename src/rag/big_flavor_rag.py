@@ -193,7 +193,7 @@ class SongRAGSystem:
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
         apply_voice_filter: bool = False,
-        whisper_model_size: str = 'base'
+        whisper_model_size: str = 'large-v3'
     ) -> Dict[str, Any]:
         """
         Extract lyrics from audio and index them for RAG search.
@@ -320,7 +320,7 @@ class SongRAGSystem:
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
         apply_voice_filter: bool = False,
-        whisper_model_size: str = 'base'
+        whisper_model_size: str = 'large-v3'
     ) -> Dict[str, Any]:
         """
         Extract lyrics from multiple audio files in batch.
