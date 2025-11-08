@@ -186,9 +186,13 @@ class SongRAGSystem:
         self,
         audio_path: str,
         song_id: str,
-        separate_vocals: bool = True,
+        separate_vocals: bool = False,
         min_confidence: float = 0.5,
-        generate_embedding: bool = True
+        generate_embedding: bool = True,
+        vad_filter: bool = False,
+        vad_min_silence_ms: int = 2000,
+        vad_threshold: float = 0.3,
+        apply_voice_filter: bool = False
     ) -> Dict[str, Any]:
         """
         Extract lyrics from audio and index them for RAG search.
@@ -196,9 +200,13 @@ class SongRAGSystem:
         Args:
             audio_path: Path to audio file
             song_id: Song ID
-            separate_vocals: Whether to use Demucs for vocal separation
+            separate_vocals: Whether to use Demucs for vocal separation (slow)
             min_confidence: Minimum transcription confidence threshold
             generate_embedding: Whether to generate text embedding (requires OpenAI API)
+            vad_filter: Enable voice activity detection (filters silence)
+            vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
+            vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
+            apply_voice_filter: Apply voice frequency bandpass filter (80-8000 Hz)
             
         Returns:
             Dictionary with extraction results and metadata
@@ -207,11 +215,12 @@ class SongRAGSystem:
             # Import lyrics extractor
             from src.rag.lyrics_extractor import LyricsExtractor
             
-            # Initialize lyrics extractor
+            # Initialize lyrics extractor (only load demucs if vocal separation requested)
             lyrics_extractor = LyricsExtractor(
                 whisper_model_size='base',
                 use_gpu=True,
-                min_confidence=min_confidence
+                min_confidence=min_confidence,
+                load_demucs=separate_vocals
             )
             
             # Check if extractor is available
@@ -227,7 +236,11 @@ class SongRAGSystem:
             logger.info(f"Extracting lyrics for song {song_id}: {audio_path}")
             result = lyrics_extractor.extract_lyrics(
                 audio_path,
-                separate_vocals=separate_vocals
+                separate_vocals=separate_vocals,
+                vad_filter=vad_filter,
+                vad_min_silence_ms=vad_min_silence_ms,
+                vad_threshold=vad_threshold,
+                apply_voice_filter=apply_voice_filter
             )
             
             # Check if extraction was successful
@@ -250,6 +263,10 @@ class SongRAGSystem:
                     'song_id': song_id,
                     'confidence': confidence
                 }
+            
+            # Log extracted lyrics for monitoring
+            lyrics_preview = lyrics[:200] + '...' if len(lyrics) > 200 else lyrics
+            logger.info(f"Extracted lyrics for {song_id} ({len(lyrics)} chars, {confidence:.1%} confidence): {lyrics_preview}")
             
             # Store lyrics without embedding first
             if not generate_embedding:
@@ -295,16 +312,24 @@ class SongRAGSystem:
     async def batch_extract_lyrics(
         self,
         audio_files: List[Tuple[str, str]],
-        separate_vocals: bool = True,
-        min_confidence: float = 0.5
+        separate_vocals: bool = False,
+        min_confidence: float = 0.5,
+        vad_filter: bool = False,
+        vad_min_silence_ms: int = 2000,
+        vad_threshold: float = 0.3,
+        apply_voice_filter: bool = False
     ) -> Dict[str, Any]:
         """
         Extract lyrics from multiple audio files in batch.
         
         Args:
             audio_files: List of (audio_path, song_id) tuples
-            separate_vocals: Whether to use vocal separation
+            separate_vocals: Whether to use vocal separation (slow)
             min_confidence: Minimum transcription confidence
+            vad_filter: Enable voice activity detection (filters silence)
+            vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
+            vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
+            apply_voice_filter: Apply voice frequency bandpass filter (80-8000 Hz)
             
         Returns:
             Statistics about lyrics extraction
@@ -324,7 +349,11 @@ class SongRAGSystem:
                 song_id,
                 separate_vocals=separate_vocals,
                 min_confidence=min_confidence,
-                generate_embedding=False  # Skip embedding for batch processing
+                generate_embedding=False,  # Skip embedding for batch processing
+                vad_filter=vad_filter,
+                vad_min_silence_ms=vad_min_silence_ms,
+                vad_threshold=vad_threshold,
+                apply_voice_filter=apply_voice_filter
             )
             
             if result['success']:

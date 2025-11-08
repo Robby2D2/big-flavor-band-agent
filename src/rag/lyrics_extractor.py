@@ -49,7 +49,8 @@ class LyricsExtractor:
         whisper_model_size: str = "base",
         use_gpu: bool = True,
         demucs_model: str = "htdemucs",
-        min_confidence: float = 0.5
+        min_confidence: float = 0.5,
+        load_demucs: bool = False
     ):
         """
         Initialize the lyrics extractor.
@@ -62,6 +63,7 @@ class LyricsExtractor:
             demucs_model: Demucs model to use ('htdemucs', 'htdemucs_ft', 'mdx_extra')
                          'htdemucs' is recommended for best quality
             min_confidence: Minimum confidence threshold for including transcribed text
+            load_demucs: Whether to load demucs model at initialization (only if needed for vocal separation)
         """
         self.whisper_model_size = whisper_model_size
         self.use_gpu = use_gpu
@@ -86,21 +88,32 @@ class LyricsExtractor:
                 logger.error(f"Failed to load faster-whisper model: {e}")
                 self.whisper_model = None
         
-        # Demucs model
+        # Demucs model - only load if explicitly requested
         self.demucs = None
         self.device = None
-        if DEMUCS_AVAILABLE:
-            try:
-                logger.info(f"Loading Demucs model '{demucs_model}'")
-                self.demucs = get_model(demucs_model)
-                self.device = "cuda" if use_gpu and self._cuda_available() else "cpu"
-                self.demucs.to(self.device)
-                logger.info(f"Demucs model loaded successfully on {self.device}")
-            except Exception as e:
-                logger.error(f"Failed to load Demucs model: {e}")
-                self.demucs = None
+        if load_demucs and DEMUCS_AVAILABLE:
+            self._load_demucs()
         
         logger.info(f"LyricsExtractor initialized (Whisper: {self.whisper_model is not None}, Demucs: {self.demucs is not None})")
+    
+    def _load_demucs(self):
+        """Lazy-load demucs model when needed."""
+        if self.demucs is not None:
+            return  # Already loaded
+        
+        if not DEMUCS_AVAILABLE:
+            logger.warning("Demucs not available")
+            return
+        
+        try:
+            logger.info(f"Loading Demucs model '{self.demucs_model}'")
+            self.demucs = get_model(self.demucs_model)
+            self.device = "cuda" if self.use_gpu and self._cuda_available() else "cpu"
+            self.demucs.to(self.device)
+            logger.info(f"Demucs model loaded successfully on {self.device}")
+        except Exception as e:
+            logger.error(f"Failed to load Demucs model: {e}")
+            self.demucs = None
     
     def _cuda_available(self) -> bool:
         """Check if CUDA is available for GPU acceleration."""
@@ -121,9 +134,17 @@ class LyricsExtractor:
         Returns:
             Path to separated vocals file, or None if separation failed
         """
-        if not DEMUCS_AVAILABLE or self.demucs is None:
+        if not DEMUCS_AVAILABLE:
             logger.warning("Demucs not available, skipping vocal separation")
             return audio_path  # Return original file if separation not available
+        
+        # Lazy-load demucs if needed
+        if self.demucs is None:
+            logger.info("Demucs not loaded yet, loading now...")
+            self._load_demucs()
+            if self.demucs is None:
+                logger.error("Failed to load Demucs")
+                return audio_path
         
         try:
             logger.info(f"Separating vocals from {audio_path}")
@@ -140,6 +161,8 @@ class LyricsExtractor:
             
             audio_data, sr = librosa.load(audio_path, sr=None, mono=False)
             
+            logger.info(f"Separating vocals from {audio_path} - loaded audio.")
+
             # Convert to torch tensor
             if audio_data.ndim == 1:
                 # Mono - convert to stereo for demucs
@@ -147,9 +170,13 @@ class LyricsExtractor:
             
             wav = torch.from_numpy(audio_data).float()
             
+            logger.info(f"Separating vocals from {audio_path} - completed from numpy.")
+
             # Convert to the model's expected format
             wav = convert_audio(wav, sr, self.demucs.samplerate, self.demucs.audio_channels)
-            
+                        
+            logger.info(f"Separating vocals from {audio_path} - converted audio with {self.demucs.samplerate} and {self.demucs.audio_channels}")
+
             # Apply the model
             ref = wav.mean(0)
             wav = (wav - ref.mean()) / ref.std()
@@ -165,6 +192,9 @@ class LyricsExtractor:
                     progress=False
                 )[0]
             
+                        
+            logger.info(f"Separating vocals from {audio_path} - completed torch.no_grad.")
+
             sources = sources * ref.std() + ref.mean()
             
             # Extract vocals (index depends on model, usually index 3 for htdemucs)
@@ -174,6 +204,8 @@ class LyricsExtractor:
             # Save vocals to file using soundfile to avoid torchcodec issues
             vocals_path = Path(output_dir) / "vocals.wav"
             vocals = vocals.cpu().numpy()
+            
+            logger.info(f"Separating vocals from {audio_path} - saved vocals to {vocals_path}")
             
             import soundfile as sf
             # Transpose to (samples, channels) format for soundfile
@@ -191,10 +223,69 @@ class LyricsExtractor:
             logger.error(traceback.format_exc())
             return audio_path  # Fallback to original file
     
+    def apply_voice_frequency_filter(
+        self,
+        audio_path: str,
+        output_path: Optional[str] = None,
+        low_cutoff: float = 80.0,
+        high_cutoff: float = 8000.0
+    ) -> str:
+        """
+        Apply bandpass filter to isolate typical voice frequency range.
+        Human voice typically ranges from 80 Hz to 8000 Hz (with most energy 300-3400 Hz).
+        
+        Args:
+            audio_path: Path to input audio file
+            output_path: Path for filtered audio (temp file if None)
+            low_cutoff: Low frequency cutoff in Hz (default 80)
+            high_cutoff: High frequency cutoff in Hz (default 8000)
+            
+        Returns:
+            Path to filtered audio file
+        """
+        try:
+            import librosa
+            import soundfile as sf
+            import numpy as np
+            from scipy import signal
+            
+            logger.info(f"Applying voice frequency filter ({low_cutoff}-{high_cutoff} Hz)")
+            
+            # Load audio
+            y, sr = librosa.load(audio_path, sr=None, mono=True)
+            
+            # Design bandpass filter
+            nyquist = sr / 2
+            low = low_cutoff / nyquist
+            high = high_cutoff / nyquist
+            b, a = signal.butter(4, [low, high], btype='band')
+            
+            # Apply filter
+            y_filtered = signal.filtfilt(b, a, y)
+            
+            # Save filtered audio
+            if output_path is None:
+                import tempfile
+                fd, output_path = tempfile.mkstemp(suffix='.wav')
+                import os
+                os.close(fd)
+            
+            sf.write(output_path, y_filtered, sr)
+            logger.info(f"Voice frequency filter applied: {output_path}")
+            
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"Error applying frequency filter: {e}")
+            return audio_path  # Fallback to original
+    
     def transcribe_audio(
         self,
         audio_path: str,
-        language: str = "en"
+        language: str = "en",
+        vad_filter: bool = False,
+        vad_min_silence_ms: int = 2000,
+        vad_threshold: float = 0.3
     ) -> Dict[str, Any]:
         """
         Transcribe audio to text using faster-whisper.
@@ -202,6 +293,9 @@ class LyricsExtractor:
         Args:
             audio_path: Path to audio file (preferably vocals only)
             language: Language code for transcription ('en' for English)
+            vad_filter: Enable voice activity detection (filters silence)
+            vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
+            vad_threshold: VAD sensitivity threshold 0.0-1.0 (lower = more sensitive, default 0.3)
             
         Returns:
             Dictionary with transcription results
@@ -215,15 +309,25 @@ class LyricsExtractor:
             }
         
         try:
-            logger.info(f"Transcribing audio: {audio_path}")
+            logger.info(f"Transcribing audio: {audio_path} (VAD: {vad_filter}, threshold: {vad_threshold}, min_silence: {vad_min_silence_ms}ms)")
             
             # Transcribe with faster-whisper
+            transcribe_args = {
+                'language': language,
+                'beam_size': 5,
+                'vad_filter': vad_filter
+            }
+            
+            # Add VAD parameters if enabled
+            if vad_filter:
+                transcribe_args['vad_parameters'] = dict(
+                    min_silence_duration_ms=vad_min_silence_ms,
+                    threshold=vad_threshold  # Lower threshold = more sensitive to voice (default is 0.5)
+                )
+            
             segments, info = self.whisper_model.transcribe(
                 audio_path,
-                language=language,
-                beam_size=5,
-                vad_filter=True,  # Voice activity detection to filter out silence
-                vad_parameters=dict(min_silence_duration_ms=500)
+                **transcribe_args
             )
             
             # Process segments
@@ -278,24 +382,33 @@ class LyricsExtractor:
     def extract_lyrics(
         self,
         audio_path: str,
-        separate_vocals: bool = True,
+        separate_vocals: bool = False,
         language: str = "en",
-        cleanup_temp: bool = True
+        cleanup_temp: bool = True,
+        vad_filter: bool = False,
+        vad_min_silence_ms: int = 2000,
+        vad_threshold: float = 0.3,
+        apply_voice_filter: bool = False
     ) -> Dict[str, Any]:
         """
         Extract lyrics from audio file (full pipeline).
         
         Args:
             audio_path: Path to input audio file
-            separate_vocals: Whether to separate vocals first (recommended)
+            separate_vocals: Whether to separate vocals first (slower but cleaner)
             language: Language code for transcription
             cleanup_temp: Whether to delete temporary files after processing
+            vad_filter: Enable voice activity detection (filters silence)
+            vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
+            vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
+            apply_voice_filter: Apply bandpass filter for voice frequencies (80-8000 Hz)
             
         Returns:
             Dictionary with lyrics and metadata
         """
         temp_dir = None
         vocals_path = audio_path
+        temp_files = []
         
         try:
             # Step 1: Separate vocals if requested
@@ -307,8 +420,21 @@ class LyricsExtractor:
             else:
                 logger.info("Skipping vocal separation (using full mix)")
             
+            # Step 1.5: Apply voice frequency filter if requested
+            if apply_voice_filter:
+                filtered_path = self.apply_voice_frequency_filter(vocals_path)
+                if filtered_path != vocals_path:
+                    temp_files.append(filtered_path)
+                    vocals_path = filtered_path
+            
             # Step 2: Transcribe
-            result = self.transcribe_audio(vocals_path, language)
+            result = self.transcribe_audio(
+                vocals_path, 
+                language,
+                vad_filter=vad_filter,
+                vad_min_silence_ms=vad_min_silence_ms,
+                vad_threshold=vad_threshold
+            )
             
             # Add metadata
             result['audio_path'] = audio_path
@@ -328,12 +454,22 @@ class LyricsExtractor:
         
         finally:
             # Cleanup temporary files
-            if cleanup_temp and temp_dir and Path(temp_dir).exists():
-                try:
-                    shutil.rmtree(temp_dir)
-                    logger.debug(f"Cleaned up temporary directory: {temp_dir}")
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup temp directory {temp_dir}: {e}")
+            if cleanup_temp:
+                if temp_dir and Path(temp_dir).exists():
+                    try:
+                        shutil.rmtree(temp_dir)
+                        logger.debug(f"Cleaned up temporary directory: {temp_dir}")
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup temp directory {temp_dir}: {e}")
+                
+                # Clean up individual temp files
+                for temp_file in temp_files:
+                    try:
+                        if Path(temp_file).exists():
+                            Path(temp_file).unlink()
+                            logger.debug(f"Cleaned up temp file: {temp_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup temp file {temp_file}: {e}")
     
     def batch_extract(
         self,
@@ -388,19 +524,30 @@ class LyricsExtractor:
 def main():
     """Test the lyrics extractor."""
     import sys
+    import argparse
     
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    if len(sys.argv) < 2:
-        print("Usage: python lyrics_extractor.py <audio_file>")
-        print("\nExample:")
-        print("  python lyrics_extractor.py audio_library/song.mp3")
-        sys.exit(1)
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Extract lyrics from audio files')
+    parser.add_argument('audio_file', nargs='?', default='tests/wagonwheel.mp3',
+                       help='Audio file to process (default: tests/wagonwheel.mp3)')
+    parser.add_argument('--vad', action='store_true',
+                       help='Enable VAD filtering')
+    parser.add_argument('--vad-threshold', type=float, default=0.3,
+                       help='VAD threshold 0.0-1.0, lower=more sensitive (default: 0.3)')
+    parser.add_argument('--vad-silence', type=int, default=2000,
+                       help='Minimum silence duration in ms (default: 2000)')
+    parser.add_argument('--voice-filter', action='store_true',
+                       help='Apply voice frequency bandpass filter (80-8000 Hz)')
+    parser.add_argument('--separate-vocals', action='store_true',
+                       help='Use demucs to separate vocals (slow but cleaner)')
     
-    audio_file = sys.argv[1]
+    args = parser.parse_args()
+    audio_file = args.audio_file
     
     if not Path(audio_file).exists():
         print(f"Error: File not found: {audio_file}")
@@ -409,12 +556,20 @@ def main():
     print("\n" + "="*70)
     print("Lyrics Extractor Test")
     print("="*70)
+    print(f"\nSettings:")
+    print(f"  Vocal separation: {args.separate_vocals}")
+    print(f"  Voice filter: {args.voice_filter}")
+    print(f"  VAD enabled: {args.vad}")
+    if args.vad:
+        print(f"  VAD threshold: {args.vad_threshold}")
+        print(f"  VAD min silence: {args.vad_silence}ms")
     
     # Initialize extractor
     extractor = LyricsExtractor(
         whisper_model_size='base',  # Good balance of speed/accuracy
-        use_gpu=True,
-        demucs_model='htdemucs'
+        use_gpu=False,  # CPU mode for compatibility
+        demucs_model='htdemucs',
+        load_demucs=args.separate_vocals  # Only load demucs if vocal separation requested
     )
     
     # Check status
@@ -433,8 +588,15 @@ def main():
     print(f"Processing: {audio_file}")
     print("-"*70 + "\n")
     
-    # Extract lyrics
-    result = extractor.extract_lyrics(audio_file, separate_vocals=True)
+    # Extract lyrics with specified settings
+    result = extractor.extract_lyrics(
+        audio_file, 
+        separate_vocals=args.separate_vocals,
+        vad_filter=args.vad,
+        vad_threshold=args.vad_threshold,
+        vad_min_silence_ms=args.vad_silence,
+        apply_voice_filter=args.voice_filter
+    )
     
     # Display results
     print("\n" + "="*70)

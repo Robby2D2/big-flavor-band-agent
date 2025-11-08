@@ -153,9 +153,14 @@ async def check_lyrics_status(db: DatabaseManager):
 async def index_lyrics_batch(
     audio_library_path: str = "audio_library",
     max_songs: Optional[int] = None,
-    separate_vocals: bool = True,
+    separate_vocals: bool = False,
     min_confidence: float = 0.5,
-    reindex: bool = False
+    reindex: bool = False,
+    skip_confirmation: bool = False,
+    vad_filter: bool = False,
+    vad_min_silence_ms: int = 2000,
+    vad_threshold: float = 0.3,
+    apply_voice_filter: bool = False
 ):
     """
     Index lyrics for songs in the audio library.
@@ -163,9 +168,14 @@ async def index_lyrics_batch(
     Args:
         audio_library_path: Path to audio library directory
         max_songs: Maximum number of songs to process (None for all)
-        separate_vocals: Whether to use Demucs for vocal separation
+        separate_vocals: Whether to use Demucs for vocal separation (slow)
         min_confidence: Minimum transcription confidence threshold
         reindex: Whether to reindex songs that already have lyrics
+        skip_confirmation: Skip confirmation prompt for batch processing
+        vad_filter: Enable voice activity detection (filters silence)
+        vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
+        vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
+        apply_voice_filter: Apply voice frequency bandpass filter (80-8000 Hz)
     """
     print("\n" + "="*70)
     print("Lyrics Batch Indexing")
@@ -215,7 +225,7 @@ async def index_lyrics_batch(
         print(f"  Reindex existing: {reindex}")
         
         # Confirm before proceeding
-        if len(songs) > 10:
+        if len(songs) > 10 and not skip_confirmation:
             response = input(f"\nProcess {len(songs)} songs? This may take a while. (y/n): ")
             if response.lower() != 'y':
                 print("Cancelled.")
@@ -249,7 +259,11 @@ async def index_lyrics_batch(
         stats = await rag.batch_extract_lyrics(
             audio_files,
             separate_vocals=separate_vocals,
-            min_confidence=min_confidence
+            min_confidence=min_confidence,
+            vad_filter=vad_filter,
+            vad_min_silence_ms=vad_min_silence_ms,
+            vad_threshold=vad_threshold,
+            apply_voice_filter=apply_voice_filter
         )
         
         # Display results
@@ -375,11 +389,16 @@ async def main():
     parser = argparse.ArgumentParser(description='Extract and index lyrics from audio files')
     parser.add_argument('--audio-library', default='audio_library', help='Path to audio library')
     parser.add_argument('--max-songs', type=int, help='Maximum number of songs to process')
-    parser.add_argument('--no-vocal-separation', action='store_true', help='Skip vocal separation (faster but less accurate)')
+    parser.add_argument('--vocal-separation', action='store_true', help='Enable vocal separation (slow but cleaner)')
     parser.add_argument('--min-confidence', type=float, default=0.5, help='Minimum transcription confidence (0-1)')
     parser.add_argument('--reindex', action='store_true', help='Reindex songs that already have lyrics')
     parser.add_argument('--test', help='Test on a single audio file')
     parser.add_argument('--status', action='store_true', help='Check lyrics indexing status')
+    parser.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompt for batch processing')
+    parser.add_argument('--vad', action='store_true', help='Enable voice activity detection filtering')
+    parser.add_argument('--vad-silence', type=int, default=2000, help='Min silence duration in ms for VAD filtering (default 2000 = 2 seconds)')
+    parser.add_argument('--vad-threshold', type=float, default=0.3, help='VAD threshold 0.0-1.0, lower=more sensitive (default 0.3)')
+    parser.add_argument('--voice-filter', action='store_true', help='Apply voice frequency bandpass filter (80-8000 Hz)')
     
     args = parser.parse_args()
     
@@ -400,9 +419,14 @@ async def main():
         await index_lyrics_batch(
             audio_library_path=args.audio_library,
             max_songs=args.max_songs,
-            separate_vocals=not args.no_vocal_separation,
+            separate_vocals=args.vocal_separation,
             min_confidence=args.min_confidence,
-            reindex=args.reindex
+            reindex=args.reindex,
+            skip_confirmation=args.yes,
+            vad_filter=args.vad,
+            vad_min_silence_ms=args.vad_silence,
+            vad_threshold=args.vad_threshold,
+            apply_voice_filter=args.voice_filter
         )
 
 
