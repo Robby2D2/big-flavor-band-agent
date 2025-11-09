@@ -22,7 +22,7 @@ class ScrapedDataManager:
         """
         self.db = db_manager
     
-    async def insert_song_with_details(self, song_data: Dict[str, Any]) -> str:
+    async def insert_song_with_details(self, song_data: Dict[str, Any]) -> int:
         """
         Insert a song with all scraped details
         
@@ -30,8 +30,16 @@ class ScrapedDataManager:
             song_data: Complete song data from scraper
             
         Returns:
-            Song ID
+            Song ID (integer)
         """
+        # Ensure song ID is an integer
+        if 'id' in song_data:
+            if isinstance(song_data['id'], str):
+                try:
+                    song_data['id'] = int(song_data['id'])
+                except ValueError:
+                    raise ValueError(f"Song ID must be numeric, got: {song_data['id']}")
+        
         # Insert basic song data
         song_id = await self.db.insert_song(song_data)
         
@@ -77,7 +85,7 @@ class ScrapedDataManager:
     
     async def insert_comment(
         self,
-        song_id: str,
+        song_id: int,
         comment_text: str,
         author: str = None
     ) -> int:
@@ -94,7 +102,7 @@ class ScrapedDataManager:
         logger.debug(f"Inserted comment for song {song_id}")
         return comment_id
     
-    async def get_song_comments(self, song_id: str) -> List[Dict[str, Any]]:
+    async def get_song_comments(self, song_id: int) -> List[Dict[str, Any]]:
         """Get all comments for a song"""
         query = """
             SELECT id, comment_text, author, created_at, updated_at
@@ -138,7 +146,7 @@ class ScrapedDataManager:
     
     async def insert_song_instrument(
         self,
-        song_id: str,
+        song_id: int,
         musician_name: str,
         instrument_name: str
     ) -> int:
@@ -162,7 +170,7 @@ class ScrapedDataManager:
         
         return result if result else 0
     
-    async def get_song_instruments(self, song_id: str) -> List[Dict[str, Any]]:
+    async def get_song_instruments(self, song_id: int) -> List[Dict[str, Any]]:
         """Get all instruments and musicians for a song"""
         query = """
             SELECT 

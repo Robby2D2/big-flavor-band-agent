@@ -14,3 +14,7 @@ When you propose or run terminal commands that use Python or pip, do the followi
 - Prefer `python -m pytest` / `python -m build` / `python -m uvicorn ...`, etc.
 - If a terminal is newly created, re-run the activation line before Python commands.
 - Never install to system Python.
+
+No need to update or create documents unless otherwise requested.
+
+

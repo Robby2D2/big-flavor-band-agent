@@ -1,0 +1,9 @@
+I'd like to update the scraper and the database schema as well to load songs from bigflavorband.com.  
+
+1. The ID of the song should be a unique number that is found in the URL of the MP3.
+2. This song ID should replace the existing song ID that is based on the song title.
+3. The MP3s should still be stored locally in the audio_library directory, but the file name should be this song ID number plus the song title.
+4. We should include the list of comments while scraping the song.  Comments can be found in the Comments column, but you may have to hover over that column to see the complete comments.  I'm not sure if you can simply inspect the elements as this is a Vaadin-based website.
+5. When storing the song in the database, we should also add it to the RAG system including extracting the lyrics (using our existing lyric extractor with v3-large model).  The RAG system should include lyrics, titles, sessions, performers, instruments, etc. such that the LLM would be able to handle requests such as "Find 10 songs where Rob Danek is on Lead Vocals"
+6. Update appropriate tests as well as identifying which tests we can run to make sure this is working as expected.  Mainly we've had issues with paging in the past, so I'd like to make sure we run that test that starts with "Going to California - raga" and then successfully advances to the next songs.
+7. After running these tests, I'd like to verify what was stored in the database for these songs including what lyrics were extracted.

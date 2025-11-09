@@ -52,13 +52,13 @@ class SongRAGSystem:
         self.cache_ttl = timedelta(hours=cache_ttl_hours)
         logger.info("RAG system initialized")
     
-    async def index_audio_file(self, audio_path: str, song_id: str) -> bool:
+    async def index_audio_file(self, audio_path: str, song_id: int) -> bool:
         """
         Extract embeddings from audio file and store in database.
         
         Args:
             audio_path: Path to audio file
-            song_id: ID of the song in database
+            song_id: ID of the song in database (integer)
         
         Returns:
             True if successful
@@ -137,7 +137,7 @@ class SongRAGSystem:
     
     async def index_text_content(
         self, 
-        song_id: str, 
+        song_id: int, 
         content_type: str, 
         content: str,
         text_embedding: List[float]
@@ -146,7 +146,7 @@ class SongRAGSystem:
         Store text embedding for song metadata.
         
         Args:
-            song_id: Song ID
+            song_id: Song ID (integer)
             content_type: Type of content ('title', 'genre', 'description', etc.)
             content: Text content
             text_embedding: Pre-computed text embedding vector
@@ -157,11 +157,11 @@ class SongRAGSystem:
         try:
             query = """
                 INSERT INTO text_embeddings (
-                    song_id, content_type, content, text_embedding
+                    song_id, content_type, content, embedding
                 ) VALUES ($1, $2, $3, $4)
                 ON CONFLICT (song_id, content_type) DO UPDATE SET
                     content = EXCLUDED.content,
-                    text_embedding = EXCLUDED.text_embedding,
+                    embedding = EXCLUDED.embedding,
                     created_at = CURRENT_TIMESTAMP
                 RETURNING id
             """
@@ -185,7 +185,7 @@ class SongRAGSystem:
     async def extract_and_index_lyrics(
         self,
         audio_path: str,
-        song_id: str,
+        song_id: int,
         separate_vocals: bool = False,
         min_confidence: float = 0.5,
         generate_embedding: bool = True,
@@ -200,7 +200,7 @@ class SongRAGSystem:
         
         Args:
             audio_path: Path to audio file
-            song_id: Song ID
+            song_id: Song ID (integer)
             separate_vocals: Whether to use Demucs for vocal separation (slow)
             min_confidence: Minimum transcription confidence threshold
             generate_embedding: Whether to generate text embedding (requires OpenAI API)
@@ -270,37 +270,26 @@ class SongRAGSystem:
             lyrics_preview = lyrics[:200] + '...' if len(lyrics) > 200 else lyrics
             logger.info(f"Extracted lyrics for {song_id} ({len(lyrics)} chars, {confidence:.1%} confidence): {lyrics_preview}")
             
-            # Store lyrics without embedding first
-            if not generate_embedding:
-                # Store with null embedding (can be generated later)
-                success = await self.index_text_content(
-                    song_id=song_id,
-                    content_type='lyrics',
-                    content=lyrics,
-                    text_embedding=[0.0] * 1536  # Placeholder
-                )
-                
-                return {
-                    'success': success,
-                    'song_id': song_id,
-                    'lyrics': lyrics,
-                    'confidence': confidence,
-                    'segments': len(result.get('segments', [])),
-                    'embedding_generated': False
-                }
-            
             # Generate text embedding (requires OpenAI API)
             # TODO: Add OpenAI embedding generation
-            logger.warning("Text embedding generation not yet implemented")
+            if generate_embedding:
+                logger.warning("Text embedding generation not yet implemented - storing lyrics with placeholder embedding")
+            
+            # Store lyrics with placeholder embedding (can be generated later)
+            success = await self.index_text_content(
+                song_id=song_id,
+                content_type='lyrics',
+                content=lyrics,
+                text_embedding=[0.0] * 384  # Placeholder for 384-dim text embeddings
+            )
             
             return {
-                'success': True,
+                'success': success,
                 'song_id': song_id,
                 'lyrics': lyrics,
                 'confidence': confidence,
                 'segments': len(result.get('segments', [])),
-                'embedding_generated': False,
-                'note': 'Lyrics extracted but embedding generation not implemented'
+                'embedding_generated': False
             }
             
         except Exception as e:

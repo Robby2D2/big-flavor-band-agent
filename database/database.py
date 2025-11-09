@@ -55,8 +55,8 @@ class DatabaseManager:
             logger.info("Database connection pool closed")
     
     # Song operations
-    async def insert_song(self, song: Dict[str, Any]) -> str:
-        """Insert or update a song."""
+    async def insert_song(self, song: Dict[str, Any]) -> int:
+        """Insert or update a song. Returns song ID as integer."""
         query = """
             INSERT INTO songs (
                 id, title, genre, tempo_bpm, key, duration_seconds,
@@ -77,10 +77,18 @@ class DatabaseManager:
             RETURNING id
         """
         
+        # Convert song ID to integer if it's a string
+        song_id = song['id']
+        if isinstance(song_id, str):
+            try:
+                song_id = int(song_id)
+            except ValueError:
+                raise ValueError(f"Song ID must be numeric, got: {song_id}")
+        
         async with self.pool.acquire() as conn:
             song_id = await conn.fetchval(
                 query,
-                song['id'],
+                song_id,
                 song['title'],
                 song.get('genre'),
                 song.get('tempo_bpm'),
@@ -96,8 +104,8 @@ class DatabaseManager:
         logger.info(f"Inserted/updated song: {song_id}")
         return song_id
     
-    async def get_song(self, song_id: str) -> Optional[Dict[str, Any]]:
-        """Get a song by ID."""
+    async def get_song(self, song_id: int) -> Optional[Dict[str, Any]]:
+        """Get a song by ID (integer)."""
         query = "SELECT * FROM songs WHERE id = $1"
         
         async with self.pool.acquire() as conn:

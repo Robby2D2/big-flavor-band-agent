@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Songs table
 CREATE TABLE songs (
-    id VARCHAR(50) PRIMARY KEY,
+    id INTEGER PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     genre VARCHAR(100),
     tempo_bpm FLOAT,
@@ -17,14 +17,60 @@ CREATE TABLE songs (
     recording_date DATE,
     audio_quality VARCHAR(20),
     audio_url TEXT,
+    rating INTEGER CHECK (rating >= 0 AND rating <= 5),
+    session VARCHAR(100),
+    uploaded_on TIMESTAMP,
+    recorded_on DATE,
+    is_original BOOLEAN DEFAULT FALSE,
+    track_number INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Sessions table (for session names)
+CREATE TABLE sessions (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Musicians table
+CREATE TABLE musicians (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Instruments table
+CREATE TABLE instruments (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Comments table
+CREATE TABLE song_comments (
+    id SERIAL PRIMARY KEY,
+    song_id INTEGER REFERENCES songs(id) ON DELETE CASCADE,
+    comment_text TEXT NOT NULL,
+    author VARCHAR(100),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Song_instruments junction table
+CREATE TABLE song_instruments (
+    id SERIAL PRIMARY KEY,
+    song_id INTEGER REFERENCES songs(id) ON DELETE CASCADE,
+    musician_id INTEGER REFERENCES musicians(id) ON DELETE CASCADE,
+    instrument_id INTEGER REFERENCES instruments(id) ON DELETE CASCADE,
+    UNIQUE(song_id, musician_id, instrument_id)
 );
 
 -- Audio analysis results
 CREATE TABLE audio_analysis (
     id SERIAL PRIMARY KEY,
-    song_id VARCHAR(50) REFERENCES songs(id) ON DELETE CASCADE,
+    song_id INTEGER REFERENCES songs(id) ON DELETE CASCADE,
     audio_url TEXT NOT NULL,
     bpm FLOAT,
     key VARCHAR(20),
@@ -42,7 +88,7 @@ CREATE TABLE audio_analysis (
 -- Embeddings for RAG (using pgvector)
 CREATE TABLE song_embeddings (
     id SERIAL PRIMARY KEY,
-    song_id VARCHAR(50) REFERENCES songs(id) ON DELETE CASCADE,
+    song_id INTEGER REFERENCES songs(id) ON DELETE CASCADE,
     content_type VARCHAR(50) NOT NULL, -- 'metadata', 'lyrics', 'description'
     content TEXT NOT NULL,
     embedding vector(1536), -- OpenAI embeddings dimension
@@ -57,6 +103,30 @@ CREATE TABLE documents (
     metadata JSONB,
     embedding vector(1536),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Audio embeddings table
+CREATE TABLE audio_embeddings (
+    id SERIAL PRIMARY KEY,
+    song_id INTEGER REFERENCES songs(id) ON DELETE CASCADE,
+    audio_path TEXT NOT NULL,
+    combined_embedding vector(512),
+    clap_embedding vector(512),
+    librosa_features JSONB,
+    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(audio_path)
+);
+
+-- Text embeddings table
+-- Text embeddings table
+CREATE TABLE text_embeddings (
+    id SERIAL PRIMARY KEY,
+    song_id INTEGER REFERENCES songs(id) ON DELETE CASCADE,
+    content_type VARCHAR(50) NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(384),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(song_id, content_type)
 );
 
 -- Create indexes

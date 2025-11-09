@@ -471,11 +471,39 @@ class BigFlavorScraper:
                                     By.XPATH,
                                     f"//button[@class='v-nativebutton' and text()='{song_title}']"
                                 )
+                            
+                            # Extract comments from the grid row BEFORE clicking (since they're not in the edit form)
+                            comments_from_row = []
+                            try:
+                                # Get the row containing this button
+                                row = button.find_element(By.XPATH, "./ancestor::tr[contains(@class, 'v-grid-row')]")
+                                # Parse row HTML to get comments from column 5
+                                row_html = row.get_attribute('outerHTML')
+                                from bs4 import BeautifulSoup
+                                row_soup = BeautifulSoup(row_html, 'html.parser')
+                                cells = row_soup.find_all('td', class_='v-grid-cell')
+                                
+                                # Column 5: Comments (in span with title attribute)
+                                if len(cells) > 5:
+                                    comment_span = cells[5].find('span', title=True)
+                                    if comment_span:
+                                        comments_text = comment_span.get('title', '')
+                                        if comments_text:
+                                            comment_list = [c.strip() for c in comments_text.split(' / ') if c.strip()]
+                                            comments_from_row = [{'text': c, 'author': 'Unknown'} for c in comment_list]
+                                            logger.debug(f"Extracted {len(comments_from_row)} comments from grid row")
+                            except Exception as e:
+                                logger.debug(f"Could not extract comments from row: {e}")
+                            
                             button.click()
                             time.sleep(1)
                             
                             # Now get details from popup/edit page
                             song_data = self._extract_song_details_from_popup(song_title)
+                            
+                            # Merge comments from row into song_data
+                            if song_data and comments_from_row:
+                                song_data['comments'] = comments_from_row
                             
                             if song_data:
                                 all_songs_dict[song_title] = song_data
@@ -671,11 +699,11 @@ class BigFlavorScraper:
             # Wait a moment for popup to be ready
             time.sleep(1)
             
-            # Generate song ID from title (same logic as in filtering)
-            song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
+            # Initialize song data with title-based ID (will be replaced if we get audio URL)
+            temp_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
             
             song_data = {
-                'id': song_id,
+                'id': temp_id,  # Temporary ID, will be replaced with numeric ID from audio URL
                 'title': song_title
             }
             
@@ -755,16 +783,26 @@ class BigFlavorScraper:
                 audio_source = self.driver.find_element(By.CSS_SELECTOR, "audio source[type='audio/mpeg']")
                 song_data['audio_url'] = audio_source.get_attribute('src') or ''
                 
+                # Extract numeric song ID from audio URL
+                if song_data['audio_url']:
+                    numeric_id = self._extract_song_id_from_url(song_data['audio_url'])
+                    if numeric_id:
+                        song_data['id'] = numeric_id  # Replace temp ID with numeric ID
+                        logger.info(f"Extracted song ID {numeric_id} from audio URL")
+                    else:
+                        logger.warning(f"Could not extract numeric ID from URL: {song_data['audio_url']}")
+                
                 # Download the audio file if enabled
                 if self.download_audio and song_data['audio_url']:
-                    # Create a safe filename from the song title
-                    safe_title = re.sub(r'[<>:"/\\|?*]', '_', song_data.get('title', song_title))
-                    safe_title = safe_title[:200]  # Limit filename length
-                    local_path = self._download_audio(safe_title, song_data['audio_url'])
+                    local_path = self._download_audio(
+                        str(song_data['id']), 
+                        song_data.get('title', song_title),
+                        song_data['audio_url']
+                    )
                     if local_path:
                         song_data['local_audio_path'] = local_path
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Error extracting audio: {e}")
             
             # Extract instruments using Selenium
             song_data['instruments'] = self._extract_instruments_selenium()
@@ -994,7 +1032,7 @@ class BigFlavorScraper:
         Get detailed information for a song from its edit page
         
         Args:
-            song_id: Song ID
+            song_id: Song ID (can be temporary title-based ID)
             edit_url: URL to the edit page
             
         Returns:
@@ -1026,9 +1064,19 @@ class BigFlavorScraper:
         if audio_url:
             details['audio_url'] = audio_url
             
+            # Extract numeric song ID from audio URL
+            numeric_id = self._extract_song_id_from_url(audio_url)
+            if numeric_id:
+                details['id'] = numeric_id  # Replace with numeric ID
+                logger.info(f"Extracted song ID {numeric_id} from audio URL")
+            
             # Download audio if enabled
             if self.download_audio:
-                local_path = self._download_audio(song_id, audio_url)
+                local_path = self._download_audio(
+                    str(details['id']),
+                    details.get('title', ''),
+                    audio_url
+                )
                 if local_path:
                     details['local_audio_path'] = local_path
         
@@ -1179,20 +1227,44 @@ class BigFlavorScraper:
         
         return None
     
-    def _download_audio(self, song_id: str, audio_url: str) -> Optional[str]:
+    def _extract_song_id_from_url(self, audio_url: str) -> Optional[int]:
+        """
+        Extract numeric song ID from audio URL.
+        Expected format: https://bigflavorband.com/audio/1864/filename.mp3
+        
+        Args:
+            audio_url: Full URL to audio file
+            
+        Returns:
+            Song ID as integer, or None if not found
+        """
+        try:
+            # Extract ID from URL pattern: /audio/{id}/filename.mp3
+            match = re.search(r'/audio/(\d+)/', audio_url)
+            if match:
+                return int(match.group(1))
+        except Exception as e:
+            logger.debug(f"Could not extract song ID from URL {audio_url}: {e}")
+        
+        return None
+    
+    def _download_audio(self, song_id: str, song_title: str, audio_url: str) -> Optional[str]:
         """
         Download audio file
         
         Args:
-            song_id: Song ID for filename
+            song_id: Numeric song ID for filename
+            song_title: Song title for filename
             audio_url: URL to download from
             
         Returns:
             Local file path if successful
         """
         try:
-            # Create safe filename
-            filename = f"{song_id}.mp3"
+            # Create safe filename with ID and title: "12345_song_title.mp3"
+            safe_title = re.sub(r'[^\w\s-]', '', song_title).strip()
+            safe_title = re.sub(r'[-\s]+', '_', safe_title)
+            filename = f"{song_id}_{safe_title}.mp3"
             filepath = os.path.join(self.audio_dir, filename)
             
             # Skip if already downloaded
