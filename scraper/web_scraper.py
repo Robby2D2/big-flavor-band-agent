@@ -299,7 +299,7 @@ class BigFlavorScraper:
         wait.until(EC.presence_of_element_located((By.CLASS_NAME, "v-grid-body")))
         time.sleep(2)
         
-        all_songs_dict = {}  # Track songs we've already processed
+        all_songs_dict = {}  # Track songs by song_id (unique) not title
         scroll_attempts = 0
         max_scroll_attempts = max_scrolls if max_scrolls else 500
         no_new_songs_count = 0
@@ -392,7 +392,13 @@ class BigFlavorScraper:
                 
                 # Process songs starting from the correct index
                 songs_to_process = visible_songs[start_index:]
-                unprocessed_songs = [s for s in songs_to_process if s not in all_songs_dict]
+                # Convert titles to IDs for checking (song_id is unique, titles may not be)
+                processed_ids = set(all_songs_dict.keys())
+                unprocessed_songs = []
+                for s in songs_to_process:
+                    song_id_check = re.sub(r'[^a-z0-9]+', '_', s.lower()).strip('_')
+                    if song_id_check not in processed_ids:
+                        unprocessed_songs.append(s)
                 
                 logger.info(f"Visible songs: {len(visible_songs)}, Starting from index: {start_index}, Unprocessed: {len(unprocessed_songs)}")
                 
@@ -406,29 +412,30 @@ class BigFlavorScraper:
                         # Generate song ID from title (same logic as in load script)
                         song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
                         
-                        # Check if we've already processed this in current session
-                        if song_title in all_songs_dict:
-                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}'")
+                        # Check if we've already processed this in current session (by ID, not title!)
+                        if song_id in all_songs_dict:
+                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}' (ID: {song_id})")
                             continue
                         
                         # Check if it's in the database
                         if song_id not in existing_song_ids:
-                            logger.info(f"  [{idx:3d}] ✨ NEW SONG - will process: '{song_title}'")
+                            logger.info(f"  [{idx:3d}] ✨ NEW SONG - will process: '{song_title}' (ID: {song_id})")
                             songs_needing_processing.append(song_title)
                         else:
-                            logger.info(f"  [{idx:3d}] ⏭️  SKIP (in database): '{song_title}'")
-                            # Mark as processed so we don't try to get it again
-                            all_songs_dict[song_title] = {'title': song_title, 'skipped': True}
+                            logger.info(f"  [{idx:3d}] ⏭️  SKIP (in database): '{song_title}' (ID: {song_id})")
+                            # Mark as processed so we don't try to get it again (use ID as key!)
+                            all_songs_dict[song_id] = {'id': song_id, 'title': song_title, 'skipped': True}
                             last_processed_song = song_title  # Track as last processed for scrolling
                     unprocessed_songs = songs_needing_processing
                     logger.info(f"After filtering existing songs: {len(unprocessed_songs)} songs need processing")
                 else:
                     # No database filter - just log what we're checking
                     for idx, song_title in enumerate(songs_to_process, start=start_index):
-                        if song_title in all_songs_dict:
-                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}'")
+                        song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
+                        if song_id in all_songs_dict:
+                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}' (ID: {song_id})")
                         else:
-                            logger.info(f"  [{idx:3d}] 📝 WILL PROCESS: '{song_title}'")
+                            logger.info(f"  [{idx:3d}] 📝 WILL PROCESS: '{song_title}' (ID: {song_id})")
                     logger.info(f"Songs to process: {len(unprocessed_songs)}")
                 
                 # If no unprocessed songs but we haven't hit our limit, we need to scroll to load more
@@ -506,15 +513,17 @@ class BigFlavorScraper:
                                 song_data['comments'] = comments_from_row
                             
                             if song_data:
-                                all_songs_dict[song_title] = song_data
+                                # Use song_id as key (unique), not title
+                                song_id = song_data.get('id', re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_'))
+                                all_songs_dict[song_id] = song_data
                                 last_processed_song = song_title  # Update last processed
-                                logger.info(f"  ✓ Got details for: {song_title}")
+                                logger.info(f"  ✓ Got details for: {song_title} (ID: {song_id})")
                             else:
                                 # Still save basic info even if details fail
                                 song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
-                                all_songs_dict[song_title] = {'id': song_id, 'title': song_title}
+                                all_songs_dict[song_id] = {'id': song_id, 'title': song_title}
                                 last_processed_song = song_title  # Update last processed
-                                logger.warning(f"  ✗ Could not get full details for: {song_title}")
+                                logger.warning(f"  ✗ Could not get full details for: {song_title} (ID: {song_id})")
                             
                             # Close the edit window by clicking the X button
                             try:

@@ -221,10 +221,10 @@ async def main():
     print("      Whisper large-v3 takes ~1 minute per song.")
     print()
     
-    response = input("Continue? (yes/no): ").strip().lower()
-    if response not in ['yes', 'y']:
-        print("Cancelled.")
-        return
+    # response = input("Continue? (yes/no): ").strip().lower()
+    # if response not in ['yes', 'y']:
+    #     print("Cancelled.")
+    #     return
     
     scraper = None
     db_manager = None
