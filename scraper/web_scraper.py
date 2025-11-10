@@ -684,6 +684,184 @@ class BigFlavorScraper:
         
         return list(all_songs_dict.values())
     
+    def sort_by_updated_date(self, descending: bool = True):
+        """
+        Click the 'Updated' column header to sort songs by update date.
+        
+        Args:
+            descending: If True, sort newest first (default). If False, sort oldest first.
+        """
+        try:
+            logger.info("Clicking 'Updated' column to sort by date...")
+            
+            # Find the "Updated" column header
+            # The headers are in <th> elements with class "v-grid-column-header-cell"
+            headers = self.driver.find_elements(By.CSS_SELECTOR, "th.v-grid-column-header-cell")
+            
+            updated_header = None
+            for header in headers:
+                if "Updated" in header.text:
+                    updated_header = header
+                    break
+            
+            if not updated_header:
+                logger.warning("Could not find 'Updated' column header")
+                return
+            
+            # Click once to sort (usually ascending first)
+            updated_header.click()
+            time.sleep(1)
+            
+            # Check if we need to click again for descending
+            if descending:
+                # Check the sort indicator - if it's ascending, click again
+                sort_indicator = updated_header.find_elements(By.CSS_SELECTOR, ".v-grid-sorter")
+                if sort_indicator:
+                    # Look for ascending indicator, if found click again
+                    classes = sort_indicator[0].get_attribute("class")
+                    if "asc" in classes.lower():
+                        updated_header.click()
+                        time.sleep(1)
+                        logger.info("Sorted by 'Updated' date (newest first)")
+                    else:
+                        logger.info("Sorted by 'Updated' date (newest first)")
+                else:
+                    # No indicator found, try clicking again to be safe
+                    updated_header.click()
+                    time.sleep(1)
+                    logger.info("Sorted by 'Updated' date (newest first)")
+            else:
+                logger.info("Sorted by 'Updated' date (oldest first)")
+                
+        except Exception as e:
+            logger.error(f"Error sorting by updated date: {e}")
+    
+    def get_new_songs_since(self, latest_date: Optional[datetime] = None, max_scrolls: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get only songs that were updated after the given date.
+        Assumes songs are already sorted by "Updated" date (newest first).
+        Stops processing when it encounters a song older than latest_date.
+        
+        Args:
+            latest_date: Only process songs updated after this date. If None, process all songs.
+            max_scrolls: Maximum number of scroll attempts
+            
+        Returns:
+            List of song dictionaries for new/updated songs only
+        """
+        if latest_date is None:
+            logger.info("No latest date provided - will process all songs")
+            return self.get_all_songs_with_details(max_scrolls=max_scrolls)
+        
+        logger.info(f"Fetching songs updated since: {latest_date}")
+        
+        # Ensure we're on the songs page
+        self.driver.get(self.BASE_URL)
+        
+        # Wait for Vaadin grid to load
+        wait = WebDriverWait(self.driver, 10)
+        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "v-grid-body")))
+        time.sleep(2)
+        
+        all_songs_dict = {}
+        scroll_attempts = 0
+        found_old_song = False  # Flag to stop when we find a song older than latest_date
+        
+        logger.info("Processing songs (will stop when reaching old songs)...")
+        
+        while scroll_attempts < max_scrolls and not found_old_song:
+            scroll_attempts += 1
+            songs_before = len(all_songs_dict)
+            
+            try:
+                # Get currently visible song buttons
+                song_buttons = self.driver.find_elements(By.CSS_SELECTOR, ".v-grid-cell button.v-nativebutton")
+                
+                # Collect visible song titles
+                visible_songs = []
+                for button in song_buttons:
+                    song_title = button.text.strip()
+                    if song_title and song_title not in all_songs_dict:
+                        visible_songs.append(song_title)
+                
+                logger.info(f"Scroll {scroll_attempts}: Found {len(visible_songs)} unprocessed visible songs")
+                
+                # Process each visible song we haven't seen yet
+                for song_title in visible_songs:
+                    if found_old_song:
+                        break
+                    
+                    try:
+                        logger.info(f"Processing song: {song_title}")
+                        
+                        # Click on the song and get details
+                        song_data = self.click_song_and_get_details(song_title)
+                        
+                        if song_data and 'updated_at' in song_data:
+                            song_updated = song_data['updated_at']
+                            
+                            # Check if this song is newer than our cutoff
+                            if isinstance(song_updated, str):
+                                try:
+                                    song_updated = datetime.fromisoformat(song_updated.replace('Z', '+00:00'))
+                                except:
+                                    logger.warning(f"Could not parse date: {song_updated}")
+                                    song_updated = None
+                            
+                            if song_updated and song_updated <= latest_date:
+                                logger.info(f"✓ Found old song: '{song_title}' (updated: {song_updated}) - stopping")
+                                found_old_song = True
+                                break
+                            else:
+                                logger.info(f"✓ New song: '{song_title}' (updated: {song_updated})")
+                                all_songs_dict[song_title] = song_data
+                        else:
+                            # No update date found, include it to be safe
+                            logger.warning(f"No updated_at date for '{song_title}' - including anyway")
+                            all_songs_dict[song_title] = song_data
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing song '{song_title}': {e}")
+                        # Continue with next song
+                        
+                if found_old_song:
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Error finding song buttons: {e}")
+            
+            songs_after = len(all_songs_dict)
+            new_songs = songs_after - songs_before
+            
+            if new_songs == 0:
+                # No new songs found, scroll and try again
+                logger.info("No new songs in this batch, scrolling...")
+            
+            # Scroll down to load more songs
+            try:
+                scroll_worked = self.driver.execute_script("""
+                    var grid = document.querySelector('.v-grid-tablewrapper');
+                    if (grid) {
+                        var oldScroll = grid.scrollTop;
+                        grid.scrollTop = grid.scrollTop + 400;
+                        return grid.scrollTop > oldScroll;
+                    }
+                    return false;
+                """)
+                
+                if not scroll_worked:
+                    logger.info("Reached end of list or can't scroll further")
+                    break
+                    
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.debug(f"Scroll error: {e}")
+                break
+        
+        logger.info(f"Finished collecting new songs: {len(all_songs_dict)} total")
+        return list(all_songs_dict.values())
+    
     def _extract_song_details_from_popup(self, song_title: str) -> Optional[Dict[str, Any]]:
         """
         Extract song details from the popup/edit page that's currently open.

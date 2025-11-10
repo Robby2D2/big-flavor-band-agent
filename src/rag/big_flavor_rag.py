@@ -193,7 +193,8 @@ class SongRAGSystem:
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
         apply_voice_filter: bool = False,
-        whisper_model_size: str = 'large-v3'
+        whisper_model_size: str = 'large-v3',
+        lyrics_extractor=None
     ) -> Dict[str, Any]:
         """
         Extract lyrics from audio and index them for RAG search.
@@ -209,6 +210,7 @@ class SongRAGSystem:
             vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
             apply_voice_filter: Apply voice frequency bandpass filter (80-8000 Hz)
             whisper_model_size: Whisper model size ('tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3')
+            lyrics_extractor: Optional pre-initialized LyricsExtractor instance (for reuse across multiple songs)
             
         Returns:
             Dictionary with extraction results and metadata
@@ -217,13 +219,14 @@ class SongRAGSystem:
             # Import lyrics extractor
             from src.rag.lyrics_extractor import LyricsExtractor
             
-            # Initialize lyrics extractor (only load demucs if vocal separation requested)
-            lyrics_extractor = LyricsExtractor(
-                whisper_model_size=whisper_model_size,
-                use_gpu=True,
-                min_confidence=min_confidence,
-                load_demucs=separate_vocals
-            )
+            # Initialize lyrics extractor if not provided (only load demucs if vocal separation requested)
+            if lyrics_extractor is None:
+                lyrics_extractor = LyricsExtractor(
+                    whisper_model_size=whisper_model_size,
+                    use_gpu=True,
+                    min_confidence=min_confidence,
+                    load_demucs=separate_vocals
+                )
             
             # Check if extractor is available
             if not lyrics_extractor.is_available():
@@ -270,12 +273,8 @@ class SongRAGSystem:
             lyrics_preview = lyrics[:200] + '...' if len(lyrics) > 200 else lyrics
             logger.info(f"Extracted lyrics for {song_id} ({len(lyrics)} chars, {confidence:.1%} confidence): {lyrics_preview}")
             
-            # Generate text embedding (requires OpenAI API)
-            # TODO: Add OpenAI embedding generation
-            if generate_embedding:
-                logger.warning("Text embedding generation not yet implemented - storing lyrics with placeholder embedding")
-            
-            # Store lyrics with placeholder embedding (can be generated later)
+            # Store lyrics with placeholder embedding
+            # TODO: Add real text embedding generation using sentence transformers or OpenAI
             success = await self.index_text_content(
                 song_id=song_id,
                 content_type='lyrics',

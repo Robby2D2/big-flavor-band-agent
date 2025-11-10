@@ -239,11 +239,12 @@ class AudioEmbeddingExtractor:
                 clap_embedding * 0.7   # 512 dimensions from CLAP
             ])
         else:
-            # Pad to standard dimension if CLAP not available
-            # Use 549 dimensions (37 librosa + 512 CLAP)
+            # Use only 512 dimensions when CLAP not available
+            # Pad librosa features to 512 dimensions
+            padding_size = 512 - len(feature_vector)
             combined = np.concatenate([
                 feature_vector,
-                np.zeros(512, dtype=np.float32)
+                np.zeros(padding_size, dtype=np.float32)
             ])
         
         # Final normalization

@@ -71,15 +71,21 @@ class ScrapedDataManager:
     async def insert_session(self, session_name: str, description: str = None) -> int:
         """Insert or get a session"""
         query = """
-            INSERT INTO sessions (name, description)
-            VALUES ($1, $2)
-            ON CONFLICT (name) DO UPDATE SET
-                description = COALESCE(EXCLUDED.description, sessions.description)
+            INSERT INTO sessions (name)
+            VALUES ($1)
+            ON CONFLICT (name) DO NOTHING
             RETURNING id
         """
         
         async with self.db.pool.acquire() as conn:
-            session_id = await conn.fetchval(query, session_name, description)
+            session_id = await conn.fetchval(query, session_name)
+            
+            # If session already exists, fetch its id
+            if session_id is None:
+                session_id = await conn.fetchval(
+                    "SELECT id FROM sessions WHERE name = $1",
+                    session_name
+                )
         
         return session_id
     
