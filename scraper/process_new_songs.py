@@ -89,7 +89,7 @@ async def process_song(song_data: dict, db_manager: DatabaseManager, data_manage
             # 2. Analyze audio features
             print("\n[2/4] Analyzing audio features...")
             try:
-                analysis = rag_system.audio_extractor.analyze_audio(audio_path)
+                analysis = rag_system.embedding_extractor.analyze_audio(audio_path)
                 results['audio_analyzed'] = True
                 print(f"  ✓ BPM: {analysis.get('tempo_bpm', 'N/A')}, Key: {analysis.get('key', 'N/A')}, Duration: {analysis.get('duration_seconds', 'N/A')}s")
             except Exception as e:
@@ -101,12 +101,12 @@ async def process_song(song_data: dict, db_manager: DatabaseManager, data_manage
             # 3. Create audio embeddings
             print("\n[3/4] Creating audio embeddings...")
             try:
-                result = await rag_system.index_audio_file(audio_path, song_id)
-                if result.get('success'):
+                success = await rag_system.index_audio_file(audio_path, song_id)
+                if success:
                     results['audio_indexed'] = True
                     print(f"  ✓ Audio embeddings created")
                 else:
-                    error = result.get('error', 'Unknown error')
+                    error = "Failed to create audio embeddings"
                     print(f"  ✗ {error}")
                     results['errors'].append(error)
             except Exception as e:

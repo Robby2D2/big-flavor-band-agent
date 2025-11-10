@@ -33,12 +33,20 @@ logger = logging.getLogger(__name__)
 
 async def process_song(song_data: dict, db_manager: DatabaseManager, data_manager: ScrapedDataManager, 
                        rag_system: SongRAGSystem, index: int, total: int, lyrics_extractor=None):
-    """Process a single song completely"""
+    """
+    Process a single song, only filling in missing data.
+    Checks database for existing audio analysis, embeddings, and lyrics.
+    """
     results = {
         'inserted': False,
         'audio_analyzed': False,
         'audio_indexed': False,
         'lyrics_extracted': False,
+        'skipped': {
+            'audio_analysis': False,
+            'audio_embeddings': False,
+            'lyrics': False
+        },
         'errors': []
     }
     
@@ -56,12 +64,39 @@ async def process_song(song_data: dict, db_manager: DatabaseManager, data_manage
             results['errors'].append("Missing song ID")
             return results
         
-        # 1. Insert into database
-        print("\n[1/4] Inserting into database...")
+        # Check what already exists in database
+        existing_data = await db_manager.pool.fetchrow("""
+            SELECT 
+                s.id,
+                s.tempo_bpm,
+                s.key,
+                s.duration_seconds,
+                EXISTS(SELECT 1 FROM audio_embeddings WHERE song_id = s.id) as has_audio_embedding,
+                EXISTS(SELECT 1 FROM text_embeddings WHERE song_id = s.id AND content_type = 'lyrics') as has_lyrics
+            FROM songs s
+            WHERE s.id = $1
+        """, song_id)
+        
+        song_exists = existing_data is not None
+        has_audio_analysis = existing_data and existing_data['tempo_bpm'] is not None if existing_data else False
+        has_audio_embedding = existing_data['has_audio_embedding'] if existing_data else False
+        has_lyrics = existing_data['has_lyrics'] if existing_data else False
+        
+        if song_exists:
+            print(f"  → Song exists in database")
+            print(f"    Audio analysis: {'✓' if has_audio_analysis else '✗'}")
+            print(f"    Audio embedding: {'✓' if has_audio_embedding else '✗'}")
+            print(f"    Lyrics: {'✓' if has_lyrics else '✗'}")
+        
+        # 1. Insert/Update database
+        print("\n[1/4] Database insert/update...")
         try:
             inserted_id = await data_manager.insert_song_with_details(song_data)
             results['inserted'] = True
-            print(f"  ✓ Inserted song ID {inserted_id}")
+            if song_exists:
+                print(f"  ✓ Updated song ID {inserted_id}")
+            else:
+                print(f"  ✓ Inserted song ID {inserted_id}")
         except Exception as e:
             error = f"Database insert error: {e}"
             logger.error(error)
@@ -74,72 +109,87 @@ async def process_song(song_data: dict, db_manager: DatabaseManager, data_manage
         if audio_path and Path(audio_path).exists():
             print(f"Audio file: {audio_path}")
             
-            # 2. Analyze audio features
-            print("\n[2/4] Analyzing audio features...")
-            try:
-                analysis = rag_system.audio_extractor.analyze_audio(audio_path)
+            # 2. Analyze audio features (only if missing)
+            if has_audio_analysis:
+                print("\n[2/4] Audio analysis already exists - skipping")
                 results['audio_analyzed'] = True
-                print(f"  ✓ BPM: {analysis.get('tempo_bpm', 'N/A')}, Key: {analysis.get('key', 'N/A')}, Duration: {analysis.get('duration_seconds', 'N/A')}s")
-            except Exception as e:
-                error = f"Audio analysis error: {e}"
-                logger.error(error)
-                print(f"  ✗ {error}")
-                results['errors'].append(error)
-            
-            # 3. Create audio embeddings
-            print("\n[3/4] Creating audio embeddings...")
-            try:
-                result = await rag_system.index_audio_file(audio_path, song_id)
-                if result.get('success'):
-                    results['audio_indexed'] = True
-                    print(f"  ✓ Audio embeddings created")
-                else:
-                    error = result.get('error', 'Unknown error')
+                results['skipped']['audio_analysis'] = True
+            else:
+                print("\n[2/4] Analyzing audio features...")
+                try:
+                    analysis = rag_system.embedding_extractor.analyze_audio(audio_path)
+                    results['audio_analyzed'] = True
+                    print(f"  ✓ BPM: {analysis.get('tempo_bpm', 'N/A')}, Key: {analysis.get('key', 'N/A')}, Duration: {analysis.get('duration_seconds', 'N/A')}s")
+                except Exception as e:
+                    error = f"Audio analysis error: {e}"
+                    logger.error(error)
                     print(f"  ✗ {error}")
                     results['errors'].append(error)
-            except Exception as e:
-                error = f"Audio embedding error: {e}"
-                logger.error(error)
-                print(f"  ✗ {error}")
-                results['errors'].append(error)
             
-            # 4. Extract lyrics
-            print("\n[4/4] Extracting lyrics (Whisper large-v3)...")
-            try:
-                result = await rag_system.extract_and_index_lyrics(
-                    audio_path=audio_path,
-                    song_id=song_id,
-                    separate_vocals=False,
-                    vad_filter=False,
-                    whisper_model_size='large-v3',
-                    lyrics_extractor=lyrics_extractor
-                )
-                
-                if result.get('success') and result.get('lyrics'):
-                    results['lyrics_extracted'] = True
-                    lyrics_len = len(result['lyrics'])
-                    confidence = result.get('confidence', 0)
-                    print(f"  ✓ Extracted {lyrics_len} characters (confidence: {confidence:.1%})")
-                else:
-                    error = result.get('error', 'No lyrics extracted')
+            # 3. Create audio embeddings (only if missing)
+            if has_audio_embedding:
+                print("\n[3/4] Audio embeddings already exist - skipping")
+                results['audio_indexed'] = True
+                results['skipped']['audio_embeddings'] = True
+            else:
+                print("\n[3/4] Creating audio embeddings...")
+                try:
+                    success = await rag_system.index_audio_file(audio_path, song_id)
+                    if success:
+                        results['audio_indexed'] = True
+                        print(f"  ✓ Audio embeddings created")
+                    else:
+                        error = "Failed to create audio embeddings"
+                        print(f"  ✗ {error}")
+                        results['errors'].append(error)
+                except Exception as e:
+                    error = f"Audio embedding error: {e}"
+                    logger.error(error)
                     print(f"  ✗ {error}")
                     results['errors'].append(error)
+            
+            # 4. Extract lyrics (only if missing)
+            if has_lyrics:
+                print("\n[4/4] Lyrics already extracted - skipping")
+                results['lyrics_extracted'] = True
+                results['skipped']['lyrics'] = True
+            else:
+                print("\n[4/4] Extracting lyrics (Whisper large-v3)...")
+                try:
+                    result = await rag_system.extract_and_index_lyrics(
+                        audio_path=audio_path,
+                        song_id=song_id,
+                        separate_vocals=False,
+                        vad_filter=False,
+                        whisper_model_size='large-v3',
+                        lyrics_extractor=lyrics_extractor
+                    )
                     
-            except Exception as e:
-                error = f"Lyrics extraction error: {e}"
-                logger.error(error)
-                print(f"  ✗ {error}")
-                results['errors'].append(error)
+                    if result.get('success') and result.get('lyrics'):
+                        results['lyrics_extracted'] = True
+                        lyrics_len = len(result['lyrics'])
+                        confidence = result.get('confidence', 0)
+                        print(f"  ✓ Extracted {lyrics_len} characters (confidence: {confidence:.1%})")
+                    else:
+                        error = result.get('error', 'No lyrics extracted')
+                        print(f"  ✗ {error}")
+                        results['errors'].append(error)
+                        
+                except Exception as e:
+                    error = f"Lyrics extraction error: {e}"
+                    logger.error(error)
+                    print(f"  ✗ {error}")
+                    results['errors'].append(error)
         else:
             print("\n  ⚠ No audio file available, skipping analysis and lyrics")
         
-        # Summary
+        # Summary for this song
         print(f"\n{'─'*70}")
         print(f"SUMMARY: {title[:50]}")
         print(f"  Database: {'✓' if results['inserted'] else '✗'}")
-        print(f"  Audio Analysis: {'✓' if results['audio_analyzed'] else '✗'}")
-        print(f"  Audio Embeddings: {'✓' if results['audio_indexed'] else '✗'}")
-        print(f"  Lyrics: {'✓' if results['lyrics_extracted'] else '✗'}")
+        print(f"  Audio Analysis: {'✓ (existing)' if results['skipped']['audio_analysis'] else ('✓' if results['audio_analyzed'] else '✗')}")
+        print(f"  Audio Embeddings: {'✓ (existing)' if results['skipped']['audio_embeddings'] else ('✓' if results['audio_indexed'] else '✗')}")
+        print(f"  Lyrics: {'✓ (existing)' if results['skipped']['lyrics'] else ('✓' if results['lyrics_extracted'] else '✗')}")
         if results['errors']:
             print(f"  Errors: {len(results['errors'])}")
         print(f"{'─'*70}")
