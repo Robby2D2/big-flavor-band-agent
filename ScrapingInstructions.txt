@@ -7,3 +7,14 @@ I'd like to update the scraper and the database schema as well to load songs fro
 5. When storing the song in the database, we should also add it to the RAG system including extracting the lyrics (using our existing lyric extractor with v3-large model).  The RAG system should include lyrics, titles, sessions, performers, instruments, etc. such that the LLM would be able to handle requests such as "Find 10 songs where Rob Danek is on Lead Vocals"
 6. Update appropriate tests as well as identifying which tests we can run to make sure this is working as expected.  Mainly we've had issues with paging in the past, so I'd like to make sure we run that test that starts with "Going to California - raga" and then successfully advances to the next songs.
 7. After running these tests, I'd like to verify what was stored in the database for these songs including what lyrics were extracted.
+
+
+Let's clear the database and test it again.  We should use our standard defaults for lyric extraction which is no demucs, no VAD filter, and large-v3 faster whisper model.  Also, are you able to collect the comments from the scraping as well?  I didn't notice any in the database.
+
+Also, as we are scraping the songs and downloading the MP3, can you also perform the audio analysis to save all of the fields such as tempo_bpm, mood, energy, key, duration_seconds, etc.
+
+Can you update this test so that it processes 1 song completely at a time.  In other words, it will scrape one song, download the mp3 for it, perform and save the audio analyis for that one song, extract and save the lyrics for that one song, and then go on to the next song?  In addition, it still is saying text embedding generation not yet implemented - storing lyrics with placeholder embedding.  Aren't we embedding the extracted lyrics?  Can we?
+
+I'd like to be able to re-run this full script and have it work as follows:
+1. If the song already is not in our database, yet, do everything.
+2. Otherwise, if the song is in our database, update only things that are missing.  For example, if audio analysis is missing for that song, redo the audio analysis and store those fields.  If the audio embedding is missing, add the audio embeddings for that song.  If lyrics are missing, extract that lyrics.  But only perform the necessary tasks to capture missing data.

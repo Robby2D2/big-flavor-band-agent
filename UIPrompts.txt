@@ -1,0 +1,9 @@
+
+This BigFlavor agent seems to be working great!  I'd love to add a front end onto this using Next.js! I'd like it to do the following:
+
+1. Provide a search interface so users can search for BigFlavor songs!
+2. Use Google auth0 to require a login.  We can add other providers later.
+3. For users with edit capabilities, provide access to the agent's MCP tools.
+4. Provide a BigFlavor radio-like station where the Agent will act like a DJ and stream music.  Users should be able to request that the agent play specific songs.
+
+Is there anything else I'm missing for a first pass at this?
