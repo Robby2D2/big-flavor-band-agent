@@ -1,7 +1,8 @@
 """
 Process ALL songs from bigflavorband.com with complete pipeline:
-1. Scrape all songs with details
-2. For each song (one at a time):
+1. Parse RSS feed to get song IDs
+2. Scrape only new songs (skip existing ones)
+3. For each song (one at a time):
    - Insert into database
    - Analyze audio features
    - Create audio embeddings
@@ -9,9 +10,17 @@ Process ALL songs from bigflavorband.com with complete pipeline:
 """
 
 import asyncio
+import json
 import logging
+import re
 import sys
+import xml.etree.ElementTree as ET
+from datetime import datetime
 from pathlib import Path
+from typing import Dict, Set
+from urllib.parse import unquote
+
+import requests
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -29,6 +38,48 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def parse_rss_feed(rss_url: str = "https://bigflavorband.com/rss") -> Dict[str, int]:
+    """
+    Parse RSS feed to extract song ID mapping from audio URLs.
+    
+    Returns:
+        Dict mapping "session--title" to numeric song ID
+        Example: {"Session Name--Song Title": 1234}
+    """
+    logger.info(f"Fetching RSS feed from {rss_url}")
+    
+    try:
+        response = requests.get(rss_url, timeout=30)
+        response.raise_for_status()
+        
+        root = ET.fromstring(response.content)
+        song_id_map = {}
+        
+        # Parse each item in RSS feed
+        for item in root.findall('.//item'):
+            link_elem = item.find('link')
+            if link_elem is not None and link_elem.text:
+                # URL format: https://bigflavorband.com/audio/<song_id>/<session>--<title>.mp3
+                url = unquote(link_elem.text)  # Decode URL encoding
+                
+                # Extract song ID and filename
+                match = re.search(r'/audio/(\d+)/(.+?)\.mp3', url)
+                if match:
+                    song_id = int(match.group(1))
+                    filename = match.group(2)  # "session--title"
+                    
+                    song_id_map[filename] = song_id
+                    logger.debug(f"Mapped: {filename} -> {song_id}")
+        
+        logger.info(f"Successfully parsed RSS feed: found {len(song_id_map)} song mappings")
+        return song_id_map
+        
+    except Exception as e:
+        logger.error(f"Failed to parse RSS feed: {e}")
+        logger.warning("Continuing without RSS feed data - will scrape all songs")
+        return {}
 
 
 async def process_song(song_data: dict, db_manager: DatabaseManager, data_manager: ScrapedDataManager, 
@@ -117,7 +168,16 @@ async def process_song(song_data: dict, db_manager: DatabaseManager, data_manage
             else:
                 print("\n[2/4] Analyzing audio features...")
                 try:
-                    analysis = rag_system.embedding_extractor.analyze_audio(audio_path)
+                    analysis = rag_system.embedding_extractor.extract_librosa_features(audio_path)
+                    
+                    # Update database with audio analysis
+                    await db_manager.pool.execute("""
+                        UPDATE songs 
+                        SET tempo_bpm = $1, key = $2, duration_seconds = $3
+                        WHERE id = $4
+                    """, analysis.get('tempo_bpm'), analysis.get('key'), 
+                        analysis.get('duration_seconds'), song_id)
+                    
                     results['audio_analyzed'] = True
                     print(f"  ✓ BPM: {analysis.get('tempo_bpm', 'N/A')}, Key: {analysis.get('key', 'N/A')}, Duration: {analysis.get('duration_seconds', 'N/A')}s")
                 except Exception as e:
@@ -231,44 +291,128 @@ async def main():
     
     try:
         # Initialize database
-        print("\n[1/3] Connecting to database...")
+        print("\n[1/4] Connecting to database...")
         db_manager = DatabaseManager()
         await db_manager.connect()
         data_manager = ScrapedDataManager(db_manager)
         print("✓ Database connected")
         
+        # Get existing song IDs from database first
+        existing_song_ids = await db_manager.pool.fetch("SELECT id FROM songs")
+        existing_ids_set = {row['id'] for row in existing_song_ids}
+        print(f"Found {len(existing_ids_set)} songs already in database")
+        
+        # Parse RSS feed to get song ID mappings
+        print("\n[2/4] Parsing RSS feed...")
+        print("="*70)
+        rss_song_map = parse_rss_feed()
+        print(f"✓ RSS feed parsed: {len(rss_song_map)} song mappings")
+        
+        # Create reverse lookup: song_id -> session--title
+        id_to_key = {song_id: key for key, song_id in rss_song_map.items()}
+        
+        # Identify which song IDs we can skip (already in database)
+        skip_ids = existing_ids_set & set(rss_song_map.values())
+        print(f"Can skip {len(skip_ids)} songs that are already in database")
+        
         # Initialize RAG system
-        print("\n[2/3] Initializing RAG system...")
+        print("\n[3/4] Initializing RAG system...")
         rag_system = SongRAGSystem(db_manager, use_clap=True)
         print("✓ RAG system initialized")
         
-        # Initialize scraper
-        print("\n[3/3] Initializing web scraper...")
+        # Initialize scraper with RSS mapping
+        print("\n[4/4] Initializing web scraper...")
         scraper = BigFlavorScraper(
             headless=True,
-            download_audio=True
+            download_audio=True,
+            rss_song_map=rss_song_map  # Pass RSS mapping to scraper
         )
         scraper.navigate_to_songs()
         print("✓ Scraper initialized")
         
-        # Scrape all songs
+        # Scrape songs (will use RSS map to skip existing ones)
         print("\n" + "="*70)
-        print("COLLECTING ALL SONGS")
+        print("COLLECTING SONGS FROM WEBSITE")
         print("="*70)
-        print("\nScraping all songs from website...")
-        print("(This collects all songs first due to Vaadin grid virtualization)")
+        
+        print(f"Found {len(existing_ids_set)} songs already in database")
+        print(f"These will be skipped during scraping to save time\n")
+        
+        # Scrape all songs (will skip existing ones)
+        print("="*70)
+        print("COLLECTING NEW SONGS FROM WEBSITE")
+        print("="*70)
+        print("\nScraping songs from website...")
+        print("(Skipping songs already in database)")
         print()
         
         songs = scraper.get_all_songs_with_details(
             max_scrolls=1000,  # High limit to get all songs
-            limit=None  # No limit
+            limit=None,  # No limit
+            existing_song_ids=existing_ids_set  # Skip these songs
         )
         
         if not songs:
             print("\n✗ No songs were scraped")
             return
         
-        print(f"✓ Collected {len(songs)} songs\n")
+        print(f"\n✓ Collected {len(songs)} songs from website\n")
+        
+        # IMMEDIATELY insert all scraped songs into database before processing
+        print("="*70)
+        print("INSERTING ALL SONGS INTO DATABASE")
+        print("="*70)
+        print("(Saving metadata immediately to prevent data loss)\n")
+        
+        inserted_count = 0
+        updated_count = 0
+        error_count = 0
+        
+        for i, song_data in enumerate(songs, 1):
+            song_id = song_data.get('id')
+            title = song_data.get('title', 'Unknown')
+            
+            try:
+                # Check if song exists
+                existing = await db_manager.pool.fetchval(
+                    "SELECT id FROM songs WHERE id = $1", song_id
+                )
+                
+                # Insert or update
+                result_id = await data_manager.insert_song_with_details(song_data)
+                
+                if existing:
+                    updated_count += 1
+                    status = "updated"
+                else:
+                    inserted_count += 1
+                    status = "inserted"
+                
+                if i % 50 == 0:
+                    print(f"  Progress: {i}/{len(songs)} - {inserted_count} inserted, {updated_count} updated")
+                    
+            except Exception as e:
+                error_count += 1
+                logger.error(f"Failed to insert song {song_id} ({title}): {e}")
+                print(f"  ✗ Error inserting song {song_id}: {e}")
+        
+        print(f"\n✓ Database insertion complete:")
+        print(f"    Inserted: {inserted_count}")
+        print(f"    Updated: {updated_count}")
+        print(f"    Errors: {error_count}")
+        print(f"    Total in DB: {inserted_count + updated_count}\n")
+        
+        if error_count > 0:
+            print(f"⚠ {error_count} songs failed to insert - check logs for details\n")
+        
+        # Save backup JSON file with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = Path(__file__).parent / f"scraped_songs_{timestamp}.json"
+        
+        print(f"Creating backup JSON file: {backup_file.name}")
+        with open(backup_file, 'w', encoding='utf-8') as f:
+            json.dump(songs, f, indent=2, default=str, ensure_ascii=False)
+        print(f"✓ Backup saved to {backup_file.name}\n")
         
         # Initialize LyricsExtractor once for reuse
         print("Initializing Whisper large-v3 model (one-time setup)...")

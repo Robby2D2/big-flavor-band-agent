@@ -67,8 +67,11 @@ class AudioEmbeddingExtractor:
             Dictionary of audio features
         """
         try:
-            # Load audio
-            y, sr = librosa.load(audio_path, sr=sr, duration=30)  # First 30 seconds
+            # Get full duration without loading entire file
+            full_duration = librosa.get_duration(path=audio_path)
+            
+            # Load first 30 seconds for analysis (faster)
+            y, sr = librosa.load(audio_path, sr=sr, duration=30)
             
             # Tempo and beat
             tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
@@ -108,7 +111,7 @@ class AudioEmbeddingExtractor:
             return {
                 'tempo': float(tempo),
                 'estimated_key': estimated_key,
-                'duration': float(librosa.get_duration(y=y, sr=sr)),
+                'duration': float(full_duration),  # Use full duration, not just the 30s sample
                 
                 # MFCCs - compact representation of spectral envelope
                 'mfcc_mean': mfcc_mean,

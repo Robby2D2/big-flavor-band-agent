@@ -124,13 +124,13 @@ class BigFlavorAgent:
             },
             {
                 "name": "search_by_text_description",
-                "description": "Find songs matching a text description like 'ambient sleep music' or 'energetic workout beats'. Use this for natural language music queries.",
+                "description": "Find songs matching themes, moods, or concepts using semantic search. Use this for questions ABOUT topics (e.g., 'songs about hippies', 'songs about love', 'counterculture themes'). This searches metadata and uses meaning-based similarity, NOT exact lyrics matching.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "description": {
                             "type": "string",
-                            "description": "Text description of desired music"
+                            "description": "Text description of desired music themes or mood"
                         },
                         "limit": {
                             "type": "number",
@@ -138,6 +138,24 @@ class BigFlavorAgent:
                         }
                     },
                     "required": ["description"]
+                }
+            },
+            {
+                "name": "search_lyrics_by_keyword",
+                "description": "Search for songs WITH specific exact words in their lyrics (e.g., 'find songs with the word hippie', 'songs that say love', 'lyrics containing ocean'). Use ONLY when user wants exact word/phrase matching in lyrics text. For thematic searches, use search_by_text_description instead.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {
+                            "type": "string",
+                            "description": "Word or phrase to search for in lyrics"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results (default: 20)"
+                        }
+                    },
+                    "required": ["keyword"]
                 }
             },
             {
@@ -566,6 +584,7 @@ class BigFlavorAgent:
         rag_tools = {
             "search_by_audio_file",
             "search_by_text_description",
+            "search_lyrics_by_keyword",
             "find_song_by_title",
             "search_by_tempo_range",
             "search_hybrid"
@@ -624,6 +643,21 @@ class BigFlavorAgent:
                     result = {
                         "status": "success",
                         "query": tool_input["description"],
+                        "results_count": len(results),
+                        "songs": results
+                    }
+                elif tool_name == "search_lyrics_by_keyword":
+                    keyword = tool_input["keyword"]
+                    limit = tool_input.get("limit", 20)
+                    logger.info(f"Searching lyrics for keyword: '{keyword}' (limit={limit})")
+                    
+                    results = await self.rag_system.search_lyrics_by_keyword(keyword, limit)
+                    
+                    logger.info(f"Found {len(results)} songs with keyword '{keyword}'")
+                    
+                    result = {
+                        "status": "success",
+                        "keyword": keyword,
                         "results_count": len(results),
                         "songs": results
                     }
@@ -770,6 +804,7 @@ SEARCH TOOLS (RAG System - direct library access):
 - search_by_audio_file: Find songs that SOUND similar (most powerful for sonic matching)
 - find_song_by_title: Find songs by title (use this FIRST when user mentions a song name)
 - search_by_text_description: Natural language search ("chill jazz", "upbeat workout")
+- search_lyrics_by_keyword: Find songs with EXACT words/phrases in lyrics (use when user wants specific words like "hippie", "love", "ocean")
 - search_by_tempo_range: Find songs by BPM
 - search_hybrid: Combine multiple criteria for best results
 
@@ -827,6 +862,10 @@ EXAMPLES:
 - "Find songs like Going to California" → find_song_by_title("Going to California") then search_by_audio_file(result.audio_path)
 - "Find songs like this.mp3" → search_by_audio_file("this.mp3")
 - "Find 120 BPM songs" → search_by_tempo_range(min=115, max=125)
+- "What songs are about hippies?" → search_by_text_description("hippie counterculture 1960s themes")
+- "Find songs with the word hippie in lyrics" → search_lyrics_by_keyword("hippie")
+- "Songs about love" → search_by_text_description("love romantic relationships")
+- "Songs that say 'I love you'" → search_lyrics_by_keyword("I love you")
 - "Make this song 128 BPM" → match_tempo(file, 128, output)
 - "Create mix of song1 and song2" → create_transition(song1, song2, output)
 - "Clean up this raw recording" → auto_clean_recording(file, output, "moderate") 🌟 BEST OPTION

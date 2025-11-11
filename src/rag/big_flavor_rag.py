@@ -24,6 +24,15 @@ from database import DatabaseManager
 # Import audio embedding extractor
 from src.rag.audio_embedding_extractor import AudioEmbeddingExtractor
 
+# Import text embedding model
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    logger_temp = logging.getLogger("rag-system")
+    logger_temp.warning("sentence-transformers not available. Text embedding search will not work. Install with: pip install sentence-transformers")
+
 logger = logging.getLogger("rag-system")
 
 
@@ -50,6 +59,19 @@ class SongRAGSystem:
         self.db = db_manager
         self.embedding_extractor = AudioEmbeddingExtractor(use_clap=use_clap)
         self.cache_ttl = timedelta(hours=cache_ttl_hours)
+        
+        # Initialize text embedding model for semantic search
+        self.text_embedding_model = None
+        if SENTENCE_TRANSFORMERS_AVAILABLE:
+            try:
+                # Use all-MiniLM-L6-v2 (384 dimensions) to match database schema
+                logger.info("Loading sentence-transformers model: all-MiniLM-L6-v2")
+                self.text_embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("Text embedding model loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load text embedding model: {e}")
+                self.text_embedding_model = None
+        
         logger.info("RAG system initialized")
     
     async def index_audio_file(self, audio_path: str, song_id: int) -> bool:
@@ -273,13 +295,24 @@ class SongRAGSystem:
             lyrics_preview = lyrics[:200] + '...' if len(lyrics) > 200 else lyrics
             logger.info(f"Extracted lyrics for {song_id} ({len(lyrics)} chars, {confidence:.1%} confidence): {lyrics_preview}")
             
-            # Store lyrics with placeholder embedding
-            # TODO: Add real text embedding generation using sentence transformers or OpenAI
+            # Generate real text embedding using sentence transformers
+            if self.text_embedding_model and generate_embedding:
+                try:
+                    text_embedding = self.text_embedding_model.encode(lyrics).tolist()
+                    logger.debug(f"Generated text embedding for song {song_id} ({len(text_embedding)} dimensions)")
+                except Exception as e:
+                    logger.error(f"Failed to generate text embedding for song {song_id}: {e}")
+                    text_embedding = [0.0] * 384  # Fallback to placeholder
+            else:
+                logger.warning(f"Text embedding model not available, using placeholder for song {song_id}")
+                text_embedding = [0.0] * 384
+            
+            # Store lyrics with embedding
             success = await self.index_text_content(
                 song_id=song_id,
                 content_type='lyrics',
                 content=lyrics,
-                text_embedding=[0.0] * 384  # Placeholder for 384-dim text embeddings
+                text_embedding=text_embedding
             )
             
             return {
@@ -580,21 +613,89 @@ class SongRAGSystem:
         limit: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        Find songs matching a text description like 'ambient sleep music' or 'energetic workout beats'.
-        Uses simple keyword matching across title, genre, and tags.
+        Find songs matching a text description using both keyword search and semantic embeddings.
+        Searches song metadata (title, genre, mood) AND lyrics embeddings.
         
         Args:
-            description: Text description of desired music
+            description: Text description of desired music (e.g., 'songs about hippies', 'love songs')
             limit: Maximum number of results
         
         Returns:
-            List of matching songs
+            List of matching songs with similarity scores
         """
-        # Extract keywords from description
-        keywords = description.lower().split()
+        # Check if text embedding model is available
+        if not self.text_embedding_model:
+            logger.warning("Text embedding model not available. Falling back to keyword-only search.")
+            # Fall back to simple keyword search
+            query = """
+                SELECT DISTINCT
+                    s.id,
+                    s.title,
+                    s.genre,
+                    s.audio_url,
+                    s.mood,
+                    s.energy,
+                    s.tempo_bpm,
+                    s.key,
+                    s.duration_seconds,
+                    ae.audio_path
+                FROM songs s
+                LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
+                WHERE 
+                    s.title ILIKE $1 OR
+                    s.genre ILIKE $1 OR
+                    s.mood ILIKE $1 OR
+                    s.energy ILIKE $1
+                ORDER BY s.title
+                LIMIT $2
+            """
+            keyword_pattern = f'%{description}%'
+            async with self.db.pool.acquire() as conn:
+                rows = await conn.fetch(query, keyword_pattern, limit)
+            
+            results = [dict(row) for row in rows]
+            logger.info(f"Keyword-only search found {len(results)} results")
+            return results
         
-        # Build search query with keyword matching
+        # Generate embedding for the search query
+        query_embedding = self.text_embedding_model.encode(description).tolist()
+        # Convert to string format for pgvector: "[1,2,3,...]"
+        embedding_str = str(query_embedding)
+        
+        # Hybrid search: combine semantic similarity with keyword matching
         query = """
+            WITH semantic_matches AS (
+                -- Search text embeddings (lyrics) using cosine similarity
+                SELECT 
+                    te.song_id,
+                    te.content_type,
+                    1 - (te.embedding <=> $1::vector) as similarity,
+                    te.content
+                FROM text_embeddings te
+                WHERE te.content_type = 'lyrics'
+                ORDER BY te.embedding <=> $1::vector
+                LIMIT $2
+            ),
+            keyword_matches AS (
+                -- Also do keyword search on metadata
+                SELECT DISTINCT
+                    s.id as song_id,
+                    'metadata' as content_type,
+                    0.5 as similarity,  -- Lower score for keyword matches
+                    COALESCE(s.title || ' ' || s.genre || ' ' || s.mood, '') as content
+                FROM songs s
+                WHERE 
+                    s.title ILIKE $3 OR
+                    s.genre ILIKE $3 OR
+                    s.mood ILIKE $3 OR
+                    s.energy ILIKE $3
+                LIMIT $2
+            ),
+            combined_results AS (
+                SELECT * FROM semantic_matches
+                UNION ALL
+                SELECT * FROM keyword_matches
+            )
             SELECT DISTINCT
                 s.id,
                 s.title,
@@ -602,29 +703,89 @@ class SongRAGSystem:
                 s.audio_url,
                 s.mood,
                 s.energy,
+                s.tempo_bpm,
+                s.key,
+                s.duration_seconds,
                 ae.audio_path,
-                (ae.librosa_features->>'tempo')::float as tempo_bpm,
-                COUNT(*) OVER (PARTITION BY s.id) as match_count
-            FROM songs s
+                MAX(cr.similarity) as max_similarity,
+                STRING_AGG(DISTINCT cr.content_type, ', ') as match_types
+            FROM combined_results cr
+            JOIN songs s ON cr.song_id = s.id
             LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-            WHERE 
-                s.title ILIKE ANY($1) OR
-                s.genre ILIKE ANY($1) OR
-                s.mood ILIKE ANY($1) OR
-                s.energy ILIKE ANY($1)
-            ORDER BY match_count DESC, s.title
+            GROUP BY s.id, s.title, s.genre, s.audio_url, s.mood, s.energy, 
+                     s.tempo_bpm, s.key, s.duration_seconds, ae.audio_path
+            ORDER BY MAX(cr.similarity) DESC, s.title
             LIMIT $2
         """
         
-        # Create LIKE patterns for each keyword
-        patterns = [f"%{keyword}%" for keyword in keywords]
+        # Create LIKE pattern for keyword search
+        keyword_pattern = f"%{description}%"
         
         async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch(query, patterns, limit)
+            rows = await conn.fetch(query, embedding_str, limit, keyword_pattern)
         
         results = [dict(row) for row in rows]
-        logger.info(f"Text description search found {len(results)} results for '{description}'")
+        logger.info(f"Text search found {len(results)} results for '{description}' (semantic + keywords)")
         return results
+    
+    async def search_lyrics_by_keyword(
+        self,
+        keyword: str,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for songs that contain specific keywords in their lyrics.
+        Uses exact text matching on the lyrics content.
+        
+        Args:
+            keyword: Keyword or phrase to search for in lyrics
+            limit: Maximum number of results
+        
+        Returns:
+            List of matching songs with lyrics excerpts
+        """
+        try:
+            logger.info(f"Searching for keyword '{keyword}' in lyrics (limit={limit})")
+            
+            # Create case-insensitive LIKE pattern
+            keyword_pattern = f"%{keyword}%"
+            
+            query = """
+                SELECT DISTINCT
+                    s.id,
+                    s.title,
+                    s.genre,
+                    s.audio_url,
+                    s.mood,
+                    s.energy,
+                    s.tempo_bpm,
+                    s.key,
+                    s.duration_seconds,
+                    ae.audio_path,
+                    te.content as lyrics
+                FROM songs s
+                JOIN text_embeddings te ON s.id = te.song_id
+                LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
+                WHERE te.content_type = 'lyrics'
+                AND te.content ILIKE $1
+                ORDER BY s.title
+                LIMIT $2
+            """
+            
+            async with self.db.pool.acquire() as conn:
+                rows = await conn.fetch(query, keyword_pattern, limit)
+            
+            results = [dict(row) for row in rows]
+            logger.info(f"✓ Keyword search found {len(results)} results for '{keyword}' in lyrics")
+            
+            if results:
+                logger.info(f"  Sample results: {', '.join([r['title'] for r in results[:3]])}")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in search_lyrics_by_keyword: {e}", exc_info=True)
+            return []
     
     async def search_by_tempo_and_audio(
         self,

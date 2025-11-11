@@ -31,18 +31,20 @@ class BigFlavorScraper:
     
     BASE_URL = "https://bigflavorband.com/"
     
-    def __init__(self, headless: bool = True, download_audio: bool = True):
+    def __init__(self, headless: bool = True, download_audio: bool = True, rss_song_map: Optional[Dict[str, int]] = None):
         """
         Initialize the scraper
         
         Args:
             headless: Run browser in headless mode
             download_audio: Download MP3 files
+            rss_song_map: Optional mapping of "session--title" to numeric song ID from RSS feed
         """
         self.headless = headless
         self.download_audio = download_audio
         self.driver: Optional[webdriver.Chrome] = None
         self.audio_dir = "audio_library"
+        self.rss_song_map = rss_song_map or {}  # Store RSS mapping
         
         # Create audio directory if downloading
         if self.download_audio:
@@ -409,23 +411,46 @@ class BigFlavorScraper:
                 if existing_song_ids:
                     songs_needing_processing = []
                     for idx, song_title in enumerate(songs_to_process, start=start_index):
-                        # Generate song ID from title (same logic as in load script)
-                        song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
+                        # Generate text-based song ID from title  
+                        text_song_id = re.sub(r'[^a-z0-9]+', '_', song_title.lower()).strip('_')
                         
-                        # Check if we've already processed this in current session (by ID, not title!)
-                        if song_id in all_songs_dict:
-                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}' (ID: {song_id})")
+                        # Check if we've already processed this in current session
+                        if text_song_id in all_songs_dict:
+                            logger.info(f"  [{idx:3d}] ⏭️  ALREADY PROCESSED THIS SESSION: '{song_title}' (ID: {text_song_id})")
                             continue
                         
-                        # Check if it's in the database
-                        if song_id not in existing_song_ids:
-                            logger.info(f"  [{idx:3d}] ✨ NEW SONG - will process: '{song_title}' (ID: {song_id})")
+                        # Try to get numeric ID from RSS feed if available
+                        numeric_id = None
+                        if self.rss_song_map:
+                            # Try to match against RSS feed entries
+                            for rss_key, rss_id in self.rss_song_map.items():
+                                # RSS key format: "Session--Title"
+                                # Extract title part after "--"
+                                if '--' in rss_key:
+                                    rss_title = rss_key.split('--', 1)[1]
+                                    # Sanitize for comparison
+                                    rss_title_clean = re.sub(r'[^a-z0-9]+', '_', rss_title.lower()).strip('_')
+                                    if rss_title_clean == text_song_id:
+                                        numeric_id = rss_id
+                                        break
+                        
+                        # Check if numeric ID is in database (if we found it in RSS)
+                        if numeric_id and numeric_id in existing_song_ids:
+                            logger.info(f"  [{idx:3d}] ⏭️  SKIP (in database): '{song_title}' (RSS ID: {numeric_id})")
+                            # Mark as processed so we don't try to get it again
+                            all_songs_dict[text_song_id] = {'id': numeric_id, 'title': song_title, 'skipped': True}
+                            last_processed_song = song_title
+                        elif text_song_id not in existing_song_ids:
+                            # New song or couldn't match in RSS
+                            if numeric_id:
+                                logger.info(f"  [{idx:3d}] ✨ NEW SONG - will process: '{song_title}' (RSS ID: {numeric_id})")
+                            else:
+                                logger.info(f"  [{idx:3d}] ✨ NEW SONG - will process: '{song_title}' (text ID: {text_song_id}, no RSS match)")
                             songs_needing_processing.append(song_title)
                         else:
-                            logger.info(f"  [{idx:3d}] ⏭️  SKIP (in database): '{song_title}' (ID: {song_id})")
-                            # Mark as processed so we don't try to get it again (use ID as key!)
-                            all_songs_dict[song_id] = {'id': song_id, 'title': song_title, 'skipped': True}
-                            last_processed_song = song_title  # Track as last processed for scrolling
+                            logger.info(f"  [{idx:3d}] ⏭️  SKIP (in database): '{song_title}' (text ID: {text_song_id})")
+                            all_songs_dict[text_song_id] = {'id': text_song_id, 'title': song_title, 'skipped': True}
+                            last_processed_song = song_title
                     unprocessed_songs = songs_needing_processing
                     logger.info(f"After filtering existing songs: {len(unprocessed_songs)} songs need processing")
                 else:
