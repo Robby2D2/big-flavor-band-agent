@@ -14,7 +14,8 @@ from pathlib import Path
 
 # Import our existing agent
 from src.agent.big_flavor_agent import BigFlavorAgent
-from src.rag.big_flavor_rag import BigFlavorRAG
+from src.rag.big_flavor_rag import SongRAGSystem
+from database import DatabaseManager
 
 app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0")
 
@@ -32,7 +33,8 @@ app.add_middleware(
 
 # Initialize agent and RAG system
 agent: Optional[BigFlavorAgent] = None
-rag: Optional[BigFlavorRAG] = None
+rag: Optional[SongRAGSystem] = None
+db_manager: Optional[DatabaseManager] = None
 
 
 async def get_agent() -> BigFlavorAgent:
@@ -44,11 +46,16 @@ async def get_agent() -> BigFlavorAgent:
     return agent
 
 
-async def get_rag() -> BigFlavorRAG:
+async def get_rag() -> SongRAGSystem:
     """Dependency to get or create RAG instance"""
-    global rag
+    global rag, db_manager
     if rag is None:
-        rag = BigFlavorRAG()
+        # Initialize database manager if needed
+        if db_manager is None:
+            db_manager = DatabaseManager()
+            await db_manager.connect()
+        # Create RAG system with database manager
+        rag = SongRAGSystem(db_manager, use_clap=True)
     return rag
 
 
@@ -89,11 +96,80 @@ async def health():
     return {"status": "healthy"}
 
 
+# User management endpoints
+class UserCreate(BaseModel):
+    id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+
+
+@app.post("/api/users")
+async def create_or_update_user(user: UserCreate):
+    """Create or update a user in the database"""
+    try:
+        db_manager = DatabaseManager()
+        await db_manager.connect()
+
+        # Insert or update user
+        query = """
+            INSERT INTO users (id, email, name, picture, role, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, 'listener', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (id) DO UPDATE
+            SET email = EXCLUDED.email,
+                name = EXCLUDED.name,
+                picture = EXCLUDED.picture,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING id, email, name, picture, role, created_at, updated_at
+        """
+
+        async with db_manager.pool.acquire() as conn:
+            result = await conn.fetchrow(query, user.id, user.email, user.name, user.picture)
+
+        await db_manager.close()
+
+        return {
+            "id": result['id'],
+            "email": result['email'],
+            "name": result['name'],
+            "picture": result['picture'],
+            "role": result['role'],
+            "created_at": result['created_at'].isoformat(),
+            "updated_at": result['updated_at'].isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/users/{user_id}/role")
+async def get_user_role(user_id: str):
+    """Get a user's role from the database"""
+    try:
+        db_manager = DatabaseManager()
+        await db_manager.connect()
+
+        query = "SELECT role FROM users WHERE id = $1"
+
+        async with db_manager.pool.acquire() as conn:
+            result = await conn.fetchrow(query, user_id)
+
+        await db_manager.close()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return {"role": result['role']}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Search endpoints
 @app.post("/api/search/natural")
 async def natural_language_search(
     request: SearchRequest,
-    rag: BigFlavorRAG = Depends(get_rag)
+    rag: SongRAGSystem = Depends(get_rag)
 ):
     """
     Natural language search using the agent to interpret the query
@@ -102,27 +178,27 @@ async def natural_language_search(
     try:
         agent_instance = await get_agent()
 
-        # Use the agent to interpret and execute the search
-        search_prompt = f"""The user wants to search for songs with this query: "{request.query}"
-
-Please analyze this query and use the appropriate search tools to find matching songs.
-Return up to {request.limit} results."""
-
-        response = await agent_instance.process_message(search_prompt)
+        # Use the agent's search_songs method to get both text and song data
+        result = await agent_instance.search_songs(request.query, request.limit)
 
         return {
             "query": request.query,
-            "response": response,
+            "response": result["response"],
+            "songs": result["songs"],
+            "total_found": result["total_found"],
             "limit": request.limit
         }
     except Exception as e:
+        import traceback
+        print(f"ERROR in natural_language_search: {e}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/search/text")
 async def search_by_text(
     request: SearchRequest,
-    rag: BigFlavorRAG = Depends(get_rag)
+    rag: SongRAGSystem = Depends(get_rag)
 ):
     """Search songs by text description using semantic search"""
     try:
@@ -138,7 +214,7 @@ async def search_by_text(
 @app.post("/api/search/lyrics")
 async def search_by_lyrics(
     request: SearchRequest,
-    rag: BigFlavorRAG = Depends(get_rag)
+    rag: SongRAGSystem = Depends(get_rag)
 ):
     """Search songs by lyrics keywords"""
     try:
@@ -162,10 +238,12 @@ async def chat_with_agent(
     provide recommendations, and answer questions.
     """
     try:
-        response = await agent.process_message(request.message)
+        # Use search_songs to get both response and songs
+        result = await agent.search_songs(request.message, limit=20)
 
         return AgentResponse(
-            response=response,
+            response=result["response"],
+            songs=result["songs"],
             conversation_id=request.conversation_id
         )
     except Exception as e:
@@ -231,8 +309,8 @@ async def stream_audio(song_id: int):
     """
     try:
         # Get song info from database to find audio path
-        from src.rag.big_flavor_rag import BigFlavorRAG
-        rag = BigFlavorRAG()
+        from src.rag.big_flavor_rag import SongRAGSystem
+        rag = SongRAGSystem()
 
         # Find the audio file
         audio_library = Path("audio_library")

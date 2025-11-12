@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, UserRole } from '@/lib/auth';
+import { requireAuth, UserRole } from '@/lib/server-auth';
 import fs from 'fs';
 import path from 'path';
 

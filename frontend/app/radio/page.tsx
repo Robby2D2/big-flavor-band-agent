@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Header from '@/components/Header';
 import AudioPlayer from '@/components/AudioPlayer';
 
 interface Message {
@@ -107,24 +108,10 @@ export default function RadioPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col">
-      <header className="bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-3xl font-bold">BigFlavor Radio</h1>
-              <p className="text-purple-100 mt-1">
-                Your AI DJ - Chat to request songs and create playlists
-              </p>
-            </div>
-            <a
-              href="/"
-              className="text-white hover:text-purple-100 underline"
-            >
-              Back to Home
-            </a>
-          </div>
-        </div>
-      </header>
+      <Header
+        title="BigFlavor Radio"
+        subtitle="Your AI DJ - Chat to request songs and create playlists"
+      />
 
       <main className="flex-1 container mx-auto px-4 py-6 flex gap-6">
         {/* Chat Interface */}

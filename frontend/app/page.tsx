@@ -1,12 +1,9 @@
+import Header from '@/components/Header';
+
 export default function Home() {
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="bg-gray-900 text-white p-4">
-        <div className="container mx-auto">
-          <h1 className="text-3xl font-bold">BigFlavor Band Agent</h1>
-          <p className="text-gray-400">Discover 1,415+ songs powered by AI</p>
-        </div>
-      </header>
+      <Header />
 
       <main className="flex-1 container mx-auto p-8">
         <div className="grid md:grid-cols-2 gap-8">

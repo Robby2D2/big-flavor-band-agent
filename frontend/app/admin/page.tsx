@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Header from '@/components/Header';
 
 interface Tool {
   name: string;
@@ -117,24 +118,10 @@ export default function AdminPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <header className="bg-gray-900 text-white shadow-lg">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-3xl font-bold">Admin Tools</h1>
-              <p className="text-gray-400 mt-1">
-                MCP Tools for audio processing and management
-              </p>
-            </div>
-            <a
-              href="/"
-              className="text-white hover:text-gray-300 underline"
-            >
-              Back to Home
-            </a>
-          </div>
-        </div>
-      </header>
+      <Header
+        title="Admin Tools"
+        subtitle="MCP Tools for audio processing and management"
+      />
 
       <main className="container mx-auto px-4 py-8">
         <div className="grid md:grid-cols-3 gap-6">

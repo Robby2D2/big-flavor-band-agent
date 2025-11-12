@@ -71,30 +71,38 @@ class BigFlavorAgent:
         
         from big_flavor_rag import SongRAGSystem
         from database import DatabaseManager
-        from big_flavor_mcp import BigFlavorMCPServer
-        
+
         # Direct access to RAG system library
         self.db_manager = DatabaseManager()
         self.rag_system = None  # Will be initialized in initialize()
-        
-        # Production server for audio processing
-        self.production_server = BigFlavorMCPServer(enable_audio_analysis=True)
-        
+
+        # Production server for audio processing (optional - only if mcp is installed)
+        self.production_server = None
+        try:
+            from big_flavor_mcp import BigFlavorMCPServer
+            self.production_server = BigFlavorMCPServer(enable_audio_analysis=True)
+            logger.info("MCP production server loaded")
+        except ImportError as e:
+            logger.warning(f"MCP production server not available: {e}")
+            logger.info("Audio processing tools will not be available (search tools work fine)")
+
         logger.info(f"Claude RAG+MCP Agent initialized with model: {self.model}")
     
     async def initialize(self):
         """Initialize RAG system and production server."""
         logger.info("Initializing RAG system and Production server...")
-        
+
         # Initialize database and RAG system
         await self.db_manager.connect()
         from big_flavor_rag import SongRAGSystem
         self.rag_system = SongRAGSystem(self.db_manager, use_clap=True)
-        
-        # Initialize production server
-        await self.production_server.initialize()
-        
-        logger.info("RAG system and Production server ready")
+
+        # Initialize production server if available
+        if self.production_server:
+            await self.production_server.initialize()
+            logger.info("Production server initialized")
+
+        logger.info("RAG system ready")
     
     def _get_available_tools(self) -> List[Dict[str, Any]]:
         """Get available tools for Claude."""
@@ -688,7 +696,12 @@ class BigFlavorAgent:
                     
             elif tool_name in production_tools:
                 # Route to Production server
-                if tool_name == "analyze_audio":
+                if not self.production_server:
+                    result = {
+                        "error": "Production tools not available. MCP package not installed.",
+                        "message": "Audio processing tools require the 'mcp' package. Install it to use these features."
+                    }
+                elif tool_name == "analyze_audio":
                     result = await self.production_server.analyze_audio(
                         tool_input["file_path"]
                     )
@@ -979,10 +992,77 @@ Always be helpful, accurate, and creative in helping users discover and work wit
             "total_cost_usd": round(total_cost, 4)
         }
     
+    async def process_message(self, message: str) -> str:
+        """
+        Process a single message and return the text response.
+        Convenience method for the backend API.
+
+        Args:
+            message: User's message
+
+        Returns:
+            Text response from the agent
+        """
+        result = await self.chat(message)
+        return result.get("response", "")
+
+    async def search_songs(self, query: str, limit: int = 20) -> Dict[str, Any]:
+        """
+        Search for songs and return structured results with both text and song data.
+
+        Args:
+            query: Search query
+            limit: Maximum number of results
+
+        Returns:
+            Dictionary with 'response' (text) and 'songs' (list of song dicts)
+        """
+        # Track songs found during the conversation
+        found_songs = []
+
+        # Store original call_tool to wrap it
+        original_call_tool = self._call_tool
+
+        async def wrapped_call_tool(tool_name: str, tool_input: Dict[str, Any]) -> Any:
+            result = await original_call_tool(tool_name, tool_input)
+            # Extract songs from tool results
+            if isinstance(result, dict) and "songs" in result:
+                found_songs.extend(result["songs"])
+            return result
+
+        # Temporarily replace _call_tool
+        self._call_tool = wrapped_call_tool
+
+        try:
+            # Process the search
+            search_prompt = f"""The user wants to search for songs with this query: "{query}"
+
+Please analyze this query and use the appropriate search tools to find matching songs.
+Return up to {limit} results."""
+
+            result = await self.chat(search_prompt)
+
+            return {
+                "response": result.get("response", ""),
+                "songs": found_songs[:limit],  # Limit the songs returned
+                "total_found": len(found_songs)
+            }
+        finally:
+            # Restore original _call_tool
+            self._call_tool = original_call_tool
+
     def reset_conversation(self):
         """Reset conversation history."""
         self.conversation_history = []
         logger.info("Conversation history reset")
+
+    def get_available_tools(self) -> List[Dict[str, Any]]:
+        """Get list of available tools for external API access."""
+        return self._get_available_tools()
+
+    async def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
+        """Execute a tool with given parameters. For external API access."""
+        return await self._call_tool(tool_name, parameters)
 
 
 async def main():

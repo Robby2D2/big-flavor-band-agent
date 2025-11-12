@@ -4,7 +4,21 @@
       "Bash(npx create-next-app@latest frontend --typescript --tailwind --app --no-src-dir --import-alias \"@/*\")",
       "Bash(npx create-next-app:*)",
       "Bash(npm install:*)",
-      "Bash(npx tailwindcss:*)"
+      "Bash(npx tailwindcss:*)",
+      "Bash(pip install:*)",
+      "Bash(./venv/Scripts/activate)",
+      "Bash(python -m pip install:*)",
+      "Bash(curl:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(python backend_api.py:*)",
+      "Bash(npm run dev:*)",
+      "Bash(.venvScriptsactivate)",
+      "Bash(netstat:*)",
+      "Bash(python run_migration.py:*)",
+      "Bash(.venv/Scripts/activate)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(taskkill /F /PID:*)",
+      "Bash(findstr:*)"
     ],
     "deny": [],
     "ask": []
