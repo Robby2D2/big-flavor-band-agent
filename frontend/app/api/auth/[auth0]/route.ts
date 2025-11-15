@@ -8,7 +8,11 @@ export async function GET(
 
   const domain = process.env.AUTH0_ISSUER_BASE_URL!;
   const clientId = process.env.AUTH0_CLIENT_ID!;
-  const baseUrl = process.env.AUTH0_BASE_URL!;
+
+  // Use the actual request origin instead of hardcoded base URL
+  const protocol = request.headers.get('x-forwarded-proto') || 'http';
+  const host = request.headers.get('host') || 'localhost:3000';
+  const baseUrl = `${protocol}://${host}`;
 
   try {
     switch (route) {
@@ -118,7 +122,21 @@ export async function GET(
 
         try {
           const session = JSON.parse(sessionCookie.value);
-          return NextResponse.json(session.user);
+          const user = session.user;
+
+          // Fetch user role from backend
+          let role = 'listener'; // default role
+          try {
+            const roleResponse = await fetch(`${process.env.AGENT_API_URL}/api/users/${user.sub}/role`);
+            if (roleResponse.ok) {
+              const roleData = await roleResponse.json();
+              role = roleData.role;
+            }
+          } catch (error) {
+            console.error('Failed to fetch user role:', error);
+          }
+
+          return NextResponse.json({ ...user, role });
         } catch {
           return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
         }

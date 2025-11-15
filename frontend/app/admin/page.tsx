@@ -3,41 +3,42 @@
 import { useState, useEffect } from 'react';
 import Header from '@/components/Header';
 
-interface Tool {
+interface User {
+  id: string;
+  email: string;
   name: string;
-  description: string;
-  parameters: any;
+  picture?: string;
+  role: 'listener' | 'editor' | 'admin';
+  created_at: string;
+  updated_at: string;
 }
 
 export default function AdminPage() {
-  const [tools, setTools] = useState<Tool[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
-  const [toolParams, setToolParams] = useState<Record<string, any>>({});
-  const [executionResult, setExecutionResult] = useState<any>(null);
-  const [executing, setExecuting] = useState(false);
+  const [updating, setUpdating] = useState<string | null>(null);
 
   useEffect(() => {
-    loadTools();
+    loadUsers();
   }, []);
 
-  const loadTools = async () => {
+  const loadUsers = async () => {
     try {
-      const response = await fetch('/api/tools');
+      const response = await fetch('/api/admin/users');
 
       if (response.status === 403) {
-        setError('Access denied. Editor role required.');
+        setError('Access denied. Admin role required.');
         setLoading(false);
         return;
       }
 
       if (!response.ok) {
-        throw new Error('Failed to load tools');
+        throw new Error('Failed to load users');
       }
 
       const data = await response.json();
-      setTools(data.tools || []);
+      setUsers(data.users || []);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -45,42 +46,44 @@ export default function AdminPage() {
     }
   };
 
-  const handleExecuteTool = async () => {
-    if (!selectedTool) return;
-
-    setExecuting(true);
-    setExecutionResult(null);
-
+  const updateUserRole = async (userId: string, newRole: string) => {
+    setUpdating(userId);
     try {
-      const response = await fetch('/api/tools', {
-        method: 'POST',
+      const response = await fetch('/api/admin/users/role', {
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          tool_name: selectedTool.name,
-          parameters: toolParams,
+          user_id: userId,
+          role: newRole,
         }),
       });
 
       if (!response.ok) {
-        throw new Error('Tool execution failed');
+        throw new Error('Failed to update user role');
       }
 
-      const data = await response.json();
-      setExecutionResult(data.result);
+      // Reload users to get updated data
+      await loadUsers();
     } catch (err: any) {
-      setExecutionResult({ error: err.message });
+      alert(`Error updating role: ${err.message}`);
     } finally {
-      setExecuting(false);
+      setUpdating(null);
     }
   };
 
-  const handleParamChange = (paramName: string, value: any) => {
-    setToolParams((prev) => ({
-      ...prev,
-      [paramName]: value,
-    }));
+  const getRoleBadgeColor = (role: string) => {
+    switch (role) {
+      case 'admin':
+        return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200';
+      case 'editor':
+        return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200';
+      case 'listener':
+        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200';
+      default:
+        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200';
+    }
   };
 
   if (loading) {
@@ -88,7 +91,7 @@ export default function AdminPage() {
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading tools...</p>
+          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading users...</p>
         </div>
       </div>
     );
@@ -119,131 +122,108 @@ export default function AdminPage() {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       <Header
-        title="Admin Tools"
-        subtitle="MCP Tools for audio processing and management"
+        title="Admin Panel"
+        subtitle="User management and role assignment"
       />
 
       <main className="container mx-auto px-4 py-8">
-        <div className="grid md:grid-cols-3 gap-6">
-          {/* Tools List */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-              Available Tools
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+              User Management
             </h2>
-            <div className="space-y-2">
-              {tools.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400">
-                  No tools available
-                </p>
-              ) : (
-                tools.map((tool) => (
-                  <button
-                    key={tool.name}
-                    onClick={() => {
-                      setSelectedTool(tool);
-                      setToolParams({});
-                      setExecutionResult(null);
-                    }}
-                    className={`w-full text-left p-3 rounded-lg transition ${
-                      selectedTool?.name === tool.name
-                        ? 'bg-blue-100 dark:bg-blue-900 text-blue-900 dark:text-blue-100'
-                        : 'bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-900 dark:text-white'
-                    }`}
-                  >
-                    <p className="font-medium">{tool.name}</p>
-                    <p className="text-sm opacity-75">{tool.description}</p>
-                  </button>
-                ))
-              )}
-            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              Manage user roles and permissions
+            </p>
           </div>
 
-          {/* Tool Parameters */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-              Tool Parameters
-            </h2>
-            {!selectedTool ? (
-              <p className="text-gray-500 dark:text-gray-400">
-                Select a tool to configure parameters
-              </p>
-            ) : (
-              <div>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                  {selectedTool.description}
-                </p>
-                <div className="space-y-4">
-                  {selectedTool.parameters &&
-                    Object.entries(selectedTool.parameters).map(
-                      ([paramName, paramInfo]: [string, any]) => (
-                        <div key={paramName}>
-                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            {paramName}
-                            {paramInfo.required && (
-                              <span className="text-red-500 ml-1">*</span>
-                            )}
-                          </label>
-                          <input
-                            type={paramInfo.type === 'number' ? 'number' : 'text'}
-                            value={toolParams[paramName] || ''}
-                            onChange={(e) =>
-                              handleParamChange(
-                                paramName,
-                                paramInfo.type === 'number'
-                                  ? parseFloat(e.target.value)
-                                  : e.target.value
-                              )
-                            }
-                            placeholder={paramInfo.description}
-                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:border-blue-500 dark:bg-gray-700 dark:text-white"
-                          />
-                          {paramInfo.description && (
-                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                              {paramInfo.description}
-                            </p>
-                          )}
-                        </div>
-                      )
-                    )}
-                </div>
-                <button
-                  onClick={handleExecuteTool}
-                  disabled={executing}
-                  className="w-full mt-6 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-                >
-                  {executing ? 'Executing...' : 'Execute Tool'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Execution Result */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-              Result
-            </h2>
-            {!executionResult ? (
-              <p className="text-gray-500 dark:text-gray-400">
-                No execution result yet
-              </p>
-            ) : (
-              <div>
-                {executionResult.error ? (
-                  <div className="p-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg">
-                    <p className="font-semibold">Error:</p>
-                    <p className="mt-2">{executionResult.error}</p>
-                  </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50 dark:bg-gray-900">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    User
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Email
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Current Role
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Change Role
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Joined
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                {users.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-4 text-center text-gray-500 dark:text-gray-400">
+                      No users found
+                    </td>
+                  </tr>
                 ) : (
-                  <div className="p-4 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200 rounded-lg">
-                    <p className="font-semibold">Success!</p>
-                    <pre className="mt-2 text-sm overflow-auto max-h-96">
-                      {JSON.stringify(executionResult, null, 2)}
-                    </pre>
-                  </div>
+                  users.map((user) => (
+                    <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          {user.picture && (
+                            <img
+                              className="h-10 w-10 rounded-full mr-3"
+                              src={user.picture}
+                              alt={user.name}
+                            />
+                          )}
+                          <div className="text-sm font-medium text-gray-900 dark:text-white">
+                            {user.name}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                          {user.email}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getRoleBadgeColor(user.role)}`}>
+                          {user.role}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <select
+                          value={user.role}
+                          onChange={(e) => updateUserRole(user.id, e.target.value)}
+                          disabled={updating === user.id}
+                          className="text-sm border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <option value="listener">Listener</option>
+                          <option value="editor">Editor</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        {new Date(user.created_at).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  ))
                 )}
-              </div>
-            )}
+              </tbody>
+            </table>
           </div>
+        </div>
+
+        <div className="mt-6 bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-700 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-200 mb-2">
+            Role Permissions:
+          </h3>
+          <ul className="text-sm text-blue-800 dark:text-blue-300 space-y-1">
+            <li><strong>Listener:</strong> Can search and play songs, use Radio DJ</li>
+            <li><strong>Editor:</strong> All listener permissions + access to MCP tools for audio processing</li>
+            <li><strong>Admin:</strong> All editor permissions + user management and role assignment</li>
+          </ul>
         </div>
       </main>
     </div>

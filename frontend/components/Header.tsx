@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import UserButton from './UserButton';
+import { useAuth } from '@/lib/useAuth';
 
 interface HeaderProps {
   title?: string;
@@ -14,6 +15,12 @@ export default function Header({
   subtitle = 'Discover 1,415+ songs powered by AI',
   showNav = true
 }: HeaderProps) {
+  const { user } = useAuth();
+
+  // Check if user has editor or admin role
+  const canEdit = user?.role === 'editor' || user?.role === 'admin';
+  const canAdmin = user?.role === 'admin';
+
   return (
     <header className="bg-gray-900 text-white">
       <div className="container mx-auto px-4 py-4">
@@ -38,12 +45,22 @@ export default function Header({
                 >
                   Radio
                 </Link>
-                <Link
-                  href="/admin"
-                  className="text-gray-300 hover:text-white transition-colors"
-                >
-                  Admin
-                </Link>
+                {canEdit && (
+                  <Link
+                    href="/edit"
+                    className="text-gray-300 hover:text-white transition-colors"
+                  >
+                    Edit
+                  </Link>
+                )}
+                {canAdmin && (
+                  <Link
+                    href="/admin"
+                    className="text-gray-300 hover:text-white transition-colors"
+                  >
+                    Admin
+                  </Link>
+                )}
               </nav>
             )}
           </div>
