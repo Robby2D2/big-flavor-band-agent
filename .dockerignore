@@ -1,0 +1,72 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+
+# Node.js (don't copy frontend to backend image)
+frontend/
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# Tests
+tests/
+*.test.*
+
+# Environment files (use environment variables instead)
+.env
+.env.*
+
+# Build artifacts
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Nginx config (not needed in backend/frontend images)
+nginx/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Audio library (mounted as volume)
+# audio_library/
+
+# Database
+sql/
+database/sql/
+
+# Scraper data
+scraper/

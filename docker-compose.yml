@@ -1,11 +1,12 @@
 services:
+  # PostgreSQL database with pgvector extension
   postgres:
     image: ankane/pgvector:latest
     container_name: bigflavor-postgres
     environment:
       POSTGRES_DB: bigflavor
       POSTGRES_USER: bigflavor
-      POSTGRES_PASSWORD: bigflavor_dev_pass
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bigflavor_dev_pass}
     ports:
       - "5432:5432"
     volumes:
@@ -16,6 +17,116 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - bigflavor-network
+    restart: unless-stopped
+
+  # Ollama - Local LLM Server (optional, for cost savings)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: bigflavor-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - bigflavor-network
+    restart: unless-stopped
+    # Uncomment for GPU support (NVIDIA)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  # Python FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: bigflavor-backend
+    environment:
+      - DATABASE_URL=postgresql://bigflavor:${POSTGRES_PASSWORD:-bigflavor_dev_pass}@postgres:5432/bigflavor
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - AUTH0_DOMAIN=${AUTH0_DOMAIN}
+      - AUTH0_API_IDENTIFIER=${AUTH0_API_IDENTIFIER}
+      # LLM Configuration
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+    volumes:
+      - ./audio_library:/app/audio_library:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - bigflavor-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.frontend
+      args:
+        AGENT_API_URL: http://backend:8000
+    container_name: bigflavor-frontend
+    environment:
+      - NODE_ENV=production
+      - AGENT_API_URL=http://backend:8000
+      - AUTH0_SECRET=${AUTH0_SECRET}
+      - AUTH0_BASE_URL=${AUTH0_BASE_URL:-http://localhost}
+      - AUTH0_ISSUER_BASE_URL=${AUTH0_ISSUER_BASE_URL}
+      - AUTH0_CLIENT_ID=${AUTH0_CLIENT_ID}
+      - AUTH0_CLIENT_SECRET=${AUTH0_CLIENT_SECRET}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - bigflavor-network
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: bigflavor-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - bigflavor-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  bigflavor-network:
+    driver: bridge
 
 volumes:
   postgres_data:
+  nginx_logs:
+  ollama_data:

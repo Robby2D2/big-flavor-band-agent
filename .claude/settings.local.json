@@ -18,7 +18,13 @@
       "Bash(.venv/Scripts/activate)",
       "Bash(.venv/Scripts/python.exe:*)",
       "Bash(taskkill /F /PID:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(docker info:*)",
+      "Bash(docker-compose:*)",
+      "Bash(npm run build:*)",
+      "Bash(frontend/public/.gitkeep)",
+      "Bash(docker logs:*)",
+      "Bash(docker exec:*)"
     ],
     "deny": [],
     "ask": []

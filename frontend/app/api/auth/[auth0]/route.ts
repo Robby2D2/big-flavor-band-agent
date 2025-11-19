@@ -98,18 +98,37 @@ export async function GET(
         }
 
         // Set session cookie (in production, use proper signed cookies)
-        const response = NextResponse.redirect(baseUrl);
-        response.cookies.set('appSession', JSON.stringify({
-          user,
-          accessToken: tokens.access_token,
-          idToken: tokens.id_token,
-        }), {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
-          maxAge: 60 * 60 * 24 * 7, // 7 days
+        // Store minimal data to avoid cookie size limits
+        const sessionData = JSON.stringify({
+          sub: user.sub,
+          email: user.email,
+          name: user.name,
+          picture: user.picture,
         });
 
+        console.log('[AUTH] Creating session for user:', user.email);
+        console.log('[AUTH] Protocol:', protocol, 'Host:', host, 'BaseURL:', baseUrl);
+        console.log('[AUTH] Session data length:', sessionData.length, 'bytes');
+
+        const maxAge = 60 * 60 * 24 * 7; // 7 days
+
+        // Manually construct Set-Cookie header for more control
+        const cookieValue = encodeURIComponent(sessionData);
+        const cookieHeader = [
+          `appSession=${cookieValue}`,
+          `Path=/`,
+          `Max-Age=${maxAge}`,
+          `HttpOnly`,
+          `SameSite=Lax`,
+          // Don't use Secure flag since site is HTTP
+        ].filter(Boolean).join('; ');
+
+        console.log('[AUTH] Set-Cookie header:', cookieHeader.substring(0, 100) + '...');
+
+        const response = NextResponse.redirect(baseUrl);
+        response.headers.set('Set-Cookie', cookieHeader);
+
+        console.log('[AUTH] Cookie set, redirecting to:', baseUrl);
         return response;
       }
 

@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify({
         message,
-        conversation_id: conversation_id || user.id,
+        conversation_id: conversation_id || user.sub,
       }),
     });
 

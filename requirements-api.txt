@@ -1,5 +1,42 @@
 # FastAPI Backend API Requirements
+
+# API Framework
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 pydantic==2.9.0
 python-multipart==0.0.12
+
+# HTTP and Async
+httpx==0.27.0
+python-dotenv>=1.0.0
+
+# AI/LLM
+anthropic>=0.39.0
+
+# Database
+asyncpg>=0.29.0
+pg8000  # Additional PostgreSQL driver
+psycopg2-binary  # PostgreSQL adapter for Python
+pgvector>=0.2.0
+
+# Audio Analysis
+librosa>=0.10.0
+numpy>=1.24.0
+soundfile>=0.12.0
+scipy>=1.11.0
+
+# RAG and Embeddings
+torch>=2.0.0
+transformers>=4.30.0
+torchaudio>=2.0.0
+
+# Speech and Audio Processing
+faster-whisper>=0.10.0
+
+# Web Scraping (for future use)
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# Additional utilities
+PyYAML>=6.0.0
+click>=8.1.0
