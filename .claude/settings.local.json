@@ -24,7 +24,18 @@
       "Bash(npm run build:*)",
       "Bash(frontend/public/.gitkeep)",
       "Bash(docker logs:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(python -c \"import sys; sys.path.insert(0, r''C:\\Users\\Rob\\Documents\\Projects\\big-flavor-band-agent\\src\\llm''); from llm_provider import get_llm_provider, AnthropicProvider, OllamaProvider, LLMProvider; print(''Import successful'')\")",
+      "WebSearch",
+      "WebFetch(domain:docs.ollama.com)",
+      "Bash(where:*)",
+      "Bash(docker ps:*)",
+      "Bash(/c/Users/Rob/Documents/Projects/big-flavor-band-agent/venv/Scripts/python.exe:*)",
+      "Bash(docker port:*)",
+      "Bash(nvidia-smi)",
+      "Bash(docker version:*)",
+      "Bash(claude auth status:*)",
+      "Bash(claude config list:*)"
     ],
     "deny": [],
     "ask": []

@@ -12,12 +12,19 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 import anthropic
 from anthropic import Anthropic
 from dotenv import load_dotenv
+
+# Add parent directory to path for LLM provider imports
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root / "src" / "llm"))
+
+from llm_provider import get_llm_provider, AnthropicProvider, OllamaProvider, LLMProvider
 
 # Load environment variables
 load_dotenv()
@@ -38,32 +45,54 @@ class BigFlavorAgent:
     - Production MCP server for audio processing
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+        ollama_model: Optional[str] = None
+    ):
         """
-        Initialize Claude agent with RAG system and MCP server.
-        
+        Initialize Big Flavor agent with RAG system and MCP server.
+
         Args:
             api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
+            llm_provider: LLM provider ('anthropic' or 'ollama'). Defaults to LLM_PROVIDER env var or 'anthropic'
+            ollama_base_url: Ollama base URL (only needed if llm_provider='ollama')
+            ollama_model: Ollama model name (only needed if llm_provider='ollama')
         """
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "Anthropic API key required. Set ANTHROPIC_API_KEY environment variable "
-                "or pass api_key parameter."
-            )
-        
-        self.client = Anthropic(api_key=self.api_key)
-        self.model = "claude-3-haiku-20240307"
+        # Get LLM provider using the abstraction layer
+        logger.info("Initializing LLM provider...")
+        self.llm_provider = get_llm_provider(
+            provider=llm_provider,
+            anthropic_api_key=api_key,
+            ollama_base_url=ollama_base_url,
+            ollama_model=ollama_model
+        )
+
+        # Check provider type and set up accordingly
+        if isinstance(self.llm_provider, AnthropicProvider):
+            # Anthropic supports tool calling
+            self.client = self.llm_provider.client  # Keep for backward compatibility
+            self.model = self.llm_provider.model
+            logger.info(f"Using Anthropic provider with model: {self.model}")
+
+        elif isinstance(self.llm_provider, OllamaProvider):
+            # Ollama supports tool calling (as of v0.3.0)
+            self.client = None  # Not needed - use provider interface
+            self.model = self.llm_provider.model
+            logger.info(f"Using Ollama provider with model: {self.model}")
+            logger.info(f"  Base URL: {self.llm_provider.base_url}")
+            logger.info("  Note: Tool calling requires compatible Ollama models (llama3.1, mistral-nemo, etc.)")
+        else:
+            raise ValueError(f"Unsupported LLM provider type: {type(self.llm_provider)}")
+
         self.conversation_history = []
         self.total_input_tokens = 0
         self.total_output_tokens = 0
-        
+
         # Import RAG system library and production server
-        import sys
-        from pathlib import Path
-        
         # Add parent directories to path for imports
-        project_root = Path(__file__).parent.parent.parent
         sys.path.insert(0, str(project_root))
         sys.path.insert(0, str(project_root / "src" / "rag"))
         sys.path.insert(0, str(project_root / "src" / "production"))
@@ -86,7 +115,8 @@ class BigFlavorAgent:
             logger.warning(f"MCP production server not available: {e}")
             logger.info("Audio processing tools will not be available (search tools work fine)")
 
-        logger.info(f"Claude RAG+MCP Agent initialized with model: {self.model}")
+        provider_name = "Anthropic Claude" if isinstance(self.llm_provider, AnthropicProvider) else type(self.llm_provider).__name__
+        logger.info(f"Big Flavor Agent initialized with {provider_name}, model: {self.model}")
     
     async def initialize(self):
         """Initialize RAG system and production server."""
@@ -888,38 +918,51 @@ EXAMPLES:
 
 Always be helpful, accurate, and creative in helping users discover and work with music!"""
         
-        # Call Claude API with tools
+        # Call LLM API with tools (works with both Anthropic and Ollama)
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=system_prompt,
+            response = await self.llm_provider.generate_with_tools(
                 messages=self.conversation_history,
-                tools=self._get_available_tools()
+                tools=self._get_available_tools(),
+                system=system_prompt,
+                max_tokens=max_tokens,
+                temperature=1.0
             )
             
             # Track tokens
-            self.total_input_tokens += response.usage.input_tokens
-            self.total_output_tokens += response.usage.output_tokens
-            
+            self.total_input_tokens += response["usage"]["input_tokens"]
+            self.total_output_tokens += response["usage"]["output_tokens"]
+
             # Handle tool use if needed
-            while response.stop_reason == "tool_use":
+            while response["stop_reason"] == "tool_use":
                 # Extract tool calls
                 tool_results = []
                 assistant_content = []
-                
-                for block in response.content:
-                    if block.type == "text":
+
+                for block in response["content"]:
+                    # Handle both dict and object formats
+                    block_type = block.get("type") if isinstance(block, dict) else block.type
+
+                    if block_type == "text":
                         assistant_content.append(block)
-                    elif block.type == "tool_use":
+                    elif block_type == "tool_use":
                         assistant_content.append(block)
-                        
+
+                        # Extract tool info (handle both dict and object formats)
+                        if isinstance(block, dict):
+                            tool_name = block["name"]
+                            tool_input = block["input"]
+                            tool_id = block["id"]
+                        else:
+                            tool_name = block.name
+                            tool_input = block.input
+                            tool_id = block.id
+
                         # Execute tool
-                        tool_result = await self._call_tool(block.name, block.input)
-                        
+                        tool_result = await self._call_tool(tool_name, tool_input)
+
                         tool_results.append({
                             "type": "tool_result",
-                            "tool_use_id": block.id,
+                            "tool_use_id": tool_id,
                             "content": json.dumps(tool_result)
                         })
                 
@@ -936,36 +979,36 @@ Always be helpful, accurate, and creative in helping users discover and work wit
                 })
                 
                 # Continue conversation
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    system=system_prompt,
+                response = await self.llm_provider.generate_with_tools(
                     messages=self.conversation_history,
-                    tools=self._get_available_tools()
+                    tools=self._get_available_tools(),
+                    system=system_prompt,
+                    max_tokens=max_tokens,
+                    temperature=1.0
                 )
-                
-                self.total_input_tokens += response.usage.input_tokens
-                self.total_output_tokens += response.usage.output_tokens
+
+                self.total_input_tokens += response["usage"]["input_tokens"]
+                self.total_output_tokens += response["usage"]["output_tokens"]
             
             # Extract final text response
             final_text = ""
-            for block in response.content:
-                if block.type == "text":
-                    final_text += block.text
-            
+            for block in response["content"]:
+                # Handle both dict and object formats
+                block_type = block.get("type") if isinstance(block, dict) else block.type
+                if block_type == "text":
+                    text_content = block.get("text") if isinstance(block, dict) else block.text
+                    final_text += text_content
+
             # Add assistant response to history
             self.conversation_history.append({
                 "role": "assistant",
-                "content": response.content
+                "content": response["content"]
             })
-            
+
             return {
                 "response": final_text,
-                "stop_reason": response.stop_reason,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens
-                },
+                "stop_reason": response["stop_reason"],
+                "usage": response["usage"],
                 "total_cost": self._estimate_cost()
             }
             
@@ -979,10 +1022,24 @@ Always be helpful, accurate, and creative in helping users discover and work wit
     
     def _estimate_cost(self) -> Dict[str, float]:
         """Estimate API costs based on token usage."""
+        # Ollama has no API costs (only electricity for local hosting)
+        if isinstance(self.llm_provider, OllamaProvider):
+            return {
+                "input_tokens": self.total_input_tokens,
+                "output_tokens": self.total_output_tokens,
+                "total_tokens": self.total_input_tokens + self.total_output_tokens,
+                "input_cost_usd": 0.0,
+                "output_cost_usd": 0.0,
+                "total_cost_usd": 0.0,
+                "note": "Ollama is free (local hosting)"
+            }
+
+        # Anthropic Claude pricing (as of model: claude-3-5-sonnet-20241022)
+        # Update these rates if model changes
         input_cost = (self.total_input_tokens / 1_000_000) * 0.25
         output_cost = (self.total_output_tokens / 1_000_000) * 1.25
         total_cost = input_cost + output_cost
-        
+
         return {
             "input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,

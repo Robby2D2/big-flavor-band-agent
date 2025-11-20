@@ -1,9 +1,10 @@
 """
 LLM Provider Abstraction Layer
-Supports both Anthropic Claude and local Ollama models
+Supports both Anthropic Claude and local Ollama models with tool calling
 """
 import os
-from typing import Optional, AsyncIterator, Dict, Any
+import json
+from typing import Optional, AsyncIterator, Dict, Any, List
 from abc import ABC, abstractmethod
 import anthropic
 import httpx
@@ -34,6 +35,123 @@ class LLMProvider(ABC):
     ) -> AsyncIterator[str]:
         """Generate a streaming response from the LLM"""
         pass
+
+    @abstractmethod
+    def supports_tool_calling(self) -> bool:
+        """Check if this provider supports tool calling"""
+        pass
+
+    @abstractmethod
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        system: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        Generate a response with tool calling support.
+
+        Args:
+            messages: Conversation messages
+            tools: Tool definitions (Anthropic format for compatibility)
+            system: System prompt
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+
+        Returns:
+            Dict containing:
+                - content: List of content blocks (text and/or tool_use)
+                - stop_reason: Why generation stopped
+                - usage: Token usage info
+        """
+        pass
+
+
+def convert_anthropic_tools_to_ollama(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Convert Anthropic tool format to Ollama tool format.
+
+    Anthropic format:
+    {
+        "name": "tool_name",
+        "description": "description",
+        "input_schema": {
+            "type": "object",
+            "properties": {...},
+            "required": [...]
+        }
+    }
+
+    Ollama format:
+    {
+        "type": "function",
+        "function": {
+            "name": "tool_name",
+            "description": "description",
+            "parameters": {
+                "type": "object",
+                "properties": {...},
+                "required": [...]
+            }
+        }
+    }
+    """
+    ollama_tools = []
+    for tool in tools:
+        ollama_tool = {
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool["input_schema"]
+            }
+        }
+        ollama_tools.append(ollama_tool)
+    return ollama_tools
+
+
+def convert_ollama_tool_calls_to_anthropic(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Convert Ollama tool calls to Anthropic format.
+
+    Ollama format:
+    {
+        "function": {
+            "name": "tool_name",
+            "arguments": {...}
+        }
+    }
+
+    Anthropic format:
+    {
+        "type": "tool_use",
+        "id": "unique_id",
+        "name": "tool_name",
+        "input": {...}
+    }
+    """
+    anthropic_blocks = []
+    for i, call in enumerate(tool_calls):
+        func = call.get("function", {})
+
+        # Parse arguments if they're a string
+        arguments = func.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+
+        block = {
+            "type": "tool_use",
+            "id": f"toolu_{i}_{func.get('name', 'unknown')}",
+            "name": func.get("name", ""),
+            "input": arguments
+        }
+        anthropic_blocks.append(block)
+    return anthropic_blocks
 
 
 class AnthropicProvider(LLMProvider):
@@ -89,6 +207,41 @@ class AnthropicProvider(LLMProvider):
         async with self.client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
+
+    def supports_tool_calling(self) -> bool:
+        """Anthropic Claude supports tool calling"""
+        return True
+
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        system: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 1.0
+    ) -> Dict[str, Any]:
+        """Generate a response with tool calling using Anthropic Claude"""
+        kwargs = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": messages,
+            "tools": tools  # Anthropic format directly
+        }
+
+        if system:
+            kwargs["system"] = system
+
+        response = await self.client.messages.create(**kwargs)
+
+        return {
+            "content": response.content,
+            "stop_reason": response.stop_reason,
+            "usage": {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens
+            }
+        }
 
 
 class OllamaProvider(LLMProvider):
@@ -189,6 +342,85 @@ class OllamaProvider(LLMProvider):
     async def close(self):
         """Close the HTTP client"""
         await self.client.aclose()
+
+    def supports_tool_calling(self) -> bool:
+        """Ollama supports tool calling for compatible models"""
+        return True
+
+    async def generate_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        system: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        Generate a response with tool calling using Ollama.
+        Converts Anthropic tool format to Ollama format internally.
+        """
+        # Convert tools from Anthropic format to Ollama format
+        ollama_tools = convert_anthropic_tools_to_ollama(tools)
+
+        # Convert messages to Ollama format
+        ollama_messages = self._convert_messages(messages, system)
+
+        payload = {
+            "model": self.model,
+            "messages": ollama_messages,
+            "tools": ollama_tools,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens
+            }
+        }
+
+        response = await self.client.post(
+            f"{self.base_url}/api/chat",
+            json=payload
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        message = result.get("message", {})
+
+        # Build response in Anthropic-compatible format
+        content_blocks = []
+
+        # Add text content if present
+        text_content = message.get("content", "")
+        if text_content and text_content.strip():
+            content_blocks.append({
+                "type": "text",
+                "text": text_content
+            })
+
+        # Add tool calls if present
+        tool_calls = message.get("tool_calls", [])
+        if tool_calls:
+            # Convert Ollama tool calls to Anthropic format
+            anthropic_tool_blocks = convert_ollama_tool_calls_to_anthropic(tool_calls)
+            content_blocks.extend(anthropic_tool_blocks)
+
+        # Determine stop reason
+        stop_reason = "end_turn"
+        if tool_calls:
+            stop_reason = "tool_use"
+
+        # Token usage (Ollama doesn't provide this, so estimate)
+        # We'll use rough estimates based on response length
+        prompt_eval_count = result.get("prompt_eval_count", 0)
+        eval_count = result.get("eval_count", 0)
+
+        return {
+            "content": content_blocks,
+            "stop_reason": stop_reason,
+            "usage": {
+                "input_tokens": prompt_eval_count if prompt_eval_count > 0 else 0,
+                "output_tokens": eval_count if eval_count > 0 else 0
+            }
+        }
 
 
 def get_llm_provider(
