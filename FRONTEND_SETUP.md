@@ -7,7 +7,7 @@ This guide will walk you through setting up the complete BigFlavor Band Agent we
 The BigFlavor Band Agent now has a web frontend that includes:
 
 1. **Search Interface** - Natural language search for songs
-2. **Auth0 Authentication** - Google OAuth with role-based access
+2. **Google OAuth Authentication** - Direct Google sign-in with role-based access
 3. **BigFlavor Radio** - AI DJ that creates playlists and takes requests
 4. **Audio Streaming** - Stream music directly from the library
 5. **Admin Tools** - MCP tools for audio processing (Editor role required)
@@ -21,7 +21,7 @@ The BigFlavor Band Agent now has a web frontend that includes:
 │  (Port 3000)    │
 └────────┬────────┘
          │
-         ├─── Auth0 (Authentication)
+         ├─── Google OAuth (Authentication)
          │
          ├─── PostgreSQL (User data, songs)
          │
@@ -57,38 +57,30 @@ cd ..
 pip install -r requirements-api.txt
 ```
 
-### 4. Configure Auth0
+### 4. Configure Google OAuth
 
-#### Create Auth0 Application
+#### Create Google OAuth Credentials
 
-1. Go to https://auth0.com and create a free account
-2. Create a new Application:
-   - Name: "BigFlavor Band Agent"
-   - Type: "Regular Web Application"
-3. Configure settings:
-   - **Allowed Callback URLs**: `http://localhost:3000/api/auth/callback`
-   - **Allowed Logout URLs**: `http://localhost:3000`
-   - **Allowed Web Origins**: `http://localhost:3000`
-4. Enable Google Social Connection:
-   - Go to Authentication → Social
-   - Enable Google
-   - Use default Auth0 dev keys or configure your own
+1. Go to https://console.cloud.google.com/
+2. Create a new project or select existing one
+3. Navigate to **APIs & Services** → **OAuth consent screen**:
+   - Select External user type
+   - Fill in app name and emails
+   - Add scopes: openid, email, profile
+4. Navigate to **APIs & Services** → **Credentials**:
+   - Click **Create Credentials** → **OAuth client ID**
+   - Application type: Web application
+   - Authorized JavaScript origins: `http://localhost:3000`
+   - Authorized redirect URIs: `http://localhost:3000/api/auth/callback`
+5. Copy the Client ID and Client Secret
 
 #### Configure Environment
 
-Generate Auth0 secret:
-```bash
-openssl rand -hex 32
-```
-
-Update `frontend/.env.local` with your Auth0 credentials:
+Update `frontend/.env.local` with your Google credentials:
 
 ```env
-AUTH0_SECRET='<generated-secret>'
-AUTH0_BASE_URL='http://localhost:3000'
-AUTH0_ISSUER_BASE_URL='https://YOUR_DOMAIN.auth0.com'
-AUTH0_CLIENT_ID='your_client_id'
-AUTH0_CLIENT_SECRET='your_client_secret'
+GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
+GOOGLE_CLIENT_SECRET='your-client-secret'
 ```
 
 ### 5. Start the Application
@@ -218,7 +210,7 @@ The frontend provides authenticated API routes:
 
 ```sql
 CREATE TABLE users (
-    id VARCHAR(255) PRIMARY KEY,  -- Auth0 user ID
+    id VARCHAR(255) PRIMARY KEY,  -- Google user ID
     email VARCHAR(255) NOT NULL UNIQUE,
     name VARCHAR(255),
     picture TEXT,
@@ -252,17 +244,17 @@ CREATE TABLE user_favorites (
 
 ## Troubleshooting
 
-### Auth0 Issues
+### Google OAuth Issues
 
 **Problem**: "Access denied" after login
-- Verify Auth0 callback URL is correctly configured
-- Check that Google social connection is enabled
-- Ensure `.env.local` has correct Auth0 credentials
+- Verify redirect URIs are correctly configured in Google Console
+- If app is in testing mode, ensure your email is added as a test user
+- Ensure `.env.local` has correct Google credentials
 
 **Problem**: Login redirect loop
 - Clear browser cookies and cache
-- Verify `AUTH0_BASE_URL` matches your local URL
-- Check Auth0 logs in dashboard
+- Verify redirect URI matches exactly (including trailing slashes)
+- Check for CORS issues in browser console
 
 ### Backend Connection Issues
 
@@ -339,19 +331,21 @@ export async function getCurrentUser(): Promise<User | null> {
 For production, update:
 
 ```env
-AUTH0_BASE_URL='https://your-domain.com'
 AGENT_API_URL='https://your-api-domain.com'
 ```
 
+And in Google Console, add your production URLs:
+- Authorized JavaScript origins: `https://your-domain.com`
+- Authorized redirect URIs: `https://your-domain.com/api/auth/callback`
+
 ### Security Checklist
 
-- [ ] Use strong `AUTH0_SECRET` (not the dev one)
 - [ ] Enable HTTPS for both frontend and backend
 - [ ] Update CORS settings in backend to only allow your domain
 - [ ] Set up proper database credentials (not default dev password)
 - [ ] Enable rate limiting on API endpoints
 - [ ] Set up monitoring and logging
-- [ ] Configure Auth0 for production (custom domain, branding)
+- [ ] Publish Google OAuth app (if allowing any Google user to sign in)
 
 ### Deployment Options
 
@@ -410,7 +404,7 @@ AGENT_API_URL='https://your-api-domain.com'
 For issues or questions:
 1. Check this documentation
 2. Review the code comments
-3. Check Auth0 documentation: https://auth0.com/docs
+3. Check Google OAuth documentation: https://developers.google.com/identity/protocols/oauth2
 4. Check Next.js documentation: https://nextjs.org/docs
 
 ## License

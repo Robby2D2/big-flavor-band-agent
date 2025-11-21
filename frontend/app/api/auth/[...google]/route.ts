@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ auth0: string }> }
+  { params }: { params: Promise<{ google: string[] }> }
 ) {
-  const { auth0: route } = await params;
+  const { google: routes } = await params;
+  const route = routes[0];
 
-  const domain = process.env.AUTH0_ISSUER_BASE_URL!;
-  const clientId = process.env.AUTH0_CLIENT_ID!;
+  const clientId = process.env.GOOGLE_CLIENT_ID!;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
 
   // Use the actual request origin instead of hardcoded base URL
   const protocol = request.headers.get('x-forwarded-proto') || 'http';
@@ -18,44 +19,47 @@ export async function GET(
     switch (route) {
       case 'login': {
         const redirectUri = `${baseUrl}/api/auth/callback`;
-        const authUrl = `${domain}/authorize?` +
+        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
           `response_type=code&` +
           `client_id=${clientId}&` +
           `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-          `scope=openid%20profile%20email&` +
-          `connection=google-oauth2`;
+          `scope=${encodeURIComponent('openid profile email')}&` +
+          `access_type=offline&` +
+          `prompt=consent`;
 
         return NextResponse.redirect(authUrl);
       }
 
       case 'logout': {
-        const logoutUrl = `${domain}/v2/logout?` +
-          `client_id=${clientId}&` +
-          `returnTo=${encodeURIComponent(baseUrl)}`;
-
-        // Clear session cookie
-        const response = NextResponse.redirect(logoutUrl);
+        // Clear session cookie and redirect to home
+        const response = NextResponse.redirect(baseUrl);
         response.cookies.delete('appSession');
         return response;
       }
 
       case 'callback': {
         const code = request.nextUrl.searchParams.get('code');
+        const error = request.nextUrl.searchParams.get('error');
+
+        if (error) {
+          console.error('OAuth error:', error);
+          return NextResponse.redirect(`${baseUrl}?error=${error}`);
+        }
 
         if (!code) {
           return NextResponse.json({ error: 'No code provided' }, { status: 400 });
         }
 
-        // Exchange code for tokens
-        const tokenResponse = await fetch(`${domain}/oauth/token`, {
+        // Exchange code for tokens with Google
+        const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            grant_type: 'authorization_code',
-            client_id: clientId,
-            client_secret: process.env.AUTH0_CLIENT_SECRET!,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
             code: code,
+            client_id: clientId,
+            client_secret: clientSecret,
             redirect_uri: `${baseUrl}/api/auth/callback`,
+            grant_type: 'authorization_code',
           }),
         });
 
@@ -67,8 +71,8 @@ export async function GET(
 
         const tokens = await tokenResponse.json();
 
-        // Get user info
-        const userResponse = await fetch(`${domain}/userinfo`, {
+        // Get user info from Google
+        const userResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
           headers: { Authorization: `Bearer ${tokens.access_token}` },
         });
 
@@ -76,7 +80,15 @@ export async function GET(
           return NextResponse.redirect(`${baseUrl}?error=user_fetch_failed`);
         }
 
-        const user = await userResponse.json();
+        const googleUser = await userResponse.json();
+
+        // Map Google user to our user format
+        const user = {
+          sub: googleUser.id,
+          email: googleUser.email,
+          name: googleUser.name,
+          picture: googleUser.picture,
+        };
 
         // Save user to database via backend API
         try {
@@ -97,8 +109,7 @@ export async function GET(
           // Continue anyway - user can still use the app
         }
 
-        // Set session cookie (in production, use proper signed cookies)
-        // Store minimal data to avoid cookie size limits
+        // Set session cookie
         const sessionData = JSON.stringify({
           sub: user.sub,
           email: user.email,
@@ -120,7 +131,6 @@ export async function GET(
           `Max-Age=${maxAge}`,
           `HttpOnly`,
           `SameSite=Lax`,
-          // Don't use Secure flag since site is HTTP
         ].filter(Boolean).join('; ');
 
         console.log('[AUTH] Set-Cookie header:', cookieHeader.substring(0, 100) + '...');
@@ -141,12 +151,14 @@ export async function GET(
 
         try {
           const session = JSON.parse(sessionCookie.value);
-          const user = session.user;
+
+          // Session stores user data directly, not nested under 'user'
+          const userSub = session.sub;
 
           // Fetch user role from backend
           let role = 'listener'; // default role
           try {
-            const roleResponse = await fetch(`${process.env.AGENT_API_URL}/api/users/${user.sub}/role`);
+            const roleResponse = await fetch(`${process.env.AGENT_API_URL}/api/users/${userSub}/role`);
             if (roleResponse.ok) {
               const roleData = await roleResponse.json();
               role = roleData.role;
@@ -155,7 +167,13 @@ export async function GET(
             console.error('Failed to fetch user role:', error);
           }
 
-          return NextResponse.json({ ...user, role });
+          return NextResponse.json({
+            sub: session.sub,
+            email: session.email,
+            name: session.name,
+            picture: session.picture,
+            role
+          });
         } catch {
           return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
         }

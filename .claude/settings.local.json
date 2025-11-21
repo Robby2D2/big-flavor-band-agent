@@ -35,7 +35,9 @@
       "Bash(nvidia-smi)",
       "Bash(docker version:*)",
       "Bash(claude auth status:*)",
-      "Bash(claude config list:*)"
+      "Bash(claude config list:*)",
+      "Bash(cat:*)",
+      "Bash(timeout 60 bash:*)"
     ],
     "deny": [],
     "ask": []

@@ -12,6 +12,7 @@ import hashlib
 from datetime import datetime, timedelta
 import numpy as np
 import sys
+import torch
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent.parent
@@ -64,10 +65,13 @@ class SongRAGSystem:
         self.text_embedding_model = None
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
+                # Determine device for text embeddings
+                text_device = "cuda" if torch.cuda.is_available() else "cpu"
+
                 # Use all-MiniLM-L6-v2 (384 dimensions) to match database schema
-                logger.info("Loading sentence-transformers model: all-MiniLM-L6-v2")
-                self.text_embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-                logger.info("Text embedding model loaded successfully")
+                logger.info(f"Loading sentence-transformers model: all-MiniLM-L6-v2 on {text_device}")
+                self.text_embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=text_device)
+                logger.info(f"Text embedding model loaded successfully on {text_device}")
             except Exception as e:
                 logger.error(f"Failed to load text embedding model: {e}")
                 self.text_embedding_model = None

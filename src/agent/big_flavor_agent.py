@@ -887,6 +887,11 @@ CRITICAL RULES:
 6. If no results found, tell the user honestly
 7. Use your music knowledge to interpret user intent
 
+TOOL INVOCATION (EXTREMELY IMPORTANT):
+- When asked to search, you MUST actually call/invoke the tool function - DO NOT just describe what tool you would use
+- DO NOT output JSON describing the tool call - actually execute the tool
+- If you find yourself writing "I will use..." or showing JSON, STOP and invoke the tool instead
+
 WORKFLOW FOR RAW RECORDINGS:
 🌟 RECOMMENDED: Use auto_clean_recording for best results!
 - auto_clean_recording: Let AI analyze and apply optimal settings automatically
@@ -1077,6 +1082,10 @@ Always be helpful, accurate, and creative in helping users discover and work wit
         # Track songs found during the conversation
         found_songs = []
 
+        # Clear conversation history for each search to prevent context pollution
+        # This ensures the agent only sees the current search query, not previous searches
+        self.conversation_history = []
+
         # Store original call_tool to wrap it
         original_call_tool = self._call_tool
 
@@ -1092,10 +1101,12 @@ Always be helpful, accurate, and creative in helping users discover and work wit
 
         try:
             # Process the search
-            search_prompt = f"""The user wants to search for songs with this query: "{query}"
+            search_prompt = f"""Search for songs matching: "{query}"
 
-Please analyze this query and use the appropriate search tools to find matching songs.
-Return up to {limit} results."""
+IMPORTANT: You MUST call one of the search tools NOW. Do not describe the tool - actually invoke it.
+For this query, call search_by_text_description with description="{query}" and limit={limit}.
+
+Execute the tool call immediately."""
 
             result = await self.chat(search_prompt)
 

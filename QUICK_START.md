@@ -11,24 +11,24 @@ Get your BigFlavor web app running in just a few steps!
 
 ## 🚀 Quick Start (3 Steps)
 
-### Step 1: Set Up Auth0 (15 minutes)
+### Step 1: Set Up Google OAuth (10 minutes)
 
-Follow the detailed guide in **AUTH0_SETUP_GUIDE.md**, or here's the ultra-quick version:
+Follow the detailed guide in **GOOGLE_OAUTH_SETUP_GUIDE.md**, or here's the ultra-quick version:
 
-1. **Sign up**: Go to https://auth0.com and create a free account
-2. **Create app**: Applications → Create Application → "BigFlavor Band Agent" → Regular Web Application
-3. **Configure URLs** in Settings:
-   - Allowed Callback URLs: `http://localhost:3000/api/auth/callback`
-   - Allowed Logout URLs: `http://localhost:3000`
-   - Allowed Web Origins: `http://localhost:3000`
-   - Click "Save Changes"
-4. **Enable Google**: Authentication → Social → Toggle Google ON
-5. **Get credentials**: Copy Domain, Client ID, and Client Secret from Settings tab
-6. **Generate secret**: Run in PowerShell:
-   ```powershell
-   -join ((48..57) + (97..102) | Get-Random -Count 64 | ForEach-Object {[char]$_})
-   ```
-7. **Update `.env.local`**: Edit `frontend/.env.local` with your Auth0 values
+1. **Go to Google Cloud Console**: https://console.cloud.google.com/
+2. **Create project**: New Project → "BigFlavor Band Agent"
+3. **Configure OAuth consent screen**:
+   - APIs & Services → OAuth consent screen
+   - Select External → Create
+   - Fill in app name and emails
+   - Add scopes: openid, email, profile
+4. **Create credentials**:
+   - APIs & Services → Credentials → Create Credentials → OAuth client ID
+   - Application type: Web application
+   - Authorized JavaScript origins: `http://localhost:3000`
+   - Authorized redirect URIs: `http://localhost:3000/api/auth/callback`
+5. **Copy credentials**: Client ID and Client Secret
+6. **Update `.env.local`**: Edit `frontend/.env.local` with your Google credentials
 
 ### Step 2: Run Database Migration (30 seconds)
 
@@ -87,7 +87,7 @@ big-flavor-band-agent/
 ├── requirements-api.txt        ← API dependencies (installed ✓)
 ├── start-backend.ps1          ← Helper script to start backend
 ├── start-frontend.ps1         ← Helper script to start frontend
-├── AUTH0_SETUP_GUIDE.md       ← Detailed Auth0 instructions
+├── GOOGLE_OAUTH_SETUP_GUIDE.md ← Detailed Google OAuth instructions
 ├── FRONTEND_SETUP.md          ← Complete technical documentation
 └── frontend/                   ← Next.js application
     ├── app/                    ← Pages and API routes
@@ -101,11 +101,9 @@ big-flavor-band-agent/
 Edit `frontend/.env.local` and replace these:
 
 ```env
-# Get these from Auth0 Dashboard → Applications → Your App → Settings
-AUTH0_SECRET='run-the-powershell-command-above-to-generate-this'
-AUTH0_ISSUER_BASE_URL='https://YOUR-TENANT.us.auth0.com'
-AUTH0_CLIENT_ID='your-client-id'
-AUTH0_CLIENT_SECRET='your-client-secret'
+# Get these from Google Cloud Console → APIs & Services → Credentials
+GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
+GOOGLE_CLIENT_SECRET='your-client-secret'
 ```
 
 The other variables (database, API keys) are already configured from your existing `.env` file!
@@ -139,8 +137,8 @@ This will:
 
 ### Issue: "Unauthorized" or login doesn't work
 **Solution**:
-1. Check Auth0 configuration in `.env.local`
-2. Make sure callback URLs are correct in Auth0 dashboard
+1. Check Google OAuth configuration in `.env.local`
+2. Make sure redirect URIs are correct in Google Console
 3. Run the database migration (Step 2)
 
 ### Issue: Audio won't play
@@ -164,7 +162,7 @@ UPDATE users SET role = 'editor' WHERE email = 'your@email.com';
 └─────────────────┬───────────────────────────────┘
                   │
         ┌─────────┴─────────┐
-        │   Next.js API     │  ← Auth0 handles login
+        │   Next.js API     │  ← Google OAuth handles login
         │   Routes          │
         └─────────┬─────────┘
                   │
@@ -198,7 +196,7 @@ After getting it running:
 
 ## 📚 Documentation
 
-- **AUTH0_SETUP_GUIDE.md** - Step-by-step Auth0 setup with troubleshooting
+- **GOOGLE_OAUTH_SETUP_GUIDE.md** - Step-by-step Google OAuth setup with troubleshooting
 - **FRONTEND_SETUP.md** - Complete technical documentation
 - **frontend/README.md** - Frontend-specific documentation
 

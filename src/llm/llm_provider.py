@@ -4,10 +4,13 @@ Supports both Anthropic Claude and local Ollama models with tool calling
 """
 import os
 import json
+import logging
 from typing import Optional, AsyncIterator, Dict, Any, List
 from abc import ABC, abstractmethod
 import anthropic
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class LLMProvider(ABC):
@@ -257,7 +260,7 @@ class OllamaProvider(LLMProvider):
         messages: list[Dict[str, str]],
         system: Optional[str] = None
     ) -> list[Dict[str, str]]:
-        """Convert messages to Ollama format"""
+        """Convert messages to Ollama format, handling tool calls and results"""
         ollama_messages = []
 
         # Add system message if provided
@@ -266,10 +269,90 @@ class OllamaProvider(LLMProvider):
 
         # Convert messages
         for msg in messages:
-            ollama_messages.append({
-                "role": msg["role"],
-                "content": msg["content"]
-            })
+            role = msg["role"]
+            content = msg["content"]
+
+            # Handle different content types
+            if isinstance(content, str):
+                # Simple string content
+                ollama_messages.append({
+                    "role": role,
+                    "content": content
+                })
+            elif isinstance(content, list):
+                # Complex content (tool calls or tool results)
+                if role == "assistant":
+                    # Assistant message with potential tool calls
+                    text_parts = []
+                    tool_calls = []
+
+                    for block in content:
+                        if isinstance(block, dict):
+                            block_type = block.get("type")
+                        else:
+                            block_type = getattr(block, "type", None)
+
+                        if block_type == "text":
+                            text = block.get("text") if isinstance(block, dict) else block.text
+                            if text:
+                                text_parts.append(text)
+                        elif block_type == "tool_use":
+                            # Convert to Ollama tool call format
+                            if isinstance(block, dict):
+                                tool_name = block.get("name")
+                                tool_input = block.get("input", {})
+                                tool_id = block.get("id", f"call_{len(tool_calls)}")
+                            else:
+                                tool_name = block.name
+                                tool_input = block.input
+                                tool_id = getattr(block, "id", f"call_{len(tool_calls)}")
+
+                            tool_calls.append({
+                                "id": tool_id,
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": tool_input if isinstance(tool_input, dict) else {}
+                                }
+                            })
+
+                    ollama_msg = {"role": "assistant"}
+                    if text_parts:
+                        ollama_msg["content"] = "\n".join(text_parts)
+                    else:
+                        ollama_msg["content"] = ""
+                    if tool_calls:
+                        ollama_msg["tool_calls"] = tool_calls
+
+                    ollama_messages.append(ollama_msg)
+
+                elif role == "user":
+                    # User message with tool results
+                    # Check if this is a tool result message
+                    if content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
+                        # Convert tool results to Ollama format
+                        # Ollama expects tool results with role="tool"
+                        for result_block in content:
+                            tool_content = result_block.get("content", "")
+                            ollama_messages.append({
+                                "role": "tool",
+                                "content": tool_content
+                            })
+                    else:
+                        # Regular user message with complex content
+                        text_parts = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                        ollama_messages.append({
+                            "role": "user",
+                            "content": "\n".join(text_parts) if text_parts else str(content)
+                        })
+            else:
+                # Fallback for other types
+                ollama_messages.append({
+                    "role": role,
+                    "content": str(content)
+                })
 
         return ollama_messages
 
@@ -376,10 +459,18 @@ class OllamaProvider(LLMProvider):
             }
         }
 
+        # Debug logging to identify 400 errors
+        logger.debug(f"Ollama request payload: {json.dumps(payload, indent=2, default=str)}")
+
         response = await self.client.post(
             f"{self.base_url}/api/chat",
             json=payload
         )
+
+        if response.status_code != 200:
+            logger.error(f"Ollama API error {response.status_code}: {response.text}")
+            logger.error(f"Request payload was: {json.dumps(payload, indent=2, default=str)}")
+
         response.raise_for_status()
 
         result = response.json()

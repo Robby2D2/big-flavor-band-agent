@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, UserRole } from '@/lib/server-auth';
-import fs from 'fs';
-import path from 'path';
+
+const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8000';
 
 export async function GET(
   request: NextRequest,
@@ -13,54 +13,49 @@ export async function GET(
 
     const { songId } = await params;
 
-    // Path to audio library
-    const audioLibraryPath = path.join(process.cwd(), '..', 'audio_library');
+    // Proxy the request to the backend API
+    const backendUrl = `${AGENT_API_URL}/api/audio/stream/${songId}`;
 
-    // Find the audio file matching the song ID
-    const files = fs.readdirSync(audioLibraryPath);
-    const audioFile = files.find(file => file.startsWith(`${songId}_`) && file.endsWith('.mp3'));
+    // Forward range headers for streaming support
+    const headers: HeadersInit = {};
+    const range = request.headers.get('range');
+    if (range) {
+      headers['Range'] = range;
+    }
 
-    if (!audioFile) {
+    const response = await fetch(backendUrl, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
       return NextResponse.json(
-        { error: 'Audio file not found' },
-        { status: 404 }
+        { error: errorText || 'Audio file not found' },
+        { status: response.status }
       );
     }
 
-    const filePath = path.join(audioLibraryPath, audioFile);
-    const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
+    // Stream the response back to the client
+    const responseHeaders = new Headers();
 
-    // Handle range requests for audio streaming
-    const range = request.headers.get('range');
+    // Copy relevant headers from backend response
+    const contentType = response.headers.get('content-type');
+    if (contentType) responseHeaders.set('Content-Type', contentType);
 
-    if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = end - start + 1;
-      const stream = fs.createReadStream(filePath, { start, end });
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) responseHeaders.set('Content-Length', contentLength);
 
-      return new NextResponse(stream as any, {
-        status: 206,
-        headers: {
-          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-          'Accept-Ranges': 'bytes',
-          'Content-Length': chunksize.toString(),
-          'Content-Type': 'audio/mpeg',
-        },
-      });
-    } else {
-      const stream = fs.createReadStream(filePath);
+    const contentRange = response.headers.get('content-range');
+    if (contentRange) responseHeaders.set('Content-Range', contentRange);
 
-      return new NextResponse(stream as any, {
-        status: 200,
-        headers: {
-          'Content-Length': fileSize.toString(),
-          'Content-Type': 'audio/mpeg',
-        },
-      });
-    }
+    const acceptRanges = response.headers.get('accept-ranges');
+    if (acceptRanges) responseHeaders.set('Accept-Ranges', acceptRanges);
+
+    return new NextResponse(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    });
   } catch (error: any) {
     console.error('Audio streaming error:', error);
     return NextResponse.json(

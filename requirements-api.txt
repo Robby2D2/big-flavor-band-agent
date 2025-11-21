@@ -29,6 +29,7 @@ scipy>=1.11.0
 torch>=2.0.0
 transformers>=4.30.0
 torchaudio>=2.0.0
+sentence-transformers>=2.2.0
 
 # Speech and Audio Processing
 faster-whisper>=0.10.0

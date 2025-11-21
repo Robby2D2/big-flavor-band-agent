@@ -55,13 +55,17 @@ services:
     container_name: bigflavor-backend
     environment:
       - DATABASE_URL=postgresql://bigflavor:${POSTGRES_PASSWORD:-bigflavor_dev_pass}@postgres:5432/bigflavor
+      # Individual DB vars for DatabaseManager
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=bigflavor
+      - DB_USER=bigflavor
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-bigflavor_dev_pass}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - AUTH0_DOMAIN=${AUTH0_DOMAIN}
-      - AUTH0_API_IDENTIFIER=${AUTH0_API_IDENTIFIER}
       # LLM Configuration
-      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - LLM_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:7b
     volumes:
       - ./audio_library:/app/audio_library:ro
     depends_on:
@@ -90,11 +94,8 @@ services:
     environment:
       - NODE_ENV=production
       - AGENT_API_URL=http://backend:8000
-      - AUTH0_SECRET=${AUTH0_SECRET}
-      - AUTH0_BASE_URL=${AUTH0_BASE_URL:-http://localhost}
-      - AUTH0_ISSUER_BASE_URL=${AUTH0_ISSUER_BASE_URL}
-      - AUTH0_CLIENT_ID=${AUTH0_CLIENT_ID}
-      - AUTH0_CLIENT_SECRET=${AUTH0_CLIENT_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
     depends_on:
       backend:
         condition: service_healthy
