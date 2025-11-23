@@ -68,6 +68,10 @@ services:
       - OLLAMA_MODEL=qwen2.5:7b
     volumes:
       - ./audio_library:/app/audio_library:ro
+      # Mount source code for hot reloading (restart instead of rebuild)
+      - ./src:/app/src:ro
+      - ./database:/app/database:ro
+      - ./backend_api.py:/app/backend_api.py:ro
     depends_on:
       postgres:
         condition: service_healthy

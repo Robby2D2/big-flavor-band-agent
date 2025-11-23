@@ -12,6 +12,7 @@ interface Song {
   recording_date?: string;
   similarity?: number;
   score?: number;
+  commentary?: string;
 }
 
 interface SongListProps {
@@ -39,6 +40,11 @@ export default function SongList({ songs, onPlay }: SongListProps) {
               <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
                 {song.title}
               </h3>
+              {song.commentary && (
+                <p className="mt-1 text-sm text-blue-600 dark:text-blue-400 italic">
+                  {song.commentary}
+                </p>
+              )}
               <div className="mt-2 flex flex-wrap gap-2 text-sm text-gray-600 dark:text-gray-400">
                 {song.genre && (
                   <span className="px-2 py-1 bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-200 rounded">
@@ -57,7 +63,7 @@ export default function SongList({ songs, onPlay }: SongListProps) {
                 )}
               </div>
               <div className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                {song.tempo_bpm && <span>Tempo: {song.tempo_bpm} BPM</span>}
+                {song.tempo_bpm && <span>Tempo: {Math.round(song.tempo_bpm)} BPM</span>}
                 {song.key && <span className="ml-4">Key: {song.key}</span>}
                 {song.duration_seconds && (
                   <span className="ml-4">Duration: {formatDuration(song.duration_seconds)}</span>

@@ -882,10 +882,33 @@ CRITICAL RULES:
 1. Use search tools to FIND songs, use production/editing tools to MODIFY audio
 2. When user mentions a song title, FIRST use find_song_by_title to look it up in the library
 3. If find_song_by_title returns results, use the audio_path from those results for similarity searches
-4. NEVER make up or hallucinate song information
-5. Only recommend songs from actual search results
-6. If no results found, tell the user honestly
-7. Use your music knowledge to interpret user intent
+4. NEVER make up or hallucinate song information - this is EXTREMELY IMPORTANT
+5. ONLY recommend songs that appear in the actual tool results - check each song title EXACTLY
+6. Use ONLY the exact data from tool results: title, tempo_bpm, key, audio_url/audio_path
+7. DO NOT invent URLs, tempos, keys, or any other metadata - if it's not in the results, don't include it
+8. If no results found, tell the user honestly
+9. Use your music knowledge to interpret user intent
+
+RESPONSE FORMAT FOR SEARCH RESULTS:
+Your job is to CURATE the search results - select the best 5-10 matches for what the user asked for.
+The songs you mention will be automatically displayed as playable cards in the UI.
+
+IMPORTANT: Provide ONLY a brief commentary (2-4 sentences) explaining:
+- Why you selected these particular songs
+- What makes them fit the request
+- Any patterns or suggestions
+
+Then list ONLY the song titles you recommend, like:
+"I found several tracks that match your request for slow ballads. Here are my top picks: Buena - keys, Hope and Despair - first try, Bobby McGee - nothing left to lose, Fake Plastic Trees - TRG."
+
+DO NOT include:
+- Tempo/BPM values
+- Keys
+- Durations
+- Audio URLs
+- Numbered lists with metadata
+
+The UI will display all that information automatically in nice playable cards. Just mention the song titles naturally in your response.
 
 TOOL INVOCATION (EXTREMELY IMPORTANT):
 - When asked to search, you MUST actually call/invoke the tool function - DO NOT just describe what tool you would use
@@ -920,6 +943,13 @@ EXAMPLES:
 - "Analyze what cleanup is needed" → analyze_and_recommend_processing(file)
 - "Remove noise from recording.wav" → reduce_noise(recording.wav, output)
 - "Process aggressively" → auto_clean_recording(file, output, "aggressive")
+
+FINAL CHECK BEFORE RESPONDING:
+Before writing your response about search results, verify:
+1. Every song you mention exists in the tool's returned "songs" array
+2. Every tempo, key, and URL you mention matches EXACTLY what's in the results
+3. You are not adding songs that weren't in the results
+4. You are not modifying or "improving" any data values
 
 Always be helpful, accurate, and creative in helping users discover and work with music!"""
         
@@ -1106,15 +1136,108 @@ Always be helpful, accurate, and creative in helping users discover and work wit
 IMPORTANT: You MUST call one of the search tools NOW. Do not describe the tool - actually invoke it.
 For this query, call search_by_text_description with description="{query}" and limit={limit}.
 
+After getting results, select the BEST 5-10 matches for the user's request.
+
+Format your response as a list where each line has:
+SONG_TITLE | why this song matches the user's request
+
+Example for "slow acoustic ballads":
+Hope and Despair - first try | Slow tempo and melancholic lyrics fit the ballad request
+Buena - keys | Acoustic guitar and gentle feel match the slow ballad mood
+
+IMPORTANT: Each comment must explain WHY this song matches what the user asked for.
+Use the EXACT song titles from the results. Keep comments short (under 15 words).
+Do NOT include tempo, key, duration, URLs, or any other metadata.
+
 Execute the tool call immediately."""
 
             result = await self.chat(search_prompt)
 
-            return {
-                "response": result.get("response", ""),
-                "songs": found_songs[:limit],  # Limit the songs returned
-                "total_found": len(found_songs)
-            }
+            response_text = result.get("response", "")
+
+            import re
+
+            # Build list of all song titles from results
+            songs_by_title = {}
+            for song in found_songs:
+                title = song.get('title', '')
+                if title:
+                    songs_by_title[title] = song
+
+            # Parse per-song commentary from response
+            # Look for patterns like "Song Title | comment" or "Song Title - comment"
+            song_comments = {}
+
+            # Try to extract "Title | comment" or "Title: comment" patterns
+            for line in response_text.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Remove leading numbers/bullets like "1. " or "- "
+                line = re.sub(r'^[\d\.\-\*\•]+\s*', '', line)
+
+                # Try different separators
+                for separator in [' | ', ' - ', ': ']:
+                    if separator in line:
+                        parts = line.split(separator, 1)
+                        if len(parts) == 2:
+                            potential_title = parts[0].strip().strip('*').strip('"').strip("'")
+                            comment = parts[1].strip()
+
+                            # Check if this matches a song title
+                            for title in songs_by_title:
+                                if potential_title.lower() == title.lower() or potential_title.lower() in title.lower() or title.lower() in potential_title.lower():
+                                    # Clean the comment
+                                    comment = re.sub(r'\(.*?\)', '', comment).strip()  # Remove parenthetical info
+                                    comment = re.sub(r'https?://\S+', '', comment).strip()  # Remove URLs
+                                    if comment and len(comment) > 5:
+                                        song_comments[title] = comment
+                                    break
+                        break
+
+            # Find which songs are mentioned in the response
+            mentioned_songs = []
+            mentioned_titles = set()
+
+            # Check each song title to see if it appears in the response
+            for title, song in songs_by_title.items():
+                # Check for exact title match (case-insensitive)
+                if title.lower() in response_text.lower():
+                    if title not in mentioned_titles:
+                        # Add commentary if we parsed it
+                        song_copy = song.copy()
+                        if title in song_comments:
+                            song_copy['commentary'] = song_comments[title]
+                        mentioned_songs.append(song_copy)
+                        mentioned_titles.add(title)
+                        continue
+
+                # Also check for partial title (before the " - " suffix like "first draft")
+                base_title = title.split(' - ')[0].strip()
+                if len(base_title) > 3 and base_title.lower() in response_text.lower():
+                    if title not in mentioned_titles:
+                        song_copy = song.copy()
+                        if title in song_comments:
+                            song_copy['commentary'] = song_comments[title]
+                        mentioned_songs.append(song_copy)
+                        mentioned_titles.add(title)
+
+            if mentioned_songs:
+                logger.info(f"Extracted {len(mentioned_songs)} mentioned songs with {len(song_comments)} comments")
+                return {
+                    "response": "",  # No top-level response needed
+                    "songs": mentioned_songs,
+                    "total_found": len(found_songs)
+                }
+            else:
+                logger.warning("No songs matched from agent response, returning top results by relevance")
+                # Return top results by similarity/score if no matches found
+                return {
+                    "response": "",
+                    "songs": found_songs[:10],
+                    "total_found": len(found_songs)
+                }
         finally:
             # Restore original _call_tool
             self._call_tool = original_call_tool
