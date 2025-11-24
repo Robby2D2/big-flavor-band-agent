@@ -37,6 +37,17 @@ except ImportError:
 logger = logging.getLogger("rag-system")
 
 
+def _serialize_row(row) -> Dict[str, Any]:
+    """Convert a database row to a dict with datetime objects serialized to ISO strings."""
+    result = dict(row)
+    for key, value in result.items():
+        if isinstance(value, datetime):
+            result[key] = value.isoformat()
+        elif hasattr(value, 'isoformat'):  # Handle date objects too
+            result[key] = value.isoformat()
+    return result
+
+
 class SongRAGSystem:
     """
     RAG system for semantic search over song library.
@@ -642,10 +653,13 @@ class SongRAGSystem:
                     s.tempo_bpm,
                     s.key,
                     s.duration_seconds,
+                    s.recording_date,
+                    s.created_at,
+                    s.updated_at,
                     ae.audio_path
                 FROM songs s
                 LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-                WHERE 
+                WHERE
                     s.title ILIKE $1 OR
                     s.genre ILIKE $1 OR
                     s.mood ILIKE $1 OR
@@ -656,8 +670,8 @@ class SongRAGSystem:
             keyword_pattern = f'%{description}%'
             async with self.db.pool.acquire() as conn:
                 rows = await conn.fetch(query, keyword_pattern, limit)
-            
-            results = [dict(row) for row in rows]
+
+            results = [_serialize_row(row) for row in rows]
             logger.info(f"Keyword-only search found {len(results)} results")
             return results
         
@@ -710,14 +724,18 @@ class SongRAGSystem:
                 s.tempo_bpm,
                 s.key,
                 s.duration_seconds,
+                s.recording_date,
+                s.created_at,
+                s.updated_at,
                 ae.audio_path,
                 MAX(cr.similarity) as max_similarity,
                 STRING_AGG(DISTINCT cr.content_type, ', ') as match_types
             FROM combined_results cr
             JOIN songs s ON cr.song_id = s.id
             LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-            GROUP BY s.id, s.title, s.genre, s.audio_url, s.mood, s.energy, 
-                     s.tempo_bpm, s.key, s.duration_seconds, ae.audio_path
+            GROUP BY s.id, s.title, s.genre, s.audio_url, s.mood, s.energy,
+                     s.tempo_bpm, s.key, s.duration_seconds, s.recording_date,
+                     s.created_at, s.updated_at, ae.audio_path
             ORDER BY MAX(cr.similarity) DESC, s.title
             LIMIT $2
         """
@@ -727,8 +745,8 @@ class SongRAGSystem:
         
         async with self.db.pool.acquire() as conn:
             rows = await conn.fetch(query, embedding_str, limit, keyword_pattern)
-        
-        results = [dict(row) for row in rows]
+
+        results = [_serialize_row(row) for row in rows]
         logger.info(f"Text search found {len(results)} results for '{description}' (semantic + keywords)")
         return results
     

@@ -49,6 +49,46 @@ radio_state = {
     "last_update": time.time()
 }
 
+# Playlist file path for Liquidsoap integration
+PLAYLIST_FILE = Path("/app/streaming/playlist/radio.m3u")
+
+def write_playlist_file():
+    """Write current queue to playlist file for Liquidsoap"""
+    try:
+        audio_library = Path("/app/audio_library")
+
+        # Build playlist with current song first, then queue
+        playlist_lines = ["#EXTM3U"]
+
+        # Add current song if playing
+        if radio_state["current_song"]:
+            song_id = radio_state["current_song"].get("id")
+            title = radio_state["current_song"].get("title", "Unknown")
+            audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
+            if audio_files:
+                playlist_lines.append(f"#EXTINF:-1,{title}")
+                # Convert path for Liquidsoap container: /app/audio_library -> /audio_library
+                liquidsoap_path = str(audio_files[0]).replace("/app/audio_library", "/audio_library")
+                playlist_lines.append(liquidsoap_path)
+
+        # Add queue
+        for song in radio_state["queue"]:
+            song_id = song.get("id")
+            title = song.get("title", "Unknown")
+            audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
+            if audio_files:
+                playlist_lines.append(f"#EXTINF:-1,{title}")
+                # Convert path for Liquidsoap container: /app/audio_library -> /audio_library
+                liquidsoap_path = str(audio_files[0]).replace("/app/audio_library", "/audio_library")
+                playlist_lines.append(liquidsoap_path)
+
+        # Write playlist file
+        PLAYLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PLAYLIST_FILE.write_text("\n".join(playlist_lines))
+        print(f"Playlist updated: {len(playlist_lines) // 2} songs")
+    except Exception as e:
+        print(f"Error writing playlist: {e}")
+
 # Track active listeners (listener_id -> last_ping_time)
 active_listeners = {}
 
@@ -73,6 +113,15 @@ async def get_rag() -> SongRAGSystem:
         # Create RAG system with database manager
         rag = SongRAGSystem(db_manager, use_clap=True)
     return rag
+
+
+async def get_db() -> DatabaseManager:
+    """Dependency to get or create database manager instance"""
+    global db_manager
+    if db_manager is None:
+        db_manager = DatabaseManager()
+        await db_manager.connect()
+    return db_manager
 
 
 # Request/Response Models
@@ -281,7 +330,7 @@ async def natural_language_search(
 
         return {
             "query": request.query,
-            "response": result["response"],
+            "search_summary": result.get("search_summary"),
             "songs": result["songs"],
             "total_found": result["total_found"],
             "limit": request.limit
@@ -321,6 +370,29 @@ async def search_by_lyrics(
             limit=request.limit
         )
         return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/songs/{song_id}/lyrics")
+async def get_song_lyrics(
+    song_id: int,
+    db: DatabaseManager = Depends(get_db)
+):
+    """Get lyrics for a specific song"""
+    try:
+        query = """
+            SELECT content as lyrics
+            FROM text_embeddings
+            WHERE song_id = $1 AND content_type = 'lyrics'
+        """
+        async with db.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id)
+
+        if row:
+            return {"lyrics": row["lyrics"]}
+        else:
+            return {"lyrics": "Lyrics not available for this song."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -429,11 +501,17 @@ def advance_to_next_song():
         # Debug logging
         duration = radio_state["current_song"].get("duration", "NOT SET")
         print(f"Now playing: {radio_state['current_song'].get('title')} (duration: {duration}s)")
+
+        # Update playlist file for Liquidsoap
+        write_playlist_file()
     else:
         radio_state["current_song"] = None
         radio_state["position"] = 0
         radio_state["is_playing"] = False
         print("Queue empty - stopping playback")
+
+        # Update playlist file for Liquidsoap
+        write_playlist_file()
 
 
 async def auto_populate_queue():
@@ -556,6 +634,9 @@ async def add_to_queue(
         # If nothing is playing, start playing
         if not radio_state["current_song"] and len(radio_state["queue"]) > 0:
             advance_to_next_song()
+        elif added_count > 0:
+            # Update playlist file even if we didn't start playback
+            write_playlist_file()
 
         return {
             "response": result["response"],

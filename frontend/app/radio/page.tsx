@@ -23,11 +23,10 @@ interface RadioState {
 export default function RadioPage() {
   const [radioState, setRadioState] = useState<RadioState | null>(null);
   const [loading, setLoading] = useState(true);
-  const [djMessage, setDjMessage] = useState('');
-  const [djResponse, setDjResponse] = useState('');
-  const [requesting, setRequesting] = useState(false);
   const [userRole, setUserRole] = useState<string>('listener');
   const [listenerId, setListenerId] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState(false);
+  const [volume, setVolume] = useState(0.8);
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastSongIdRef = useRef<number | null>(null);
 
@@ -65,31 +64,9 @@ export default function RadioPage() {
             setListenerId(data.listener_id);
           }
 
-          // Sync audio player with server state
-          if (audioRef.current && data.current_song) {
-            // If song changed, load new song
-            if (data.current_song.id !== lastSongIdRef.current) {
-              audioRef.current.src = `/api/audio/${data.current_song.id}`;
-              audioRef.current.currentTime = data.position;
-              lastSongIdRef.current = data.current_song.id;
-
-              if (data.is_playing) {
-                audioRef.current.play().catch(console.error);
-              }
-            } else {
-              // Sync position if drift is more than 2 seconds
-              const drift = Math.abs(audioRef.current.currentTime - data.position);
-              if (drift > 2) {
-                audioRef.current.currentTime = data.position;
-              }
-
-              // Sync play/pause state
-              if (data.is_playing && audioRef.current.paused) {
-                audioRef.current.play().catch(console.error);
-              } else if (!data.is_playing && !audioRef.current.paused) {
-                audioRef.current.pause();
-              }
-            }
+          // Track current song for display (stream is continuous)
+          if (data.current_song) {
+            lastSongIdRef.current = data.current_song.id;
           }
         }
       } catch (error) {
@@ -103,45 +80,7 @@ export default function RadioPage() {
     const interval = setInterval(fetchRadioState, 3000); // Poll every 3 seconds
 
     return () => clearInterval(interval);
-  }, [listenerId]);
-
-  const handleDJRequest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!djMessage.trim()) return;
-
-    setRequesting(true);
-    setDjResponse('');
-
-    try {
-      const response = await fetch('/api/radio', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: djMessage,
-        }),
-      });
-
-      if (response.status === 403) {
-        setDjResponse('Access denied. You must be logged in to request songs.');
-        setRequesting(false);
-        return;
-      }
-
-      if (!response.ok) {
-        throw new Error('Failed to add songs to queue');
-      }
-
-      const data = await response.json();
-      setDjResponse(data.response || `Added ${data.added_count} songs to queue`);
-      setDjMessage('');
-    } catch (error: any) {
-      setDjResponse(`Error: ${error.message}`);
-    } finally {
-      setRequesting(false);
-    }
-  };
+  }, [listenerId, isListening]);
 
   const handleSkip = async () => {
     try {
@@ -193,6 +132,30 @@ export default function RadioPage() {
 
   const isEditor = userRole === 'editor' || userRole === 'admin';
 
+  const toggleListening = () => {
+    if (!audioRef.current) return;
+
+    if (isListening) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      setIsListening(false);
+    } else {
+      // Use the Icecast stream URL
+      const audio = audioRef.current;
+      audio.src = '/stream';
+      audio.volume = volume;
+      audio.play();
+      setIsListening(true);
+    }
+  };
+
+  const handleVolumeChange = (newVolume: number) => {
+    setVolume(newVolume);
+    if (audioRef.current) {
+      audioRef.current.volume = newVolume;
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
@@ -212,8 +175,13 @@ export default function RadioPage() {
       />
 
       <main className="container mx-auto px-4 py-8">
-        {/* Hidden audio player */}
-        <audio ref={audioRef} />
+        {/* Audio element */}
+        <audio
+          ref={audioRef}
+          preload="none"
+          controls
+          style={{ display: 'block', margin: '20px auto', width: '100%', maxWidth: '600px' }}
+        />
 
         {/* Now Playing */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 mb-6">
@@ -258,91 +226,102 @@ export default function RadioPage() {
               </div>
             </div>
           ) : (
-            <p className="text-gray-600 dark:text-gray-400">
+            <p className="text-gray-600 dark:text-gray-400 mb-4">
               No song currently playing. {isEditor && 'Add some songs to get started!'}
             </p>
           )}
-        </div>
 
-        <div className="grid md:grid-cols-2 gap-6">
-          {/* Queue */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-              Up Next ({radioState?.queue_length || 0} songs)
-            </h2>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {radioState?.queue && radioState.queue.length > 0 ? (
-                radioState.queue.map((song, index) => (
-                  <div
-                    key={song.id}
-                    className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg"
-                  >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-500 dark:text-gray-400">
-                          {index + 1}.
-                        </span>
-                        <span className="text-sm font-medium text-gray-900 dark:text-white">
-                          {song.title}
-                        </span>
-                      </div>
-                    </div>
-                    {isEditor && (
-                      <button
-                        onClick={() => handleRemove(song.id)}
-                        className="text-red-600 hover:text-red-700 text-sm px-2"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                ))
-              ) : (
-                <p className="text-gray-500 dark:text-gray-400 text-sm">
-                  Queue is empty
-                </p>
-              )}
+          {/* Audio Player Controls - Always visible */}
+          <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-4">
+              {/* Play/Stop Button */}
+              <button
+                onClick={toggleListening}
+                className={`flex items-center justify-center w-14 h-14 rounded-full transition-colors ${
+                  isListening
+                    ? 'bg-red-600 hover:bg-red-700 text-white'
+                    : 'bg-green-600 hover:bg-green-700 text-white'
+                }`}
+              >
+                {isListening ? (
+                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clipRule="evenodd" />
+                  </svg>
+                ) : (
+                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                  </svg>
+                )}
+              </button>
+
+              <div className="flex-1">
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {isListening ? 'Listening...' : 'Click to tune in'}
+                </span>
+              </div>
+
+              {/* Volume Control */}
+              <div className="flex items-center gap-2">
+                <svg className="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
+                </svg>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={volume}
+                  onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                  className="w-24 h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
             </div>
           </div>
+        </div>
 
-          {/* DJ Request */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-              Request Songs
-            </h2>
-            <form onSubmit={handleDJRequest} className="space-y-4">
-              <textarea
-                value={djMessage}
-                onChange={(e) => setDjMessage(e.target.value)}
-                placeholder="Ask the DJ for songs... (e.g., 'Play some upbeat rock songs' or 'Add slow acoustic ballads')"
-                disabled={requesting}
-                className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:border-blue-500 dark:bg-gray-700 dark:text-white resize-none disabled:opacity-50"
-                rows={4}
-              />
-              <button
-                type="submit"
-                disabled={requesting || !djMessage.trim()}
-                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium"
-              >
-                {requesting ? 'Requesting...' : 'Add to Queue'}
-              </button>
-            </form>
-
-            {djResponse && (
-              <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900 rounded-lg">
-                <p className="text-sm text-blue-900 dark:text-blue-100 whitespace-pre-wrap">
-                  {djResponse}
-                </p>
-              </div>
+        {/* Queue */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+            Up Next ({radioState?.queue_length || 0} songs)
+          </h2>
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {radioState?.queue && radioState.queue.length > 0 ? (
+              radioState.queue.map((song, index) => (
+                <div
+                  key={song.id}
+                  className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-500 dark:text-gray-400">
+                        {index + 1}.
+                      </span>
+                      <span className="text-sm font-medium text-gray-900 dark:text-white">
+                        {song.title}
+                      </span>
+                    </div>
+                  </div>
+                  {isEditor && (
+                    <button
+                      onClick={() => handleRemove(song.id)}
+                      className="text-red-600 hover:text-red-700 text-sm px-2"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))
+            ) : (
+              <p className="text-gray-500 dark:text-gray-400 text-sm">
+                Queue is empty
+              </p>
             )}
+          </div>
 
-            {!isEditor && (
-              <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-700 rounded-lg">
-                <p className="text-sm text-blue-800 dark:text-blue-200">
-                  <strong>Tip:</strong> You can request songs! Only editors and admins can skip songs or remove them from the queue.
-                </p>
-              </div>
-            )}
+          <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-700 rounded-lg">
+            <p className="text-sm text-blue-800 dark:text-blue-200">
+              <strong>Tip:</strong> You can request songs by adding them to the radio queue from the Search page using the kebab menu.
+            </p>
           </div>
         </div>
       </main>

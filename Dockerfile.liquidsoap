@@ -1,0 +1,10 @@
+FROM savonet/liquidsoap:v2.2.4
+
+# Create log directory
+RUN mkdir -p /var/log/liquidsoap
+
+# Copy configuration
+COPY streaming/radio.liq /etc/liquidsoap/radio.liq
+
+# Run liquidsoap
+CMD ["liquidsoap", "/etc/liquidsoap/radio.liq"]

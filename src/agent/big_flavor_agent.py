@@ -841,117 +841,24 @@ class BigFlavorAgent:
             "content": user_message
         })
         
-        system_prompt = """You are an expert music assistant for the Big Flavor Band with access to powerful tools:
+        system_prompt = """You are a music search assistant for the Big Flavor Band song library.
 
-SEARCH TOOLS (RAG System - direct library access):
-- search_by_audio_file: Find songs that SOUND similar (most powerful for sonic matching)
-- find_song_by_title: Find songs by title (use this FIRST when user mentions a song name)
-- search_by_text_description: Natural language search ("chill jazz", "upbeat workout")
-- search_lyrics_by_keyword: Find songs with EXACT words/phrases in lyrics (use when user wants specific words like "hippie", "love", "ocean")
+Your job is to find songs that match user requests using the search tools available.
+
+SEARCH TOOLS:
+- search_by_text_description: Find songs by mood, theme, style, or description
+- search_lyrics_by_keyword: Find songs containing specific words in lyrics
+- find_song_by_title: Find songs by title
 - search_by_tempo_range: Find songs by BPM
-- search_hybrid: Combine multiple criteria for best results
+- search_by_audio_file: Find similar sounding songs
 
-PRODUCTION TOOLS (MCP Server - audio processing):
-- analyze_audio: Extract tempo, key, beats from audio files
-- match_tempo: Time-stretch audio to target BPM (no pitch change)
-- create_transition: Create beat-matched DJ transitions with crossfading
-- apply_mastering: Professional mastering with compression and limiting
+RULES:
+1. Always call the appropriate search tool - do not just describe what you would do
+2. Only return songs that appear in the search results
+3. Use exact song titles from the results
+4. Never invent or hallucinate song information
 
-INTELLIGENT AUTO-PROCESSING (MCP Server - AI-driven cleanup):
-🌟 BEST FOR RAW RECORDINGS:
-- auto_clean_recording: Automatically analyze and clean recordings with AI-driven settings
-  * Intelligently detects and removes leading/trailing noise (not just silence - detects speech, noise vs music)
-  * Auto-selects optimal noise reduction, EQ, compression, and mastering parameters
-  * Aggressiveness levels: 'gentle', 'moderate', 'aggressive'
-  * This is the RECOMMENDED tool for processing raw recordings!
-
-- analyze_and_recommend_processing: Get detailed analysis and specific recommendations
-  * Detects noise levels, frequency imbalances, non-musical content
-  * Provides specific parameter recommendations for manual processing
-  * Use this when you want to understand what cleanup is needed
-
-MANUAL EDITING TOOLS (MCP Server - for fine control):
-- trim_silence: Remove silence from beginning/end of recordings
-- reduce_noise: Remove background noise, hum, hiss, and feedback
-- correct_pitch: Fix wrong notes or apply auto-tune
-- normalize_audio: Normalize levels and apply compression
-- apply_eq: Shape sound with EQ filters (remove mud, add clarity)
-- remove_artifacts: Remove clicks, pops, and glitches
-
-CRITICAL RULES:
-1. Use search tools to FIND songs, use production/editing tools to MODIFY audio
-2. When user mentions a song title, FIRST use find_song_by_title to look it up in the library
-3. If find_song_by_title returns results, use the audio_path from those results for similarity searches
-4. NEVER make up or hallucinate song information - this is EXTREMELY IMPORTANT
-5. ONLY recommend songs that appear in the actual tool results - check each song title EXACTLY
-6. Use ONLY the exact data from tool results: title, tempo_bpm, key, audio_url/audio_path
-7. DO NOT invent URLs, tempos, keys, or any other metadata - if it's not in the results, don't include it
-8. If no results found, tell the user honestly
-9. Use your music knowledge to interpret user intent
-
-RESPONSE FORMAT FOR SEARCH RESULTS:
-Your job is to CURATE the search results - select the best 5-10 matches for what the user asked for.
-The songs you mention will be automatically displayed as playable cards in the UI.
-
-IMPORTANT: Provide ONLY a brief commentary (2-4 sentences) explaining:
-- Why you selected these particular songs
-- What makes them fit the request
-- Any patterns or suggestions
-
-Then list ONLY the song titles you recommend, like:
-"I found several tracks that match your request for slow ballads. Here are my top picks: Buena - keys, Hope and Despair - first try, Bobby McGee - nothing left to lose, Fake Plastic Trees - TRG."
-
-DO NOT include:
-- Tempo/BPM values
-- Keys
-- Durations
-- Audio URLs
-- Numbered lists with metadata
-
-The UI will display all that information automatically in nice playable cards. Just mention the song titles naturally in your response.
-
-TOOL INVOCATION (EXTREMELY IMPORTANT):
-- When asked to search, you MUST actually call/invoke the tool function - DO NOT just describe what tool you would use
-- DO NOT output JSON describing the tool call - actually execute the tool
-- If you find yourself writing "I will use..." or showing JSON, STOP and invoke the tool instead
-
-WORKFLOW FOR RAW RECORDINGS:
-🌟 RECOMMENDED: Use auto_clean_recording for best results!
-- auto_clean_recording: Let AI analyze and apply optimal settings automatically
-
-MANUAL WORKFLOW (if user wants control):
-1. analyze_and_recommend_processing: Get specific recommendations first
-2. trim_silence: Clean up the beginning/end (or let auto_clean detect non-music content)
-3. reduce_noise: Remove background noise and hum
-4. correct_pitch: Fix any tuning issues (if needed)
-5. apply_eq: Remove mud (high-pass ~80Hz), add clarity
-6. normalize_audio: Even out levels with compression
-7. apply_mastering: Final loudness and polish
-
-EXAMPLES:
-- "Find sleep music" → search_by_text_description("calm sleep ambient")
-- "Find songs like Going to California" → find_song_by_title("Going to California") then search_by_audio_file(result.audio_path)
-- "Find songs like this.mp3" → search_by_audio_file("this.mp3")
-- "Find 120 BPM songs" → search_by_tempo_range(min=115, max=125)
-- "What songs are about hippies?" → search_by_text_description("hippie counterculture 1960s themes")
-- "Find songs with the word hippie in lyrics" → search_lyrics_by_keyword("hippie")
-- "Songs about love" → search_by_text_description("love romantic relationships")
-- "Songs that say 'I love you'" → search_lyrics_by_keyword("I love you")
-- "Make this song 128 BPM" → match_tempo(file, 128, output)
-- "Create mix of song1 and song2" → create_transition(song1, song2, output)
-- "Clean up this raw recording" → auto_clean_recording(file, output, "moderate") 🌟 BEST OPTION
-- "Analyze what cleanup is needed" → analyze_and_recommend_processing(file)
-- "Remove noise from recording.wav" → reduce_noise(recording.wav, output)
-- "Process aggressively" → auto_clean_recording(file, output, "aggressive")
-
-FINAL CHECK BEFORE RESPONDING:
-Before writing your response about search results, verify:
-1. Every song you mention exists in the tool's returned "songs" array
-2. Every tempo, key, and URL you mention matches EXACTLY what's in the results
-3. You are not adding songs that weren't in the results
-4. You are not modifying or "improving" any data values
-
-Always be helpful, accurate, and creative in helping users discover and work with music!"""
+When you get search results, respond with valid JSON listing the songs and why each matches."""
         
         # Call LLM API with tools (works with both Anthropic and Ollama)
         try:
@@ -1130,32 +1037,62 @@ Always be helpful, accurate, and creative in helping users discover and work wit
         self._call_tool = wrapped_call_tool
 
         try:
-            # Process the search
-            search_prompt = f"""Search for songs matching: "{query}"
-
-IMPORTANT: You MUST call one of the search tools NOW. Do not describe the tool - actually invoke it.
-For this query, call search_by_text_description with description="{query}" and limit={limit}.
-
-After getting results, select the BEST 5-10 matches for the user's request.
-
-Format your response as a list where each line has:
-SONG_TITLE | why this song matches the user's request
-
-Example for "slow acoustic ballads":
-Hope and Despair - first try | Slow tempo and melancholic lyrics fit the ballad request
-Buena - keys | Acoustic guitar and gentle feel match the slow ballad mood
-
-IMPORTANT: Each comment must explain WHY this song matches what the user asked for.
-Use the EXACT song titles from the results. Keep comments short (under 15 words).
-Do NOT include tempo, key, duration, URLs, or any other metadata.
-
-Execute the tool call immediately."""
-
-            result = await self.chat(search_prompt)
-
-            response_text = result.get("response", "")
-
             import re
+
+            # Directly call RAG search instead of going through agent tool calling
+            logger.info(f"Searching for songs matching: {query}")
+            search_results = await self.rag_system.search_by_text_description(query, limit)
+            found_songs.extend(search_results)
+
+            if not search_results:
+                logger.warning(f"No songs found for query: {query}")
+                return {
+                    "search_summary": None,
+                    "songs": [],
+                    "total_found": 0
+                }
+
+            # Build list of song titles for the LLM prompt (limit to top 10 for better LLM response)
+            songs_for_reasons = search_results[:10]  # Only ask for reasons for top 10
+            song_titles = [song.get('title', '') for song in songs_for_reasons]
+            titles_json = json.dumps(song_titles)
+
+            # Ask LLM to generate match reasons for each song (without tools)
+            match_prompt = f"""Generate a JSON object with match reasons for these songs.
+
+Search query: "{query}"
+
+Songs: {titles_json}
+
+Return ONLY this JSON format (no other text):
+{{"reasons": {{"EXACT_SONG_TITLE": "Brief reason why it matches the search"}}}}
+
+Include ALL songs listed above. Use the EXACT song titles as keys."""
+
+            # Call LLM directly without tools to get match reasons
+            messages = [{"role": "user", "content": match_prompt}]
+            try:
+                llm_response = await self.llm_provider.generate_with_tools(
+                    messages=messages,
+                    tools=[],  # No tools - just generate text
+                    system="You are a helpful assistant. Respond only with the requested JSON format.",
+                    max_tokens=2000
+                )
+                # Extract text from content blocks
+                content = llm_response.get("content", [])
+                response_text = ""
+                if isinstance(content, list):
+                    for block in content:
+                        block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                        if block_type == "text":
+                            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", "")
+                            response_text += text
+                elif isinstance(content, str):
+                    response_text = content
+                logger.info(f"LLM response for match reasons: {len(response_text)} chars")
+            except Exception as e:
+                logger.error(f"Error getting match reasons from LLM: {e}")
+                response_text = ""
 
             # Build list of all song titles from results
             songs_by_title = {}
@@ -1164,77 +1101,166 @@ Execute the tool call immediately."""
                 if title:
                     songs_by_title[title] = song
 
-            # Parse per-song commentary from response
-            # Look for patterns like "Song Title | comment" or "Song Title - comment"
-            song_comments = {}
-
-            # Try to extract "Title | comment" or "Title: comment" patterns
-            for line in response_text.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-
-                # Remove leading numbers/bullets like "1. " or "- "
-                line = re.sub(r'^[\d\.\-\*\•]+\s*', '', line)
-
-                # Try different separators
-                for separator in [' | ', ' - ', ': ']:
-                    if separator in line:
-                        parts = line.split(separator, 1)
-                        if len(parts) == 2:
-                            potential_title = parts[0].strip().strip('*').strip('"').strip("'")
-                            comment = parts[1].strip()
-
-                            # Check if this matches a song title
-                            for title in songs_by_title:
-                                if potential_title.lower() == title.lower() or potential_title.lower() in title.lower() or title.lower() in potential_title.lower():
-                                    # Clean the comment
-                                    comment = re.sub(r'\(.*?\)', '', comment).strip()  # Remove parenthetical info
-                                    comment = re.sub(r'https?://\S+', '', comment).strip()  # Remove URLs
-                                    if comment and len(comment) > 5:
-                                        song_comments[title] = comment
-                                    break
-                        break
-
-            # Find which songs are mentioned in the response
+            # Try to parse JSON response from agent
+            search_summary = None
             mentioned_songs = []
-            mentioned_titles = set()
 
-            # Check each song title to see if it appears in the response
-            for title, song in songs_by_title.items():
-                # Check for exact title match (case-insensitive)
-                if title.lower() in response_text.lower():
-                    if title not in mentioned_titles:
-                        # Add commentary if we parsed it
-                        song_copy = song.copy()
-                        if title in song_comments:
-                            song_copy['commentary'] = song_comments[title]
-                        mentioned_songs.append(song_copy)
-                        mentioned_titles.add(title)
+            try:
+                # Clean up response - remove markdown code blocks if present
+                cleaned_response = response_text.strip()
+
+                # Log the raw response for debugging
+                logger.info(f"Raw response length: {len(cleaned_response)}")
+                logger.info(f"Full raw response: {cleaned_response}")
+
+                if cleaned_response.startswith('```'):
+                    # Remove markdown code block
+                    cleaned_response = re.sub(r'^```(?:json)?\s*', '', cleaned_response)
+                    cleaned_response = re.sub(r'\s*```$', '', cleaned_response)
+                    logger.info("Removed markdown code blocks")
+
+                # Try to find JSON object anywhere in the response
+                json_match = re.search(r'\{[\s\S]*\}', cleaned_response)
+                if json_match:
+                    cleaned_response = json_match.group(0)
+                    logger.info(f"Extracted JSON object from response (length={len(cleaned_response)})")
+                else:
+                    logger.info(f"No JSON object found in response")
+
+                logger.info(f"Attempting to parse JSON response (length={len(cleaned_response)})")
+                if len(cleaned_response) < 100:
+                    logger.info(f"Full response: {cleaned_response}")
+                else:
+                    logger.info(f"Response preview: {cleaned_response[:300]}...")
+
+                # Parse JSON
+                parsed_response = json.loads(cleaned_response)
+                logger.info(f"Successfully parsed JSON with keys: {list(parsed_response.keys())}")
+
+                # Extract match reasons from the "reasons" dict
+                reasons_dict = parsed_response.get('reasons', {})
+                logger.info(f"Found {len(reasons_dict)} match reasons in JSON response")
+
+                # Add match reasons to all songs from search results
+                for song in search_results:
+                    song_copy = song.copy()
+                    title = song.get('title', '')
+
+                    # Try to find a matching reason
+                    match_reason = reasons_dict.get(title, '')
+
+                    # If exact match not found, try fuzzy matching
+                    if not match_reason:
+                        for reason_title, reason in reasons_dict.items():
+                            if title.lower() == reason_title.lower() or title.lower() in reason_title.lower() or reason_title.lower() in title.lower():
+                                match_reason = reason
+                                break
+
+                    song_copy['match_reason'] = match_reason
+                    mentioned_songs.append(song_copy)
+                    logger.debug(f"Added song '{title}' with reason: {match_reason[:50] if match_reason else 'none'}...")
+
+                logger.info(f"Processed {len(mentioned_songs)} songs with match_reason")
+
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON response: {e}")
+                logger.info("Using fallback text parsing method")
+
+                # Fallback to text parsing method - extract descriptions from natural language
+                song_comments = {}
+
+                # First: look for SONG:/WHY: format
+                lines = response_text.split('\n')
+                current_song = None
+                for line in lines:
+                    line = line.strip()
+                    if not line:
                         continue
 
-                # Also check for partial title (before the " - " suffix like "first draft")
-                base_title = title.split(' - ')[0].strip()
-                if len(base_title) > 3 and base_title.lower() in response_text.lower():
-                    if title not in mentioned_titles:
-                        song_copy = song.copy()
-                        if title in song_comments:
-                            song_copy['commentary'] = song_comments[title]
-                        mentioned_songs.append(song_copy)
-                        mentioned_titles.add(title)
+                    # Check for SONG: format
+                    if line.upper().startswith('SONG:'):
+                        song_title = line[5:].strip().strip('*').strip('"').strip("'")
+                        # Match to database title
+                        for db_title in songs_by_title:
+                            if song_title.lower() == db_title.lower() or song_title.lower() in db_title.lower() or db_title.lower() in song_title.lower():
+                                current_song = db_title
+                                logger.debug(f"Found SONG: '{current_song}'")
+                                break
+                        else:
+                            current_song = None
+                    # Check for WHY: format
+                    elif line.upper().startswith('WHY:') and current_song:
+                        why_text = line[4:].strip()
+                        if why_text and len(why_text) > 5:
+                            song_comments[current_song] = why_text
+                            logger.debug(f"Found WHY for '{current_song}': {why_text[:50]}...")
+                        current_song = None
+
+                # Second pass: look for bullet points or numbered lists with descriptions
+                if not song_comments:
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Remove list markers
+                        line = re.sub(r'^[\d\.\-\*\•]+\s*', '', line)
+
+                        # Try to find song title and description
+                        for separator in [' | ', ' - ', ': ', '**']:
+                            if separator in line:
+                                parts = line.split(separator, 1)
+                                if len(parts) == 2:
+                                    potential_title = parts[0].strip().strip('*').strip('"').strip("'")
+                                    comment = parts[1].strip().strip('*')
+                                    for title in songs_by_title:
+                                        if potential_title.lower() == title.lower() or potential_title.lower() in title.lower() or title.lower() in potential_title.lower():
+                                            comment = re.sub(r'\(.*?\)', '', comment).strip()
+                                            comment = re.sub(r'https?://\S+', '', comment).strip()
+                                            if comment and len(comment) > 10:
+                                                song_comments[title] = comment
+                                                logger.debug(f"Found description for '{title}': {comment[:50]}...")
+                                            break
+                                break
+
+                # Third pass: for songs without descriptions, try to extract context
+                for title in songs_by_title:
+                    if title not in song_comments and title.lower() in response_text.lower():
+                        # Find the sentence containing the song title
+                        sentences = re.split(r'[.!?\n]', response_text)
+                        for sentence in sentences:
+                            if title.lower() in sentence.lower():
+                                # Clean up the sentence
+                                desc = sentence.strip()
+                                desc = re.sub(r'\*+', '', desc)  # Remove markdown bold
+                                desc = re.sub(r'\s+', ' ', desc)  # Normalize whitespace
+                                if len(desc) > 20 and len(desc) < 300:
+                                    song_comments[title] = desc
+                                    logger.debug(f"Extracted context for '{title}': {desc[:50]}...")
+                                    break
+
+                logger.info(f"Extracted {len(song_comments)} song descriptions from text")
+
+                # Return all search results with any extracted comments
+                for song in search_results:
+                    song_copy = song.copy()
+                    title = song.get('title', '')
+                    if title in song_comments:
+                        song_copy['match_reason'] = song_comments[title]
+                    mentioned_songs.append(song_copy)
 
             if mentioned_songs:
-                logger.info(f"Extracted {len(mentioned_songs)} mentioned songs with {len(song_comments)} comments")
+                logger.info(f"Extracted {len(mentioned_songs)} mentioned songs")
                 return {
-                    "response": "",  # No top-level response needed
+                    "search_summary": search_summary,
                     "songs": mentioned_songs,
                     "total_found": len(found_songs)
                 }
             else:
                 logger.warning("No songs matched from agent response, returning top results by relevance")
-                # Return top results by similarity/score if no matches found
+                logger.warning(f"Available titles in database: {list(songs_by_title.keys())[:5]}...")
+                # Return found_songs but they won't have match_reason - this is the fallback case
                 return {
-                    "response": "",
+                    "search_summary": search_summary,
                     "songs": found_songs[:10],
                     "total_found": len(found_songs)
                 }

@@ -72,6 +72,8 @@ services:
       - ./src:/app/src:ro
       - ./database:/app/database:ro
       - ./backend_api.py:/app/backend_api.py:ro
+      # Shared playlist directory for Liquidsoap integration
+      - ./streaming/playlist:/app/streaming/playlist
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,18 +93,57 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: ../Dockerfile.frontend
-      args:
-        AGENT_API_URL: http://backend:8000
+      dockerfile: ../Dockerfile.frontend.dev
     container_name: bigflavor-frontend
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
       - AGENT_API_URL=http://backend:8000
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+    volumes:
+      # Mount source code for hot reloading
+      - ./frontend/app:/app/app:ro
+      - ./frontend/components:/app/components:ro
+      - ./frontend/lib:/app/lib:ro
+      - ./frontend/public:/app/public:ro
+    ports:
+      - "3000:3000"
     depends_on:
       backend:
         condition: service_healthy
+    networks:
+      - bigflavor-network
+    restart: unless-stopped
+
+  # Icecast Streaming Server
+  icecast:
+    image: moul/icecast
+    container_name: bigflavor-icecast
+    environment:
+      - ICECAST_SOURCE_PASSWORD=bigflavor_source
+      - ICECAST_ADMIN_PASSWORD=bigflavor_admin
+      - ICECAST_RELAY_PASSWORD=bigflavor_relay
+      - ICECAST_HOSTNAME=bigflavor.useunix.com
+      - ICECAST_MAX_CLIENTS=100
+      - ICECAST_MAX_SOURCES=2
+    ports:
+      - "8001:8000"  # Expose on 8001 to avoid conflicts
+    networks:
+      - bigflavor-network
+    restart: unless-stopped
+
+  # Liquidsoap Audio Streamer
+  liquidsoap:
+    build:
+      context: .
+      dockerfile: Dockerfile.liquidsoap
+    container_name: bigflavor-liquidsoap
+    volumes:
+      - ./audio_library:/audio_library:ro
+      - ./streaming/playlist:/playlist:ro
+      - liquidsoap_logs:/var/log/liquidsoap
+    depends_on:
+      - icecast
     networks:
       - bigflavor-network
     restart: unless-stopped
@@ -120,6 +161,7 @@ services:
     depends_on:
       - frontend
       - backend
+      - icecast
     networks:
       - bigflavor-network
     restart: unless-stopped
@@ -137,3 +179,5 @@ volumes:
   postgres_data:
   nginx_logs:
   ollama_data:
+  icecast_logs:
+  liquidsoap_logs:
