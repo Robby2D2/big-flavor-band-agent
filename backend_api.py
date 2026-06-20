@@ -3,7 +3,10 @@ FastAPI backend server for BigFlavor Band Agent
 Bridges the Next.js frontend with the Python agent
 """
 import os
+import json
 import asyncio
+import logging
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +20,89 @@ from src.agent.big_flavor_agent import BigFlavorAgent
 from src.rag.big_flavor_rag import SongRAGSystem
 from database import DatabaseManager
 
-app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0")
+class JsonLogFormatter(logging.Formatter):
+    """Emit each log record as a single JSON object for production log aggregation."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+
+def configure_logging() -> None:
+    """Configure leveled backend logging.
+
+    LOG_LEVEL  controls verbosity (default INFO).
+    LOG_FORMAT selects 'text' (default, human-readable) or 'json' (production).
+    """
+    level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    handler = logging.StreamHandler()
+    if os.getenv("LOG_FORMAT", "text").lower() == "json":
+        handler.setFormatter(JsonLogFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(level)
+
+
+configure_logging()
+logger = logging.getLogger("backend-api")
+
+# Long-lived singletons. These are constructed exactly once in the lifespan
+# handler at startup (not lazily on first request), so the first request never
+# pays cold-start and two concurrent first requests can't race an unlocked init.
+agent: Optional[BigFlavorAgent] = None
+rag: Optional[SongRAGSystem] = None
+db_manager: Optional[DatabaseManager] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize the agent/RAG/DB singletons at startup and release them at shutdown."""
+    global agent, rag, db_manager
+
+    logger.info("Startup: initializing backend singletons...")
+
+    db_manager = DatabaseManager()
+    await db_manager.connect()
+    logger.info("Startup: DatabaseManager connected")
+
+    rag = SongRAGSystem(db_manager, use_clap=True)
+    logger.info("Startup: SongRAGSystem ready")
+
+    agent = BigFlavorAgent()
+    await agent.initialize()
+    logger.info("Startup: BigFlavorAgent initialized")
+
+    logger.info("Startup complete: backend ready to serve requests")
+
+    yield
+
+    logger.info("Shutdown: closing backend resources...")
+    # The agent owns its own DatabaseManager (created in BigFlavorAgent.initialize()),
+    # so close that pool too, not just the backend's.
+    if agent is not None and getattr(agent, "db_manager", None) is not None:
+        await agent.db_manager.close()
+        logger.info("Shutdown: agent DatabaseManager pool closed")
+    if db_manager is not None:
+        await db_manager.close()
+        logger.info("Shutdown: DatabaseManager pool closed")
+    agent = None
+    rag = None
+    db_manager = None
+    logger.info("Shutdown complete: backend resources released")
+
+
+app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0", lifespan=lifespan)
 
 # CORS middleware for Next.js frontend
 app.add_middleware(
@@ -30,11 +115,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize agent and RAG system
-agent: Optional[BigFlavorAgent] = None
-rag: Optional[SongRAGSystem] = None
-db_manager: Optional[DatabaseManager] = None
 
 # Radio station state
 import time
@@ -85,42 +165,32 @@ def write_playlist_file():
         # Write playlist file
         PLAYLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
         PLAYLIST_FILE.write_text("\n".join(playlist_lines))
-        print(f"Playlist updated: {len(playlist_lines) // 2} songs")
-    except Exception as e:
-        print(f"Error writing playlist: {e}")
+        logger.info("Playlist updated: %d songs", len(playlist_lines) // 2)
+    except Exception:
+        logger.exception("Error writing playlist")
 
 # Track active listeners (listener_id -> last_ping_time)
 active_listeners = {}
 
 
 async def get_agent() -> BigFlavorAgent:
-    """Dependency to get or create agent instance"""
-    global agent
+    """Dependency: return the agent initialized at startup."""
     if agent is None:
-        agent = BigFlavorAgent()
-        await agent.initialize()
+        raise HTTPException(status_code=503, detail="Agent not initialized")
     return agent
 
 
 async def get_rag() -> SongRAGSystem:
-    """Dependency to get or create RAG instance"""
-    global rag, db_manager
+    """Dependency: return the RAG system initialized at startup."""
     if rag is None:
-        # Initialize database manager if needed
-        if db_manager is None:
-            db_manager = DatabaseManager()
-            await db_manager.connect()
-        # Create RAG system with database manager
-        rag = SongRAGSystem(db_manager, use_clap=True)
+        raise HTTPException(status_code=503, detail="RAG system not initialized")
     return rag
 
 
 async def get_db() -> DatabaseManager:
-    """Dependency to get or create database manager instance"""
-    global db_manager
+    """Dependency: return the database manager initialized at startup."""
     if db_manager is None:
-        db_manager = DatabaseManager()
-        await db_manager.connect()
+        raise HTTPException(status_code=503, detail="Database not initialized")
     return db_manager
 
 
@@ -176,20 +246,9 @@ async def create_or_update_user(
 ):
     """Create or update a user in the database"""
     try:
-        # Insert or update user
-        query = """
-            INSERT INTO users (id, email, name, picture, role, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, 'listener', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT (id) DO UPDATE
-            SET email = EXCLUDED.email,
-                name = EXCLUDED.name,
-                picture = EXCLUDED.picture,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING id, email, name, picture, role, created_at, updated_at
-        """
-
-        async with db.pool.acquire() as conn:
-            result = await conn.fetchrow(query, user.id, user.email, user.name, user.picture)
+        result = await db.upsert_user(
+            user.id, user.email, user.name, user.picture
+        )
 
         return {
             "id": result['id'],
@@ -211,15 +270,12 @@ async def get_user_role(
 ):
     """Get a user's role from the database"""
     try:
-        query = "SELECT role FROM users WHERE id = $1"
+        role = await db.get_user_role(user_id)
 
-        async with db.pool.acquire() as conn:
-            result = await conn.fetchrow(query, user_id)
-
-        if not result:
+        if role is None:
             raise HTTPException(status_code=404, detail="User not found")
 
-        return {"role": result['role']}
+        return {"role": role}
     except HTTPException:
         raise
     except Exception as e:
@@ -231,14 +287,7 @@ async def get_user_role(
 async def get_all_users(db: DatabaseManager = Depends(get_db)):
     """Get all users (admin only)"""
     try:
-        query = """
-            SELECT id, email, name, picture, role, created_at, updated_at
-            FROM users
-            ORDER BY created_at DESC
-        """
-
-        async with db.pool.acquire() as conn:
-            results = await conn.fetch(query)
+        results = await db.list_users()
 
         users = [
             {
@@ -275,15 +324,7 @@ async def update_user_role(
         if request.role not in valid_roles:
             raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}")
 
-        query = """
-            UPDATE users
-            SET role = $1, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
-            RETURNING id, email, name, role, updated_at
-        """
-
-        async with db.pool.acquire() as conn:
-            result = await conn.fetchrow(query, request.role, request.user_id)
+        result = await db.set_user_role(request.user_id, request.role)
 
         if not result:
             raise HTTPException(status_code=404, detail="User not found")
@@ -325,9 +366,7 @@ async def natural_language_search(
             "limit": request.limit
         }
     except Exception as e:
-        import traceback
-        print(f"ERROR in natural_language_search: {e}")
-        print(traceback.format_exc())
+        logger.exception("Error in natural_language_search")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -370,16 +409,10 @@ async def get_song_lyrics(
 ):
     """Get lyrics for a specific song"""
     try:
-        query = """
-            SELECT content as lyrics
-            FROM text_embeddings
-            WHERE song_id = $1 AND content_type = 'lyrics'
-        """
-        async with db.pool.acquire() as conn:
-            row = await conn.fetchrow(query, song_id)
+        lyrics = await db.get_song_lyrics(song_id)
 
-        if row:
-            return {"lyrics": row["lyrics"]}
+        if lyrics is not None:
+            return {"lyrics": lyrics}
         else:
             return {"lyrics": "Lyrics not available for this song."}
     except Exception as e:
@@ -473,7 +506,12 @@ def update_radio_position():
         duration = radio_state["current_song"].get("duration")
         if duration and duration > 0 and radio_state["position"] >= duration:
             # Move to next song
-            print(f"Song finished: {radio_state['current_song'].get('title')} ({radio_state['position']:.1f}s / {duration:.1f}s)")
+            logger.info(
+                "Song finished: %s (%.1fs / %.1fs)",
+                radio_state["current_song"].get("title"),
+                radio_state["position"],
+                duration,
+            )
             advance_to_next_song()
 
 
@@ -487,9 +525,12 @@ def advance_to_next_song():
         radio_state["is_playing"] = True
         radio_state["last_update"] = time.time()
 
-        # Debug logging
         duration = radio_state["current_song"].get("duration", "NOT SET")
-        print(f"Now playing: {radio_state['current_song'].get('title')} (duration: {duration}s)")
+        logger.info(
+            "Now playing: %s (duration: %ss)",
+            radio_state["current_song"].get("title"),
+            duration,
+        )
 
         # Update playlist file for Liquidsoap
         write_playlist_file()
@@ -497,7 +538,7 @@ def advance_to_next_song():
         radio_state["current_song"] = None
         radio_state["position"] = 0
         radio_state["is_playing"] = False
-        print("Queue empty - stopping playback")
+        logger.info("Queue empty - stopping playback")
 
         # Update playlist file for Liquidsoap
         write_playlist_file()
@@ -520,8 +561,8 @@ async def auto_populate_queue():
                     if "duration_seconds" in song and "duration" not in song:
                         song["duration"] = song["duration_seconds"]
                     radio_state["queue"].append(song)
-        except Exception as e:
-            print(f"Error auto-populating queue: {e}")
+        except Exception:
+            logger.exception("Error auto-populating queue")
 
 
 def cleanup_stale_listeners():
@@ -541,7 +582,7 @@ def cleanup_stale_listeners():
     # If no active listeners remain, pause the radio
     if len(active_listeners) == 0 and radio_state["is_playing"]:
         radio_state["is_playing"] = False
-        print("No active listeners - pausing radio")
+        logger.info("No active listeners - pausing radio")
 
 
 def register_listener(listener_id: str):
@@ -559,7 +600,7 @@ def register_listener(listener_id: str):
             else:
                 radio_state["is_playing"] = True
                 radio_state["last_update"] = time.time()
-            print(f"First listener connected - starting playback")
+            logger.info("First listener connected - starting playback")
 
 
 @app.get("/api/radio/state")

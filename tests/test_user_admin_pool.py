@@ -4,7 +4,9 @@ Tests that the user/admin endpoints reuse the shared application connection pool
 per request.
 
 No live database or LLM is touched: get_db is overridden with a fake whose
-pool.acquire() yields a fake connection returning canned rows.
+DatabaseManager methods return canned rows. The handlers reach the data layer
+through those methods (issue #8) on the shared injected singleton (issue #3),
+so the fake must never have connect()/close() called on it.
 """
 from datetime import datetime
 
@@ -15,45 +17,17 @@ import backend_api
 from backend_api import app, get_db
 
 
-class FakeConnection:
-    """Minimal asyncpg-connection stand-in returning preconfigured rows."""
-
-    def __init__(self, fetchrow_result=None, fetch_result=None):
-        self._fetchrow_result = fetchrow_result
-        self._fetch_result = fetch_result
-
-    async def fetchrow(self, query, *args):
-        return self._fetchrow_result
-
-    async def fetch(self, query, *args):
-        return self._fetch_result or []
-
-
-class FakeAcquire:
-    def __init__(self, conn):
-        self._conn = conn
-
-    async def __aenter__(self):
-        return self._conn
-
-    async def __aexit__(self, *exc):
-        return False
-
-
-class FakePool:
-    def __init__(self, conn):
-        self._conn = conn
-
-    def acquire(self):
-        return FakeAcquire(self._conn)
-
-
 class FakeDatabaseManager:
-    """Stand-in for the shared singleton. connect()/close() must NOT be called
-    by the request handlers."""
+    """Stand-in for the shared singleton. Exposes the DatabaseManager data
+    methods the handlers call; connect()/close() must NOT be called by the
+    request handlers (they reuse the already-connected shared pool)."""
 
-    def __init__(self, conn):
-        self.pool = FakePool(conn)
+    def __init__(self, upsert_user=None, get_user_role=None,
+                 list_users=None, set_user_role=None):
+        self._upsert_user = upsert_user
+        self._get_user_role = get_user_role
+        self._list_users = list_users if list_users is not None else []
+        self._set_user_role = set_user_role
         self.connect_called = False
         self.close_called = False
 
@@ -62,6 +36,18 @@ class FakeDatabaseManager:
 
     async def close(self):
         self.close_called = True
+
+    async def upsert_user(self, *args, **kwargs):
+        return self._upsert_user
+
+    async def get_user_role(self, *args, **kwargs):
+        return self._get_user_role
+
+    async def list_users(self, *args, **kwargs):
+        return self._list_users
+
+    async def set_user_role(self, *args, **kwargs):
+        return self._set_user_role
 
 
 def _override_db(fake):
@@ -86,7 +72,7 @@ def test_create_or_update_user_uses_shared_pool(monkeypatch):
         "id": "u1", "email": "a@b.com", "name": "A", "picture": None,
         "role": "listener", "created_at": now, "updated_at": now,
     }
-    fake = FakeDatabaseManager(FakeConnection(fetchrow_result=row))
+    fake = FakeDatabaseManager(upsert_user=row)
     _no_real_pool_constructed(monkeypatch)
     app.dependency_overrides[get_db] = _override_db(fake)
     try:
@@ -104,7 +90,7 @@ def test_create_or_update_user_uses_shared_pool(monkeypatch):
 
 
 def test_get_user_role_uses_shared_pool(monkeypatch):
-    fake = FakeDatabaseManager(FakeConnection(fetchrow_result={"role": "admin"}))
+    fake = FakeDatabaseManager(get_user_role="admin")
     _no_real_pool_constructed(monkeypatch)
     app.dependency_overrides[get_db] = _override_db(fake)
     try:
@@ -119,7 +105,7 @@ def test_get_user_role_uses_shared_pool(monkeypatch):
 
 
 def test_get_user_role_not_found_returns_404(monkeypatch):
-    fake = FakeDatabaseManager(FakeConnection(fetchrow_result=None))
+    fake = FakeDatabaseManager(get_user_role=None)
     _no_real_pool_constructed(monkeypatch)
     app.dependency_overrides[get_db] = _override_db(fake)
     try:
@@ -136,7 +122,7 @@ def test_get_all_users_uses_shared_pool(monkeypatch):
         "id": "u1", "email": "a@b.com", "name": "A", "picture": None,
         "role": "listener", "created_at": now, "updated_at": now,
     }]
-    fake = FakeDatabaseManager(FakeConnection(fetch_result=rows))
+    fake = FakeDatabaseManager(list_users=rows)
     _no_real_pool_constructed(monkeypatch)
     app.dependency_overrides[get_db] = _override_db(fake)
     try:
@@ -156,7 +142,7 @@ def test_update_user_role_uses_shared_pool(monkeypatch):
         "id": "u1", "email": "a@b.com", "name": "A",
         "role": "editor", "updated_at": now,
     }
-    fake = FakeDatabaseManager(FakeConnection(fetchrow_result=row))
+    fake = FakeDatabaseManager(set_user_role=row)
     _no_real_pool_constructed(monkeypatch)
     app.dependency_overrides[get_db] = _override_db(fake)
     try:
@@ -173,7 +159,7 @@ def test_update_user_role_uses_shared_pool(monkeypatch):
 
 
 def test_update_user_role_rejects_invalid_role(monkeypatch):
-    fake = FakeDatabaseManager(FakeConnection())
+    fake = FakeDatabaseManager()
     _no_real_pool_constructed(monkeypatch)
     app.dependency_overrides[get_db] = _override_db(fake)
     try:
