@@ -2,8 +2,14 @@
 
 These cover issue #5: the playback clock and queue top-up must run as standalone
 work (driven by radio_background_loop) and must NOT be side-effects of reading
-GET /api/radio/state. No live database or LLM is used here -- the queue top-up's
-agent is replaced with a fake, and the playlist writer is stubbed out.
+GET /api/radio/state, nor gated on whether any listener is connected. No live
+database or LLM is used here -- the queue top-up's agent is replaced with a fake,
+and the playlist writer is stubbed out.
+
+Radio state is now process-external (issue #2): the clock/top-up helpers operate
+on a plain state dict passed in by the caller (the background loop loads it from
+and saves it back to the RadioStateStore), so these tests pass a local state dict
+rather than mutating a module global.
 """
 import time
 
@@ -13,17 +19,9 @@ import backend_api
 
 
 @pytest.fixture(autouse=True)
-def isolate_radio_state(monkeypatch):
-    """Give each test a clean radio_state, no real playlist writes, no real agent."""
-    monkeypatch.setattr(backend_api, "radio_state", {
-        "current_song": None,
-        "queue": [],
-        "is_playing": False,
-        "position": 0,
-        "last_update": time.time(),
-    })
-    monkeypatch.setattr(backend_api, "active_listeners", {})
-    monkeypatch.setattr(backend_api, "write_playlist_file", lambda: None)
+def stub_playlist_writer(monkeypatch):
+    """No real playlist writes; advance_to_next_song calls write_playlist_file(state)."""
+    monkeypatch.setattr(backend_api, "write_playlist_file", lambda *a, **k: None)
     yield
 
 
@@ -31,28 +29,33 @@ def _song(song_id, duration=180):
     return {"id": song_id, "title": f"Song {song_id}", "duration": duration}
 
 
-def test_update_position_advances_clock_while_playing():
-    state = backend_api.radio_state
-    state["current_song"] = _song(1, duration=180)
-    state["is_playing"] = True
-    state["position"] = 0
-    state["last_update"] = time.time() - 5  # 5 seconds elapsed
+def _state(**overrides):
+    state = {
+        "current_song": None,
+        "queue": [],
+        "is_playing": False,
+        "position": 0,
+        "last_update": time.time(),
+    }
+    state.update(overrides)
+    return state
 
-    backend_api.update_radio_position()
+
+def test_update_position_advances_clock_while_playing():
+    state = _state(current_song=_song(1, duration=180), is_playing=True,
+                   position=0, last_update=time.time() - 5)  # 5 seconds elapsed
+
+    backend_api.update_radio_position(state)
 
     assert state["position"] >= 5
     assert state["current_song"]["id"] == 1  # not finished, no rollover
 
 
 def test_update_position_rolls_over_to_next_song_when_finished():
-    state = backend_api.radio_state
-    state["current_song"] = _song(1, duration=10)
-    state["queue"] = [_song(2), _song(3)]
-    state["is_playing"] = True
-    state["position"] = 0
-    state["last_update"] = time.time() - 20  # past the 10s duration
+    state = _state(current_song=_song(1, duration=10), queue=[_song(2), _song(3)],
+                   is_playing=True, position=0, last_update=time.time() - 20)
 
-    backend_api.update_radio_position()
+    backend_api.update_radio_position(state)
 
     assert state["current_song"]["id"] == 2
     assert state["position"] == 0
@@ -61,16 +64,25 @@ def test_update_position_rolls_over_to_next_song_when_finished():
 
 
 def test_update_position_does_nothing_while_paused():
-    state = backend_api.radio_state
-    state["current_song"] = _song(1, duration=10)
-    state["is_playing"] = False
-    state["position"] = 0
-    state["last_update"] = time.time() - 20
+    state = _state(current_song=_song(1, duration=10), is_playing=False,
+                   position=0, last_update=time.time() - 20)
 
-    backend_api.update_radio_position()
+    backend_api.update_radio_position(state)
 
     assert state["position"] == 0
     assert state["current_song"]["id"] == 1  # paused clock never rolls over
+
+
+def test_clock_advances_regardless_of_listeners():
+    """The playback clock is owned by the background loop and must advance with no
+    listeners connected (issue #5) -- update_radio_position takes no listener input."""
+    state = _state(current_song=_song(1, duration=180), is_playing=True,
+                   position=0, last_update=time.time() - 7)
+
+    backend_api.update_radio_position(state)
+
+    assert state["position"] >= 7
+    assert state["is_playing"] is True  # not paused just because nobody is listening
 
 
 @pytest.mark.asyncio
@@ -84,10 +96,10 @@ async def test_auto_populate_fills_queue_when_low(monkeypatch):
 
     monkeypatch.setattr(backend_api, "get_agent", fake_get_agent)
 
-    backend_api.radio_state["queue"] = []
-    await backend_api.auto_populate_queue()
+    state = _state(queue=[])
+    await backend_api.auto_populate_queue(state)
 
-    assert [s["id"] for s in backend_api.radio_state["queue"]] == [10, 11, 12]
+    assert [s["id"] for s in state["queue"]] == [10, 11, 12]
 
 
 @pytest.mark.asyncio
@@ -101,20 +113,8 @@ async def test_auto_populate_skips_when_queue_full(monkeypatch):
 
     monkeypatch.setattr(backend_api, "get_agent", fake_get_agent)
 
-    backend_api.radio_state["queue"] = [_song(i) for i in range(6)]
-    await backend_api.auto_populate_queue()
+    state = _state(queue=[_song(i) for i in range(6)])
+    await backend_api.auto_populate_queue(state)
 
     assert called is False
-    assert len(backend_api.radio_state["queue"]) == 6
-
-
-def test_cleanup_stale_listeners_does_not_pause_playback():
-    """Removing the last listener must no longer stop the playback clock (issue #5)."""
-    state = backend_api.radio_state
-    state["current_song"] = _song(1)
-    state["is_playing"] = True
-    backend_api.active_listeners.clear()  # no listeners present
-
-    backend_api.cleanup_stale_listeners()
-
-    assert state["is_playing"] is True
+    assert len(state["queue"]) == 6
