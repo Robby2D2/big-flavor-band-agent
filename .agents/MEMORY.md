@@ -26,6 +26,17 @@ AI music-discovery & production assistant over the Big Flavor Band catalog (~1,3
 
 ## Timeline (reconstructed from git)
 
+### 2026-06-20 — Radio state externalized to PostgreSQL (issue #2)
+Runtime radio state (queue, now-playing, play/pause, position) and active listeners moved out of
+per-process in-memory dicts in `backend_api.py` into a new `RadioStateStore`
+(`database/radio_state_store.py`) backed by a single-row `radio_state` JSONB table + a
+`radio_listeners` table (migration `06-create-radio-state-table.sql`). Endpoints now load → mutate →
+save state per request, so the radio survives a backend restart and is consistent across instances.
+Chose Postgres over Redis to avoid standing up new infra. Added `pytest`/`pytest-asyncio` dev deps,
+a root `pytest.ini` (`asyncio_mode = auto`), and the first assert-based test
+(`tests/test_radio_state_store.py`, fake DB pool — no live DB/LLM). Radio invariants preserved
+(`mksafe()` sources untouched; `/app/audio_library` → `/audio_library` rewrite intact).
+
 ### 2025-11-24 — Radio fixed (`60da3f0`)
 Radio streaming stabilized. The key invariant: Liquidsoap playlist sources must be wrapped in
 `mksafe()` or `fallback` chooses `blank()` (silence) even with valid playlists; and the backend must

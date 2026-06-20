@@ -8,5 +8,6 @@ Main exports:
 """
 
 from .database import DatabaseManager
+from .radio_state_store import RadioStateStore
 
-__all__ = ['DatabaseManager']
+__all__ = ['DatabaseManager', 'RadioStateStore']
