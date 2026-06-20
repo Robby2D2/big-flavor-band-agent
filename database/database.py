@@ -15,6 +15,30 @@ load_dotenv()
 
 logger = logging.getLogger("database")
 
+# The dev-only password default is intentionally NOT used outside an explicit dev
+# context, so a real deploy that forgets DB_PASSWORD fails loudly instead of
+# silently connecting with a known dev credential.
+_DEV_PASSWORD_DEFAULT = "bigflavor_dev_pass"
+
+
+def _is_dev_environment() -> bool:
+    return os.getenv("APP_ENV", "production").strip().lower() in {"dev", "development"}
+
+
+def _resolve_db_password() -> str:
+    """Resolve the DB password from env, failing fast when it is missing in a
+    non-dev environment instead of falling back to a hardcoded dev credential."""
+    password = os.getenv("DB_PASSWORD")
+    if password:
+        return password
+    if _is_dev_environment():
+        return _DEV_PASSWORD_DEFAULT
+    raise RuntimeError(
+        "DB_PASSWORD is not set. Refusing to start with the hardcoded dev "
+        "default outside a development environment. Set DB_PASSWORD, or set "
+        "APP_ENV=development to allow the dev default."
+    )
+
 
 class DatabaseManager:
     """Manage PostgreSQL database connections and operations."""
@@ -27,12 +51,12 @@ class DatabaseManager:
         user: Optional[str] = None,
         password: Optional[str] = None
     ):
-        # Use environment variables as defaults, fall back to provided values or hardcoded defaults
+        # Use environment variables as defaults, fall back to provided values
         self.host = host or os.getenv("DB_HOST", "localhost")
         self.port = port or int(os.getenv("DB_PORT", "5432"))
         self.database = database or os.getenv("DB_NAME", "bigflavor")
         self.user = user or os.getenv("DB_USER", "bigflavor")
-        self.password = password or os.getenv("DB_PASSWORD", "bigflavor_dev_pass")
+        self.password = password or _resolve_db_password()
         self.pool: Optional[asyncpg.Pool] = None
     
     async def connect(self):
@@ -213,7 +237,7 @@ class DatabaseManager:
         logger.info(f"Inserted/updated audio analysis: {analysis_id}")
         return analysis_id
     
-    async def get_audio_analysis(self, song_id: str) -> Optional[Dict[str, Any]]:
+    async def get_audio_analysis(self, song_id: int) -> Optional[Dict[str, Any]]:
         """Get audio analysis for a song."""
         query = "SELECT * FROM audio_analysis WHERE song_id = $1"
         
@@ -225,7 +249,7 @@ class DatabaseManager:
     # Vector operations for RAG
     async def insert_embedding(
         self,
-        song_id: str,
+        song_id: int,
         content_type: str,
         content: str,
         embedding: List[float]
