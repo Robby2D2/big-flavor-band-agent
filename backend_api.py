@@ -3,7 +3,9 @@ FastAPI backend server for BigFlavor Band Agent
 Bridges the Next.js frontend with the Python agent
 """
 import os
+import json
 import asyncio
+import logging
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +18,44 @@ from pathlib import Path
 from src.agent.big_flavor_agent import BigFlavorAgent
 from src.rag.big_flavor_rag import SongRAGSystem
 from database import DatabaseManager
+
+
+class JsonLogFormatter(logging.Formatter):
+    """Emit each log record as a single JSON object for production log aggregation."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+
+
+def configure_logging() -> None:
+    """Configure leveled backend logging.
+
+    LOG_LEVEL  controls verbosity (default INFO).
+    LOG_FORMAT selects 'text' (default, human-readable) or 'json' (production).
+    """
+    level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    handler = logging.StreamHandler()
+    if os.getenv("LOG_FORMAT", "text").lower() == "json":
+        handler.setFormatter(JsonLogFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(level)
+
+
+configure_logging()
+logger = logging.getLogger("backend-api")
 
 app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0")
 
@@ -85,9 +125,9 @@ def write_playlist_file():
         # Write playlist file
         PLAYLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
         PLAYLIST_FILE.write_text("\n".join(playlist_lines))
-        print(f"Playlist updated: {len(playlist_lines) // 2} songs")
-    except Exception as e:
-        print(f"Error writing playlist: {e}")
+        logger.info("Playlist updated: %d songs", len(playlist_lines) // 2)
+    except Exception:
+        logger.exception("Error writing playlist")
 
 # Track active listeners (listener_id -> last_ping_time)
 active_listeners = {}
@@ -336,9 +376,7 @@ async def natural_language_search(
             "limit": request.limit
         }
     except Exception as e:
-        import traceback
-        print(f"ERROR in natural_language_search: {e}")
-        print(traceback.format_exc())
+        logger.exception("Error in natural_language_search")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -484,7 +522,12 @@ def update_radio_position():
         duration = radio_state["current_song"].get("duration")
         if duration and duration > 0 and radio_state["position"] >= duration:
             # Move to next song
-            print(f"Song finished: {radio_state['current_song'].get('title')} ({radio_state['position']:.1f}s / {duration:.1f}s)")
+            logger.info(
+                "Song finished: %s (%.1fs / %.1fs)",
+                radio_state["current_song"].get("title"),
+                radio_state["position"],
+                duration,
+            )
             advance_to_next_song()
 
 
@@ -498,9 +541,12 @@ def advance_to_next_song():
         radio_state["is_playing"] = True
         radio_state["last_update"] = time.time()
 
-        # Debug logging
         duration = radio_state["current_song"].get("duration", "NOT SET")
-        print(f"Now playing: {radio_state['current_song'].get('title')} (duration: {duration}s)")
+        logger.info(
+            "Now playing: %s (duration: %ss)",
+            radio_state["current_song"].get("title"),
+            duration,
+        )
 
         # Update playlist file for Liquidsoap
         write_playlist_file()
@@ -508,7 +554,7 @@ def advance_to_next_song():
         radio_state["current_song"] = None
         radio_state["position"] = 0
         radio_state["is_playing"] = False
-        print("Queue empty - stopping playback")
+        logger.info("Queue empty - stopping playback")
 
         # Update playlist file for Liquidsoap
         write_playlist_file()
@@ -531,8 +577,8 @@ async def auto_populate_queue():
                     if "duration_seconds" in song and "duration" not in song:
                         song["duration"] = song["duration_seconds"]
                     radio_state["queue"].append(song)
-        except Exception as e:
-            print(f"Error auto-populating queue: {e}")
+        except Exception:
+            logger.exception("Error auto-populating queue")
 
 
 def cleanup_stale_listeners():
@@ -552,7 +598,7 @@ def cleanup_stale_listeners():
     # If no active listeners remain, pause the radio
     if len(active_listeners) == 0 and radio_state["is_playing"]:
         radio_state["is_playing"] = False
-        print("No active listeners - pausing radio")
+        logger.info("No active listeners - pausing radio")
 
 
 def register_listener(listener_id: str):
@@ -570,7 +616,7 @@ def register_listener(listener_id: str):
             else:
                 radio_state["is_playing"] = True
                 radio_state["last_update"] = time.time()
-            print(f"First listener connected - starting playback")
+            logger.info("First listener connected - starting playback")
 
 
 @app.get("/api/radio/state")
