@@ -136,10 +136,14 @@ from the API event loop.
 
 ## Radio Streaming (Icecast + Liquidsoap)
 
-Live radio is decoupled from the API. The backend maintains `radio_state` (current song, queue,
-play/pause, position) in-process and writes `streaming/playlist/radio.m3u`; Liquidsoap reads that
-shared file and streams to Icecast, proxied by nginx at `/stream`. Two invariants the code depends
-on (regressions here silently break the stream):
+Live radio is decoupled from the API. Runtime radio state (current song, queue, play/pause,
+position) and the active-listener set are stored **process-externally in PostgreSQL** via
+`RadioStateStore` (`database/radio_state_store.py`) — a single-row `radio_state` JSONB table plus a
+`radio_listeners` table (migration `06`). The radio endpoints load the state, mutate it, and save it
+back on each request, so state survives a backend restart and stays consistent across backend
+instances (issue #2). The backend still writes `streaming/playlist/radio.m3u` from that state;
+Liquidsoap reads the shared file and streams to Icecast, proxied by nginx at `/stream`. Two
+invariants the code depends on (regressions here silently break the stream):
 - Liquidsoap playlist sources must be wrapped in `mksafe()` or `fallback` chooses `blank()`.
 - Playlist paths are rewritten `/app/audio_library/…` → `/audio_library/…` to match Liquidsoap's
   mount (`write_playlist_file()` in `backend_api.py`).
@@ -179,3 +183,4 @@ refined in `00a73fa`. Details in `DOCKER_DEPLOYMENT.md` / `PRODUCTION_QUICK_STAR
 | 2025-12 | Auth0/Google OAuth with multiple callback URLs (`6718150`) | One OAuth app serves both dev and prod redirect URLs. |
 | 2025-12 | Production Docker environment + nginx SSL (`c633d34`, `00a73fa`) | Make the stack deployable to a real host, not just localhost. |
 | 2025-12 | Frontend shows raw results, not the agent's prose (`eb3a032`) | Surfacing structured search results is clearer for music discovery than an LLM narration. |
+| 2026-06 | Radio state externalized to PostgreSQL via `RadioStateStore` (migration `06`, issue #2) | In-memory per-process radio state was wiped on every backend restart and diverged across replicas; backing it with Postgres (no new infra) makes the radio restart-tolerant and stateless (OKR O3.3 / O4.3). |
