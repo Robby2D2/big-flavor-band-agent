@@ -195,6 +195,90 @@ class DatabaseManager:
         
         return [dict(row) for row in rows]
     
+    # User operations
+    async def upsert_user(
+        self,
+        user_id: str,
+        email: str,
+        name: str,
+        picture: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Create a user (default role 'listener') or update an existing one.
+
+        Returns the resulting user row, or None if no row was returned.
+        """
+        query = """
+            INSERT INTO users (id, email, name, picture, role, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, 'listener', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (id) DO UPDATE
+            SET email = EXCLUDED.email,
+                name = EXCLUDED.name,
+                picture = EXCLUDED.picture,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING id, email, name, picture, role, created_at, updated_at
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id, email, name, picture)
+
+        return dict(row) if row else None
+
+    async def get_user_role(self, user_id: str) -> Optional[str]:
+        """Get a user's role, or None if the user does not exist."""
+        query = "SELECT role FROM users WHERE id = $1"
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id)
+
+        return row['role'] if row else None
+
+    async def list_users(self) -> List[Dict[str, Any]]:
+        """List all users, newest first."""
+        query = """
+            SELECT id, email, name, picture, role, created_at, updated_at
+            FROM users
+            ORDER BY created_at DESC
+        """
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+
+        return [dict(row) for row in rows]
+
+    async def set_user_role(
+        self,
+        user_id: str,
+        role: str
+    ) -> Optional[Dict[str, Any]]:
+        """Update a user's role.
+
+        Returns the updated user row, or None if the user does not exist.
+        """
+        query = """
+            UPDATE users
+            SET role = $1, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+            RETURNING id, email, name, role, updated_at
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, role, user_id)
+
+        return dict(row) if row else None
+
+    async def get_song_lyrics(self, song_id: int) -> Optional[str]:
+        """Get the transcribed lyrics for a song, or None if not available."""
+        query = """
+            SELECT content as lyrics
+            FROM text_embeddings
+            WHERE song_id = $1 AND content_type = 'lyrics'
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id)
+
+        return row['lyrics'] if row else None
+
     # Audio analysis operations
     async def insert_audio_analysis(self, analysis: Dict[str, Any]) -> int:
         """Insert or update audio analysis."""

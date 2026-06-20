@@ -216,20 +216,9 @@ async def create_or_update_user(user: UserCreate):
         db_manager = DatabaseManager()
         await db_manager.connect()
 
-        # Insert or update user
-        query = """
-            INSERT INTO users (id, email, name, picture, role, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, 'listener', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT (id) DO UPDATE
-            SET email = EXCLUDED.email,
-                name = EXCLUDED.name,
-                picture = EXCLUDED.picture,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING id, email, name, picture, role, created_at, updated_at
-        """
-
-        async with db_manager.pool.acquire() as conn:
-            result = await conn.fetchrow(query, user.id, user.email, user.name, user.picture)
+        result = await db_manager.upsert_user(
+            user.id, user.email, user.name, user.picture
+        )
 
         await db_manager.close()
 
@@ -253,17 +242,14 @@ async def get_user_role(user_id: str):
         db_manager = DatabaseManager()
         await db_manager.connect()
 
-        query = "SELECT role FROM users WHERE id = $1"
-
-        async with db_manager.pool.acquire() as conn:
-            result = await conn.fetchrow(query, user_id)
+        role = await db_manager.get_user_role(user_id)
 
         await db_manager.close()
 
-        if not result:
+        if role is None:
             raise HTTPException(status_code=404, detail="User not found")
 
-        return {"role": result['role']}
+        return {"role": role}
     except HTTPException:
         raise
     except Exception as e:
@@ -278,14 +264,7 @@ async def get_all_users():
         db_manager = DatabaseManager()
         await db_manager.connect()
 
-        query = """
-            SELECT id, email, name, picture, role, created_at, updated_at
-            FROM users
-            ORDER BY created_at DESC
-        """
-
-        async with db_manager.pool.acquire() as conn:
-            results = await conn.fetch(query)
+        results = await db_manager.list_users()
 
         await db_manager.close()
 
@@ -324,15 +303,7 @@ async def update_user_role(request: UpdateRoleRequest):
         db_manager = DatabaseManager()
         await db_manager.connect()
 
-        query = """
-            UPDATE users
-            SET role = $1, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $2
-            RETURNING id, email, name, role, updated_at
-        """
-
-        async with db_manager.pool.acquire() as conn:
-            result = await conn.fetchrow(query, request.role, request.user_id)
+        result = await db_manager.set_user_role(request.user_id, request.role)
 
         await db_manager.close()
 
@@ -419,16 +390,10 @@ async def get_song_lyrics(
 ):
     """Get lyrics for a specific song"""
     try:
-        query = """
-            SELECT content as lyrics
-            FROM text_embeddings
-            WHERE song_id = $1 AND content_type = 'lyrics'
-        """
-        async with db.pool.acquire() as conn:
-            row = await conn.fetchrow(query, song_id)
+        lyrics = await db.get_song_lyrics(song_id)
 
-        if row:
-            return {"lyrics": row["lyrics"]}
+        if lyrics is not None:
+            return {"lyrics": lyrics}
         else:
             return {"lyrics": "Lyrics not available for this song."}
     except Exception as e:
