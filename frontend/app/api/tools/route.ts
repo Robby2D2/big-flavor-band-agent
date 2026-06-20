@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, UserRole } from '@/lib/server-auth';
+import { backendAuthHeaders } from '@/lib/backend';
 
 export async function GET(request: NextRequest) {
   try {
@@ -11,6 +12,7 @@ export async function GET(request: NextRequest) {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
+        ...backendAuthHeaders('editor'),
       },
     });
 
@@ -51,6 +53,7 @@ export async function POST(request: NextRequest) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...backendAuthHeaders('editor'),
         },
         body: JSON.stringify(parameters || {}),
       }

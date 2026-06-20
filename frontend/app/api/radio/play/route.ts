@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, UserRole } from '@/lib/server-auth';
+import { backendAuthHeaders } from '@/lib/backend';
 
 export async function POST(request: NextRequest) {
   try {
@@ -8,6 +9,7 @@ export async function POST(request: NextRequest) {
 
     const response = await fetch(`${process.env.AGENT_API_URL}/api/radio/play`, {
       method: 'POST',
+      headers: backendAuthHeaders('editor'),
     });
 
     if (!response.ok) {

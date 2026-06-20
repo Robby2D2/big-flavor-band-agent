@@ -62,6 +62,8 @@ services:
       - DB_USER=bigflavor
       - DB_PASSWORD=${POSTGRES_PASSWORD:-bigflavor_dev_pass}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Shared secret the BFF must present to reach protected backend routes
+      - BACKEND_API_SECRET=${BACKEND_API_SECRET:-}
       # LLM Configuration
       - LLM_PROVIDER=ollama
       - OLLAMA_BASE_URL=http://ollama:11434
@@ -98,6 +100,7 @@ services:
     environment:
       - NODE_ENV=development
       - AGENT_API_URL=http://backend:8000
+      - BACKEND_API_SECRET=${BACKEND_API_SECRET:-}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
     volumes:

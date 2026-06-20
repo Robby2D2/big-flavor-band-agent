@@ -10,8 +10,9 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to repo root so this Python-venv pattern does not swallow frontend/lib/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
