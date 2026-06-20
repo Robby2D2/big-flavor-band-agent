@@ -4,6 +4,8 @@ Bridges the Next.js frontend with the Python agent
 """
 import os
 import asyncio
+import logging
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +19,62 @@ from src.agent.big_flavor_agent import BigFlavorAgent
 from src.rag.big_flavor_rag import SongRAGSystem
 from database import DatabaseManager
 
-app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0")
+logger = logging.getLogger(__name__)
+
+# Handle to the background task that owns the radio playback clock and queue
+# top-up. Started in lifespan so playback advances and the queue refills
+# independently of inbound requests; GET /api/radio/state and /stream stay
+# side-effect-free reads.
+radio_task: Optional[asyncio.Task] = None
+
+# How often the background loop ticks the playback clock, and how often (in
+# ticks) it runs the heavier agent/search queue top-up off the request path.
+RADIO_TICK_INTERVAL = 1.0  # seconds
+RADIO_TOPUP_EVERY_TICKS = 5
+
+
+async def radio_background_loop():
+    """Own the radio playback clock and queue top-up, independent of requests.
+
+    Advances the playback position (rolling to the next song when one finishes)
+    every tick, and refills the queue periodically. This is the single driver of
+    playback time and top-up, so the stream keeps advancing and never runs dry
+    whether or not any client is polling GET /api/radio/state.
+    """
+    logger.info("Radio background loop started")
+    tick = 0
+    try:
+        while True:
+            await asyncio.sleep(RADIO_TICK_INTERVAL)
+            tick += 1
+            try:
+                update_radio_position()
+                if tick % RADIO_TOPUP_EVERY_TICKS == 0:
+                    await auto_populate_queue()
+            except Exception:
+                logger.exception("Radio background loop tick failed")
+    except asyncio.CancelledError:
+        logger.info("Radio background loop cancelled")
+        raise
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the radio background clock/top-up task and stop it on shutdown."""
+    global radio_task
+    radio_task = asyncio.create_task(radio_background_loop())
+    logger.info("Startup: radio background loop scheduled")
+    yield
+    if radio_task is not None:
+        radio_task.cancel()
+        try:
+            await radio_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Shutdown: radio background loop stopped")
+
+
+app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0", lifespan=lifespan)
 
 # CORS middleware for Next.js frontend
 app.add_middleware(
@@ -549,11 +606,6 @@ def cleanup_stale_listeners():
     for listener_id in stale_listeners:
         del active_listeners[listener_id]
 
-    # If no active listeners remain, pause the radio
-    if len(active_listeners) == 0 and radio_state["is_playing"]:
-        radio_state["is_playing"] = False
-        print("No active listeners - pausing radio")
-
 
 def register_listener(listener_id: str):
     """Register a listener as active"""
@@ -584,14 +636,10 @@ async def get_radio_state(listener_id: str = None):
         if not listener_id:
             listener_id = str(uuid.uuid4())
 
-        # Register this listener
+        # Register this listener. The playback clock and queue top-up are owned
+        # by radio_background_loop(), so this read does not advance the song,
+        # mutate playback position, or invoke the agent/search.
         register_listener(listener_id)
-
-        # Update position based on elapsed time
-        update_radio_position()
-
-        # Auto-populate queue if needed
-        await auto_populate_queue()
 
         return {
             "current_song": radio_state["current_song"],
@@ -721,12 +769,8 @@ async def radio_stream(request: Request):
     Can be used with any HLS-compatible player (VLC, browsers with hls.js, etc.)
     """
     try:
-        update_radio_position()
-
-        # Auto-populate queue if needed
-        await auto_populate_queue()
-
-        # Build base URL from request
+        # Read-only: the playback clock and queue top-up are driven by
+        # radio_background_loop(), not by this stream request.
         base_url = f"{request.url.scheme}://{request.url.netloc}"
 
         # Build HLS playlist
@@ -778,12 +822,8 @@ async def radio_stream_m3u(request: Request):
     Compatible with most media players (VLC, Winamp, etc.)
     """
     try:
-        update_radio_position()
-
-        # Auto-populate queue if needed
-        await auto_populate_queue()
-
-        # Build base URL from request
+        # Read-only: the playback clock and queue top-up are driven by
+        # radio_background_loop(), not by this stream request.
         base_url = f"{request.url.scheme}://{request.url.netloc}"
 
         # Build M3U playlist
