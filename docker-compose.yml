@@ -54,6 +54,8 @@ services:
       dockerfile: Dockerfile.backend
     container_name: bigflavor-backend
     environment:
+      # Dev context: allows DatabaseManager's dev password default when DB_PASSWORD is unset.
+      - APP_ENV=development
       - DATABASE_URL=postgresql://bigflavor:${POSTGRES_PASSWORD:-bigflavor_dev_pass}@postgres:5432/bigflavor
       # Individual DB vars for DatabaseManager
       - DB_HOST=postgres
