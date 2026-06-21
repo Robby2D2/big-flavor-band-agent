@@ -66,6 +66,17 @@ def _no_real_pool_constructed(monkeypatch):
     monkeypatch.setattr(backend_api, "DatabaseManager", _boom)
 
 
+# Admin endpoints are protected by require_role("admin") (issue #1): configure the
+# service secret and present the BFF's trusted headers so the authz gate passes and
+# we actually exercise the shared-pool path behind it.
+_ADMIN_SECRET = "test-secret-value"
+
+
+def _admin_headers(monkeypatch):
+    monkeypatch.setenv("BACKEND_API_SECRET", _ADMIN_SECRET)
+    return {"X-Service-Secret": _ADMIN_SECRET, "X-User-Role": "admin"}
+
+
 def test_create_or_update_user_uses_shared_pool(monkeypatch):
     now = datetime(2026, 6, 20, 12, 0, 0)
     row = {
@@ -127,7 +138,7 @@ def test_get_all_users_uses_shared_pool(monkeypatch):
     app.dependency_overrides[get_db] = _override_db(fake)
     try:
         client = TestClient(app)
-        resp = client.get("/api/admin/users")
+        resp = client.get("/api/admin/users", headers=_admin_headers(monkeypatch))
         assert resp.status_code == 200
         assert resp.json()["users"][0]["id"] == "u1"
         assert not fake.connect_called
@@ -149,7 +160,7 @@ def test_update_user_role_uses_shared_pool(monkeypatch):
         client = TestClient(app)
         resp = client.put("/api/admin/users/role", json={
             "user_id": "u1", "role": "editor",
-        })
+        }, headers=_admin_headers(monkeypatch))
         assert resp.status_code == 200
         assert resp.json()["role"] == "editor"
         assert not fake.connect_called
@@ -166,7 +177,7 @@ def test_update_user_role_rejects_invalid_role(monkeypatch):
         client = TestClient(app)
         resp = client.put("/api/admin/users/role", json={
             "user_id": "u1", "role": "superuser",
-        })
+        }, headers=_admin_headers(monkeypatch))
         assert resp.status_code == 400
     finally:
         app.dependency_overrides.clear()

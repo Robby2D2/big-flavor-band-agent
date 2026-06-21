@@ -19,6 +19,7 @@ from pathlib import Path
 # Import our existing agent
 from src.agent.big_flavor_agent import BigFlavorAgent
 from src.rag.big_flavor_rag import SongRAGSystem
+from src.auth import require_role
 from src.api_errors import register_error_handlers
 from database import DatabaseManager, RadioStateStore
 
@@ -361,7 +362,10 @@ async def get_user_role(
 
 # Admin endpoints
 @app.get("/api/admin/users")
-async def get_all_users(db: DatabaseManager = Depends(get_db)):
+async def get_all_users(
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("admin")),
+):
     """Get all users (admin only)"""
     results = await db.list_users()
 
@@ -389,7 +393,8 @@ class UpdateRoleRequest(BaseModel):
 @app.put("/api/admin/users/role")
 async def update_user_role(
     request: UpdateRoleRequest,
-    db: DatabaseManager = Depends(get_db)
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("admin")),
 ):
     """Update a user's role (admin only)"""
     # Validate role
@@ -722,7 +727,10 @@ async def add_to_queue(
 
 
 @app.post("/api/radio/skip")
-async def skip_song(store: RadioStateStore = Depends(get_radio_store)):
+async def skip_song(
+    store: RadioStateStore = Depends(get_radio_store),
+    _role: str = Depends(require_role("editor")),
+):
     """Skip to next song (editor/admin only)"""
     state = await store.load_state()
 
@@ -747,6 +755,7 @@ class RemoveFromQueueRequest(BaseModel):
 async def remove_from_queue(
     request: RemoveFromQueueRequest,
     store: RadioStateStore = Depends(get_radio_store),
+    _role: str = Depends(require_role("editor")),
 ):
     """Remove a song from the queue (editor/admin only)"""
     state = await store.load_state()
@@ -768,7 +777,10 @@ async def remove_from_queue(
 
 
 @app.post("/api/radio/play")
-async def play_radio(store: RadioStateStore = Depends(get_radio_store)):
+async def play_radio(
+    store: RadioStateStore = Depends(get_radio_store),
+    _role: str = Depends(require_role("editor")),
+):
     """Start/resume radio playback (editor/admin only)"""
     state = await store.load_state()
 
@@ -784,7 +796,10 @@ async def play_radio(store: RadioStateStore = Depends(get_radio_store)):
 
 
 @app.post("/api/radio/pause")
-async def pause_radio(store: RadioStateStore = Depends(get_radio_store)):
+async def pause_radio(
+    store: RadioStateStore = Depends(get_radio_store),
+    _role: str = Depends(require_role("editor")),
+):
     """Pause radio playback (editor/admin only)"""
     state = await store.load_state()
 
@@ -931,7 +946,10 @@ async def stream_audio(song_id: int):
 
 # MCP Tools endpoints (for editors)
 @app.get("/api/tools/list")
-async def list_tools(agent: BigFlavorAgent = Depends(get_agent)):
+async def list_tools(
+    agent: BigFlavorAgent = Depends(get_agent),
+    _role: str = Depends(require_role("editor")),
+):
     """List all available MCP tools"""
     tools = agent.get_available_tools()
     return {"tools": tools}
@@ -941,7 +959,8 @@ async def list_tools(agent: BigFlavorAgent = Depends(get_agent)):
 async def execute_tool(
     tool_name: str,
     parameters: Dict[str, Any],
-    agent: BigFlavorAgent = Depends(get_agent)
+    agent: BigFlavorAgent = Depends(get_agent),
+    _role: str = Depends(require_role("editor")),
 ):
     """Execute an MCP tool (editors only)"""
     result = await agent.execute_tool(tool_name, parameters)
