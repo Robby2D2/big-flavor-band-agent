@@ -36,6 +36,13 @@ except ImportError:
 
 logger = logging.getLogger("rag-system")
 
+# Embedding dimensions of the active models / pgvector schema. The text model is
+# all-MiniLM-L6-v2 (384 dims); audio is 37 librosa features + 512 CLAP = 549.
+# Placeholder/zero vectors for a missing embedding must match these so they stay
+# comparable against the stored vectors in hybrid search.
+TEXT_EMBEDDING_DIM = 384
+AUDIO_EMBEDDING_DIM = 549
+
 
 def _serialize_row(row) -> Dict[str, Any]:
     """Convert a database row to a dict with datetime objects serialized to ISO strings."""
@@ -317,10 +324,10 @@ class SongRAGSystem:
                     logger.debug(f"Generated text embedding for song {song_id} ({len(text_embedding)} dimensions)")
                 except Exception as e:
                     logger.error(f"Failed to generate text embedding for song {song_id}: {e}")
-                    text_embedding = [0.0] * 384  # Fallback to placeholder
+                    text_embedding = [0.0] * TEXT_EMBEDDING_DIM  # Fallback to placeholder
             else:
                 logger.warning(f"Text embedding model not available, using placeholder for song {song_id}")
-                text_embedding = [0.0] * 384
+                text_embedding = [0.0] * TEXT_EMBEDDING_DIM
             
             # Store lyrics with embedding
             success = await self.index_text_content(
@@ -492,7 +499,7 @@ class SongRAGSystem:
         Search songs by text embedding.
         
         Args:
-            query_embedding: Text embedding vector (1536 dims for OpenAI)
+            query_embedding: Text embedding vector (384 dims, all-MiniLM-L6-v2)
             content_types: Which content types to search
             limit: Maximum number of results
         
@@ -528,7 +535,7 @@ class SongRAGSystem:
         
         Args:
             audio_embedding: Audio embedding vector (549 dims)
-            text_embedding: Text embedding vector (1536 dims)
+            text_embedding: Text embedding vector (384 dims, all-MiniLM-L6-v2)
             audio_weight: Weight for audio similarity (0-1)
             text_weight: Weight for text similarity (0-1)
             limit: Maximum number of results
@@ -539,14 +546,15 @@ class SongRAGSystem:
         if audio_embedding is None and text_embedding is None:
             raise ValueError("Must provide at least one embedding")
         
-        # Use zero vectors if one is missing
+        # Use zero vectors if one is missing. Dimensions must match the active
+        # models / pgvector schema or the DB comparison errors / mismatches.
         if audio_embedding is None:
-            audio_embedding = [0.0] * 549
+            audio_embedding = [0.0] * AUDIO_EMBEDDING_DIM
             audio_weight = 0.0
             text_weight = 1.0
-        
+
         if text_embedding is None:
-            text_embedding = [0.0] * 1536
+            text_embedding = [0.0] * TEXT_EMBEDDING_DIM
             text_weight = 0.0
             audio_weight = 1.0
         
