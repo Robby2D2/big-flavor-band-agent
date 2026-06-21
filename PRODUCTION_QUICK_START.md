@@ -54,7 +54,7 @@ nano .env.production
 **Required variables:**
 - `LLM_PROVIDER` - Choose `anthropic` or `ollama` (for cost savings)
 - `ANTHROPIC_API_KEY` - Your API key (only if using `anthropic`)
-- `OLLAMA_MODEL` - Model to use (only if using `ollama`, default: `llama3.1:8b`)
+- `OLLAMA_MODEL` - Model to use (only if using `ollama`, default: `qwen2.5:14b`)
 - `AUTH0_SECRET` - Generate: `openssl rand -hex 32`
 - `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET` - From Auth0 dashboard
 - `AUTH0_BASE_URL` - Your production URL
@@ -66,7 +66,9 @@ See `LOCAL_LLM_GUIDE.md` for full details on model selection and setup.
 
 ### 2. Setup Local LLM (Optional - For Cost Savings)
 
-If using `LLM_PROVIDER=ollama`, download models first:
+If using `LLM_PROVIDER=ollama`, **the deploy script in step 4 pulls `OLLAMA_MODEL`
+automatically** — you don't need a separate step. Run the script below only if you
+want to pre-download the model (or a different one) before deploying:
 
 **Windows:**
 ```powershell
@@ -79,7 +81,8 @@ chmod +x setup-ollama.sh
 ./setup-ollama.sh
 ```
 
-This downloads the AI model (~4.7GB for llama3.1:8b). See `LOCAL_LLM_GUIDE.md` for model options.
+This downloads the AI model (~9GB for the recommended `qwen2.5:14b`). See
+`LOCAL_LLM_GUIDE.md` for model options.
 
 ### 3. Ensure Audio Files
 ```bash
@@ -173,7 +176,7 @@ Nginx Container (port 80)
 |----------|---------|---------|
 | `LLM_PROVIDER` | AI provider choice | `anthropic` or `ollama` |
 | `ANTHROPIC_API_KEY` | Claude API access (if using anthropic) | `sk-ant-api03-...` |
-| `OLLAMA_MODEL` | Local model name (if using ollama) | `llama3.1:8b` |
+| `OLLAMA_MODEL` | Local model name (if using ollama) | `qwen2.5:14b` |
 | `OLLAMA_BASE_URL` | Ollama service URL | `http://ollama:11434` |
 | `POSTGRES_PASSWORD` | Database password | `super_secure_pass_123` |
 | `AUTH0_DOMAIN` | Auth0 tenant | `yourapp.us.auth0.com` |
@@ -233,7 +236,7 @@ docker-compose logs ollama
 docker exec bigflavor-ollama ollama list
 
 # Test model directly
-docker exec bigflavor-ollama ollama run llama3.1:8b "Hello"
+docker exec bigflavor-ollama ollama run qwen2.5:14b "Hello"
 
 # Restart Ollama
 docker-compose restart ollama

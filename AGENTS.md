@@ -105,7 +105,7 @@ hot-reload — restart, don't rebuild.
 | `bigflavor-backend` | Python FastAPI API + agent + RAG |
 | `bigflavor-frontend` | Next.js web app |
 | `bigflavor-postgres` | PostgreSQL + pgvector |
-| `bigflavor-ollama` | Local LLM (qwen2.5:7b, GPU) |
+| `bigflavor-ollama` | Local LLM (qwen2.5:14b, GPU) |
 | `bigflavor-icecast` | Radio stream broadcast (`8001:8000`) |
 | `bigflavor-liquidsoap` | Audio automation / playlist engine |
 | `bigflavor-nginx` | Reverse proxy (80/443) |

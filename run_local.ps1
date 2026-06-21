@@ -34,15 +34,15 @@ if (-not $ollamaRunning) {
 
 Write-Host ""
 
-# Check if llama3.1:8b model is installed
-Write-Host "Checking for llama3.1:8b model..." -ForegroundColor Yellow
+# Check if qwen2.5:14b model is installed
+Write-Host "Checking for qwen2.5:14b model..." -ForegroundColor Yellow
 $models = docker exec bigflavor-ollama ollama list
-if ($models -match "llama3.1:8b") {
-    Write-Host "[OK] llama3.1:8b model is installed" -ForegroundColor Green
+if ($models -match "qwen2.5:14b") {
+    Write-Host "[OK] qwen2.5:14b model is installed" -ForegroundColor Green
 } else {
-    Write-Host "[INFO] llama3.1:8b model not found. Downloading..." -ForegroundColor Yellow
-    Write-Host "This will download ~4.9GB. Please wait..." -ForegroundColor Yellow
-    docker exec bigflavor-ollama ollama pull llama3.1:8b
+    Write-Host "[INFO] qwen2.5:14b model not found. Downloading..." -ForegroundColor Yellow
+    Write-Host "This will download ~9GB. Please wait..." -ForegroundColor Yellow
+    docker exec bigflavor-ollama ollama pull qwen2.5:14b
 }
 
 Write-Host ""

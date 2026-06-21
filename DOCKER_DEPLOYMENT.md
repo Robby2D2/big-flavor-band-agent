@@ -21,6 +21,10 @@ Nginx Reverse Proxy
 - Your server's port 80 available (no other web server running)
 - At least 4GB RAM recommended
 - Audio files in `audio_library/` directory
+- **If using the local LLM (`LLM_PROVIDER=ollama`):** an NVIDIA GPU is strongly
+  recommended. The default model `qwen2.5:14b` needs ~9GB VRAM (a 24GB card such as
+  the RTX 3090 is the project target). On smaller hardware, drop to `qwen2.5:7b`. See
+  [`LOCAL_LLM_GUIDE.md`](LOCAL_LLM_GUIDE.md) for the full model/hardware matrix.
 
 ## Quick Start
 
@@ -53,6 +57,13 @@ docker-compose --env-file .env.production up -d
 # Check status
 docker-compose ps
 ```
+
+> **Local LLM model:** the `deploy-production.sh` / `deploy-production.ps1` scripts pull
+> `OLLAMA_MODEL` automatically when `LLM_PROVIDER=ollama`. If you start the stack manually
+> with the `docker-compose` commands above, pull the model yourself the first time:
+> ```bash
+> docker exec bigflavor-ollama ollama pull qwen2.5:14b
+> ```
 
 ### 3. View Logs
 

@@ -46,14 +46,14 @@ from big_flavor_agent import BigFlavorAgent
 # Set in .env:
 #   LLM_PROVIDER=ollama
 #   OLLAMA_BASE_URL=http://localhost:11434
-#   OLLAMA_MODEL=llama3.1:8b
+#   OLLAMA_MODEL=qwen2.5:14b
 agent = BigFlavorAgent()
 
 # Option 2: Pass configuration directly
 agent = BigFlavorAgent(
     llm_provider="ollama",
     ollama_base_url="http://localhost:11434",
-    ollama_model="llama3.1:8b"
+    ollama_model="qwen2.5:14b"
 )
 
 await agent.initialize()
@@ -75,7 +75,7 @@ ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxx
 ```bash
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1:8b
+OLLAMA_MODEL=qwen2.5:14b
 ```
 
 ### .env.production for Docker
@@ -83,7 +83,7 @@ OLLAMA_MODEL=llama3.1:8b
 # For Ollama in Docker
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://ollama:11434  # Docker service name
-OLLAMA_MODEL=llama3.1:8b
+OLLAMA_MODEL=qwen2.5:14b
 ```
 
 ---
@@ -92,26 +92,25 @@ OLLAMA_MODEL=llama3.1:8b
 
 ### Best Models for Tool Calling
 
-| Model | Size | RAM | Quality | Speed | Notes |
-|-------|------|-----|---------|-------|-------|
-| **llama3.1:8b** | 4.7GB | 8GB | ⭐⭐⭐⭐ | ⚡⚡⚡ | **Recommended** - Best balance |
-| **mistral-nemo** | 7GB | 12GB | ⭐⭐⭐⭐⭐ | ⚡⚡ | Excellent tool calling |
-| **qwen2.5:7b** | 4.7GB | 8GB | ⭐⭐⭐⭐ | ⚡⚡⚡ | Strong tool calling |
-| **firefunction-v2** | 7GB | 12GB | ⭐⭐⭐⭐⭐ | ⚡⚡ | Fine-tuned for functions |
-| **llama3.2:3b** | 2GB | 4GB | ⭐⭐⭐ | ⚡⚡⚡⚡ | Budget option |
-| **command-r-plus** | 104GB | 128GB | ⭐⭐⭐⭐⭐ | ⚡ | Best quality, huge size |
+| Model | Size | VRAM/RAM | Quality | Speed | Notes |
+|-------|------|----------|---------|-------|-------|
+| **qwen2.5:14b** | ~9GB | 12GB | ⭐⭐⭐⭐⭐ | ⚡⚡ | **Recommended** - best tool calling for 24GB GPU |
+| **qwen2.5:7b** | ~4.7GB | 8GB | ⭐⭐⭐⭐ | ⚡⚡⚡ | Lighter, strong tool calling |
+| **qwen2.5:32b** | ~20GB | 24GB | ⭐⭐⭐⭐⭐ | ⚡ | Max quality, tight on a 24GB GPU |
+| **qwen2.5:3b** | ~2GB | 4GB | ⭐⭐⭐ | ⚡⚡⚡⚡ | Budget option |
+| **llama3.1:8b** | 4.7GB | 8GB | ⭐⭐⭐ | ⚡⚡⚡ | Weaker tool calling than Qwen |
 
 ### How to Download Models
 
 ```bash
 # Pull a model
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 
 # List installed models
 ollama list
 
 # Test a model
-ollama run llama3.1:8b "Hello!"
+ollama run qwen2.5:14b "Hello!"
 ```
 
 ---
@@ -126,7 +125,7 @@ winget install Ollama.Ollama
 # Or download from https://ollama.com/download
 
 # Pull recommended model
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 
 # Start Ollama (usually auto-starts)
 # Check it's running: http://localhost:11434
@@ -138,7 +137,7 @@ ollama pull llama3.1:8b
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull recommended model
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 
 # Ollama runs as a service automatically
 ```
@@ -149,7 +148,7 @@ ollama pull llama3.1:8b
 docker-compose up -d ollama
 
 # Pull model inside container
-docker exec bigflavor-ollama ollama pull llama3.1:8b
+docker exec bigflavor-ollama ollama pull qwen2.5:14b
 
 # Or use setup script
 .\setup-ollama.ps1  # Windows
@@ -274,7 +273,7 @@ agent = BigFlavorAgent(llm_provider="anthropic", api_key="...")
 # Ollama
 agent = BigFlavorAgent(
     llm_provider="ollama",
-    ollama_model="llama3.1:8b"
+    ollama_model="qwen2.5:14b"
 )
 ```
 
@@ -297,7 +296,7 @@ ollama serve  # Linux/Mac
 **Error: Model not found**
 ```bash
 # Pull the model
-ollama pull llama3.1:8b
+ollama pull qwen2.5:14b
 
 # Verify it's installed
 ollama list

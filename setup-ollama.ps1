@@ -26,7 +26,7 @@ if (-not $ollamaRunning) {
 }
 
 # Get model name from environment or use default
-$MODEL = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "llama3.1:8b" }
+$MODEL = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "qwen2.5:14b" }
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
@@ -34,10 +34,9 @@ Write-Host "Downloading Model: $MODEL" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "This may take several minutes depending on model size:" -ForegroundColor Yellow
-Write-Host "  - llama3.2:3b  ~2GB  (Fastest, good for basic tasks)"
-Write-Host "  - mistral:7b   ~4GB  (Balanced)"
-Write-Host "  - llama3.1:8b  ~4.7GB (Recommended, best quality/speed ratio)" -ForegroundColor Green
-Write-Host "  - codellama:13b ~7GB  (Better for music/code, slower)"
+Write-Host "  - qwen2.5:7b   ~4.7GB (Lighter, good tool calling)"
+Write-Host "  - qwen2.5:14b  ~9GB   (Recommended for 24GB GPU - best tool calling)" -ForegroundColor Green
+Write-Host "  - qwen2.5:32b  ~20GB  (Max quality, tight on a 24GB GPU, slower)"
 Write-Host ""
 
 # Pull the model
@@ -73,10 +72,9 @@ Write-Host "To download additional models:" -ForegroundColor Yellow
 Write-Host "  docker exec bigflavor-ollama ollama pull <model-name>"
 Write-Host ""
 Write-Host "Popular models:" -ForegroundColor Cyan
-Write-Host "  - llama3.2:3b    (Small, fast)"
-Write-Host "  - mistral:7b     (Medium, balanced)"
-Write-Host "  - llama3.1:8b    (Recommended)" -ForegroundColor Green
-Write-Host "  - codellama:13b  (Large, best quality)"
+Write-Host "  - qwen2.5:7b    (Lighter, good tool calling)"
+Write-Host "  - qwen2.5:14b   (Recommended for 24GB GPU)" -ForegroundColor Green
+Write-Host "  - qwen2.5:32b   (Max quality, tight on 24GB)"
 Write-Host ""
 Write-Host "Browse all models: https://ollama.com/library" -ForegroundColor Cyan
 Write-Host ""

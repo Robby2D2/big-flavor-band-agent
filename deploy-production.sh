@@ -102,6 +102,41 @@ echo "Waiting for services to be healthy..."
 echo "=========================================="
 sleep 10
 
+# Pull the local LLM model when running with the Ollama provider.
+# The model is required for the agent to work, so we download it as part of
+# the deploy instead of relying on a separate manual setup step.
+LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+if [ "$LLM_PROVIDER" = "ollama" ]; then
+    OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:14b}
+    echo ""
+    echo "=========================================="
+    echo "Pulling Ollama model: $OLLAMA_MODEL"
+    echo "=========================================="
+    echo "(first run downloads several GB — this can take a while)"
+
+    # Wait for the Ollama API to come up before pulling.
+    OLLAMA_READY=0
+    for i in $(seq 1 30); do
+        if docker exec bigflavor-ollama ollama list > /dev/null 2>&1; then
+            OLLAMA_READY=1
+            break
+        fi
+        echo "Waiting for Ollama to be ready... ($i/30)"
+        sleep 5
+    done
+
+    if [ $OLLAMA_READY -eq 0 ]; then
+        echo -e "${YELLOW}WARNING: Ollama did not become ready in time.${NC}"
+        echo "Pull the model manually once it is up:"
+        echo "  docker exec bigflavor-ollama ollama pull $OLLAMA_MODEL"
+    elif docker exec bigflavor-ollama ollama list 2>/dev/null | grep -q "$OLLAMA_MODEL"; then
+        echo -e "${GREEN}✓ Model $OLLAMA_MODEL already present${NC}"
+    else
+        docker exec bigflavor-ollama ollama pull "$OLLAMA_MODEL"
+        echo -e "${GREEN}✓ Model $OLLAMA_MODEL ready${NC}"
+    fi
+fi
+
 # Check service health
 RETRIES=30
 COUNT=0

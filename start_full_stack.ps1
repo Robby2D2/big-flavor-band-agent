@@ -47,7 +47,7 @@ Write-Host ""
 Write-Host "[4/6] Starting services..." -ForegroundColor Yellow
 Write-Host "  This will start:" -ForegroundColor Cyan
 Write-Host "    - PostgreSQL (database)" -ForegroundColor White
-Write-Host "    - Ollama (LLM - llama3.1:8b)" -ForegroundColor White
+Write-Host "    - Ollama (LLM - qwen2.5:14b)" -ForegroundColor White
 Write-Host "    - Backend API (Python FastAPI)" -ForegroundColor White
 Write-Host "    - Frontend (Next.js)" -ForegroundColor White
 Write-Host "    - Nginx (reverse proxy)" -ForegroundColor White
@@ -114,7 +114,7 @@ Write-Host "  Backend API:    http://localhost:8000" -ForegroundColor White
 Write-Host "  API Docs:       http://localhost:8000/docs" -ForegroundColor White
 Write-Host ""
 Write-Host "LLM Provider:" -ForegroundColor Cyan
-Write-Host "  Using: Ollama (llama3.1:8b)" -ForegroundColor White
+Write-Host "  Using: Ollama (qwen2.5:14b)" -ForegroundColor White
 Write-Host "  Cost:  $0.00 per request (FREE!)" -ForegroundColor Green
 Write-Host ""
 Write-Host "Useful Commands:" -ForegroundColor Cyan

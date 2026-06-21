@@ -67,9 +67,10 @@ services:
       # Shared secret the BFF must present to reach protected backend routes
       - BACKEND_API_SECRET=${BACKEND_API_SECRET:-}
       # LLM Configuration
-      - LLM_PROVIDER=ollama
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:7b
+      # Honour OLLAMA_MODEL from the env file; default to the 14B tool-calling model.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:14b}
     volumes:
       - ./audio_library:/app/audio_library:ro
       # Mount source code for hot reloading (restart instead of rebuild)

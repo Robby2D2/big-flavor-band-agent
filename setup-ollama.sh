@@ -26,7 +26,7 @@ if ! docker ps | grep -q bigflavor-ollama; then
 fi
 
 # Get model name from environment or use default
-MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+MODEL=${OLLAMA_MODEL:-qwen2.5:14b}
 
 echo ""
 echo "=========================================="
@@ -34,10 +34,9 @@ echo "Downloading Model: $MODEL"
 echo "=========================================="
 echo ""
 echo "This may take several minutes depending on model size:"
-echo "  - llama3.2:3b  ~2GB  (Fastest, good for basic tasks)"
-echo "  - mistral:7b   ~4GB  (Balanced)"
-echo "  - llama3.1:8b  ~4.7GB (Recommended, best quality/speed ratio)"
-echo "  - codellama:13b ~7GB  (Better for music/code, slower)"
+echo "  - qwen2.5:7b   ~4.7GB (Lighter, good tool calling)"
+echo "  - qwen2.5:14b  ~9GB   (Recommended for 24GB GPU - best tool calling)"
+echo "  - qwen2.5:32b  ~20GB  (Max quality, tight on a 24GB GPU, slower)"
 echo ""
 
 # Pull the model
@@ -72,10 +71,9 @@ echo "To download additional models:"
 echo "  docker exec bigflavor-ollama ollama pull <model-name>"
 echo ""
 echo "Popular models:"
-echo "  - llama3.2:3b    (Small, fast)"
-echo "  - mistral:7b     (Medium, balanced)"
-echo "  - llama3.1:8b    (Recommended)"
-echo "  - codellama:13b  (Large, best quality)"
+echo "  - qwen2.5:7b    (Lighter, good tool calling)"
+echo "  - qwen2.5:14b   (Recommended for 24GB GPU)"
+echo "  - qwen2.5:32b   (Max quality, tight on 24GB)"
 echo ""
 echo "Browse all models: https://ollama.com/library"
 echo ""

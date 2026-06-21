@@ -101,6 +101,42 @@ Write-Host "Waiting for services to be healthy..." -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Start-Sleep -Seconds 10
 
+# Pull the local LLM model when running with the Ollama provider.
+# The model is required for the agent to work, so we download it as part of
+# the deploy instead of relying on a separate manual setup step.
+$llmProvider = if ($envVars["LLM_PROVIDER"]) { $envVars["LLM_PROVIDER"] } else { "anthropic" }
+if ($llmProvider -eq "ollama") {
+    $ollamaModel = if ($envVars["OLLAMA_MODEL"]) { $envVars["OLLAMA_MODEL"] } else { "qwen2.5:14b" }
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "Pulling Ollama model: $ollamaModel" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "(first run downloads several GB - this can take a while)" -ForegroundColor Yellow
+
+    # Wait for the Ollama API to come up before pulling.
+    $ollamaReady = $false
+    for ($i = 1; $i -le 30; $i++) {
+        docker exec bigflavor-ollama ollama list 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $ollamaReady = $true; break }
+        Write-Host "Waiting for Ollama to be ready... ($i/30)"
+        Start-Sleep -Seconds 5
+    }
+
+    if (-not $ollamaReady) {
+        Write-Host "WARNING: Ollama did not become ready in time." -ForegroundColor Yellow
+        Write-Host "Pull the model manually once it is up:" -ForegroundColor Yellow
+        Write-Host "  docker exec bigflavor-ollama ollama pull $ollamaModel" -ForegroundColor Cyan
+    } else {
+        $installed = docker exec bigflavor-ollama ollama list 2>$null | Select-String ([regex]::Escape($ollamaModel))
+        if ($installed) {
+            Write-Host "✓ Model $ollamaModel already present" -ForegroundColor Green
+        } else {
+            docker exec bigflavor-ollama ollama pull $ollamaModel
+            Write-Host "✓ Model $ollamaModel ready" -ForegroundColor Green
+        }
+    }
+}
+
 # Check service health
 $retries = 30
 $count = 0

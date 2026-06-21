@@ -87,7 +87,7 @@ through Next.js `app/api/*` route handlers (a BFF layer that injects auth).
 
 `src/llm/llm_provider.py` defines `LLMProvider` (ABC) with `AnthropicProvider` and `OllamaProvider`
 implementations and a `get_llm_provider()` factory. The provider is selected by the `LLM_PROVIDER`
-env var (`anthropic` | `ollama`); Ollama (qwen2.5:7b, GPU) is the default in `docker-compose.yml`
+env var (`anthropic` | `ollama`); Ollama (qwen2.5:14b, GPU) is the default in `docker-compose.yml`
 for cost-free local inference, with Anthropic Claude as the hosted option. **All agent code goes
 through this abstraction — never import `anthropic` directly in agent logic.** Both providers
 implement `generate_with_tools()` so tool calling works regardless of backend.

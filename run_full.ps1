@@ -37,12 +37,12 @@ if (-not $ollamaRunning) {
     Write-Host "  [OK] Ollama running" -ForegroundColor Green
 }
 
-# Check llama3.1:8b model
+# Check qwen2.5:14b model
 $models = docker exec bigflavor-ollama ollama list 2>$null
-if ($models -match "llama3.1:8b") {
-    Write-Host "  [OK] llama3.1:8b model available" -ForegroundColor Green
+if ($models -match "qwen2.5:14b") {
+    Write-Host "  [OK] qwen2.5:14b model available" -ForegroundColor Green
 } else {
-    Write-Host "  [WARN] llama3.1:8b not found, using default model" -ForegroundColor Yellow
+    Write-Host "  [WARN] qwen2.5:14b not found, using default model" -ForegroundColor Yellow
 }
 
 Write-Host ""

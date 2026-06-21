@@ -24,13 +24,17 @@ Ollama is already configured in `docker-compose.yml`. It's set to start automati
 
 ### 2. Download a Model
 
+> **You usually don't need this step.** `deploy-production.sh` / `deploy-production.ps1`
+> automatically pull `OLLAMA_MODEL` when `LLM_PROVIDER=ollama`. Use the script below only
+> to pre-download a model before deploying, or to grab an extra model.
+
 **Windows:**
 ```powershell
-# Default model (llama3.1:8b - 4.7GB)
+# Default model (qwen2.5:14b - ~9GB)
 .\setup-ollama.ps1
 
 # Or specify a different model
-$env:OLLAMA_MODEL="mistral:7b"
+$env:OLLAMA_MODEL="qwen2.5:7b"
 .\setup-ollama.ps1
 ```
 
@@ -41,7 +45,7 @@ chmod +x setup-ollama.sh
 ./setup-ollama.sh
 
 # Or specify a different model
-OLLAMA_MODEL="mistral:7b" ./setup-ollama.sh
+OLLAMA_MODEL="qwen2.5:7b" ./setup-ollama.sh
 ```
 
 ### 3. Configure Environment
@@ -52,7 +56,7 @@ Edit `.env.production`:
 LLM_PROVIDER=ollama
 
 # Specify your model
-OLLAMA_MODEL=llama3.1:8b
+OLLAMA_MODEL=qwen2.5:14b
 
 # Anthropic key now optional (but keep for fallback if desired)
 ANTHROPIC_API_KEY=
@@ -72,22 +76,26 @@ Your app now runs with zero API costs!
 
 ## Recommended Models
 
-### For Music/Creative Tasks
+The agent relies heavily on **tool calling** (RAG search, radio control, etc.), so model
+choice is driven by tool-calling reliability — not just chat quality. The **Qwen2.5** family
+is the strongest open option here, which is why it's the default. Sizes below assume the
+Q4_K_M quants Ollama pulls by default.
 
-| Model | Size | RAM Needed | Speed | Quality | Recommendation |
-|-------|------|-----------|-------|---------|----------------|
-| `llama3.2:3b` | 2GB | 4GB | ⚡⚡⚡ | ⭐⭐ | Budget systems |
-| `llama3.1:8b` | 4.7GB | 8GB | ⚡⚡ | ⭐⭐⭐ | **Recommended** |
-| `mistral:7b` | 4GB | 8GB | ⚡⚡ | ⭐⭐⭐ | Good alternative |
-| `codellama:13b` | 7GB | 16GB | ⚡ | ⭐⭐⭐⭐ | Best quality |
+### On the project GPU (RTX 3090, 24GB VRAM)
 
-### For Chat/General Use
+| Model | ~VRAM | Speed | Tool calling | Recommendation |
+|-------|-------|-------|--------------|----------------|
+| `qwen2.5:7b` | ~5GB | ⚡⚡⚡ | ⭐⭐⭐ | Lighter / leaves VRAM headroom |
+| `qwen2.5:14b` | ~9GB | ⚡⚡ | ⭐⭐⭐⭐ | **Recommended — best fit for 24GB** |
+| `qwen2.5:32b` | ~20GB | ⚡ | ⭐⭐⭐⭐⭐ | Max quality, tight on 24GB, slower |
 
-| Model | Size | RAM Needed | Speed | Quality |
-|-------|------|-----------|-------|---------|
-| `llama3.2:1b` | 1.3GB | 2GB | ⚡⚡⚡ | ⭐ |
-| `phi3:mini` | 2.3GB | 4GB | ⚡⚡⚡ | ⭐⭐ |
-| `gemma2:9b` | 5.4GB | 16GB | ⚡⚡ | ⭐⭐⭐⭐ |
+### Smaller / budget systems (CPU or <12GB VRAM)
+
+| Model | Size | RAM Needed | Speed | Tool calling |
+|-------|------|-----------|-------|--------------|
+| `qwen2.5:3b` | ~2GB | 4GB | ⚡⚡⚡ | ⭐⭐ |
+| `qwen2.5:7b` | ~4.7GB | 8GB | ⚡⚡ | ⭐⭐⭐ |
+| `llama3.1:8b` | 4.7GB | 8GB | ⚡⚡ | ⭐⭐ |
 
 ## System Requirements
 
@@ -189,15 +197,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 ## Performance Tuning
 
 ### Optimize for Speed
-Use smaller models:
+Use a smaller model:
 ```bash
-OLLAMA_MODEL=llama3.2:3b  # Fastest
+OLLAMA_MODEL=qwen2.5:7b  # Faster, lighter on VRAM
 ```
 
 ### Optimize for Quality
-Use larger models (requires more RAM):
+Use a larger model (requires more VRAM/RAM):
 ```bash
-OLLAMA_MODEL=codellama:13b  # Best quality
+OLLAMA_MODEL=qwen2.5:32b  # Best quality (tight on a 24GB GPU)
 ```
 
 ### Adjust Context Window
@@ -340,7 +348,7 @@ Real-world testing with music queries:
 For **production cost savings**, use:
 ```bash
 LLM_PROVIDER=ollama
-OLLAMA_MODEL=llama3.1:8b
+OLLAMA_MODEL=qwen2.5:14b
 ```
 
 For **best quality**, stick with:

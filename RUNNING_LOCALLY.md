@@ -18,7 +18,7 @@ There are **two ways** to run the BigFlavor Agent:
 
 That's it! This will:
 - ✅ Start Ollama in Docker
-- ✅ Download llama3.1:8b model (if needed)
+- ✅ Download qwen2.5:14b model (if needed)
 - ✅ Launch an interactive chat session
 - ✅ Demonstrate tool calling with Ollama
 - ✅ Cost: $0.00 (completely free!)
@@ -30,7 +30,7 @@ That's it! This will:
 docker-compose up -d ollama
 
 # 2. Pull model (first time only)
-docker exec bigflavor-ollama ollama pull llama3.1:8b
+docker exec bigflavor-ollama ollama pull qwen2.5:14b
 
 # 3. Activate virtual environment
 .\venv\Scripts\Activate.ps1
@@ -102,7 +102,7 @@ This deploys the **full stack**:
 - Restart Ollama: `docker-compose restart ollama`
 
 ### "Model not found"
-- Download model: `docker exec bigflavor-ollama ollama pull llama3.1:8b`
+- Download model: `docker exec bigflavor-ollama ollama pull qwen2.5:14b`
 - Verify: `docker exec bigflavor-ollama ollama list`
 
 ### "Python not found"
