@@ -64,11 +64,53 @@ agent: Optional[BigFlavorAgent] = None
 rag: Optional[SongRAGSystem] = None
 db_manager: Optional[DatabaseManager] = None
 
+# Handle to the background task that owns the radio playback clock and queue
+# top-up. Started in lifespan so playback advances and the queue refills
+# independently of inbound requests; GET /api/radio/state and /stream stay
+# side-effect-free reads.
+radio_task: Optional[asyncio.Task] = None
+
+# How often the background loop ticks the playback clock, and how often (in
+# ticks) it runs the heavier agent/search queue top-up off the request path.
+RADIO_TICK_INTERVAL = 1.0  # seconds
+RADIO_TOPUP_EVERY_TICKS = 5
+
+
+async def radio_background_loop():
+    """Own the radio playback clock and queue top-up, independent of requests.
+
+    Advances the playback position (rolling to the next song when one finishes)
+    every tick, and refills the queue periodically. This is the single driver of
+    playback time and top-up, so the stream keeps advancing and never runs dry
+    whether or not any client is polling GET /api/radio/state. State lives in the
+    process-external RadioStateStore (issue #2), so each tick loads, mutates, and
+    saves it back.
+    """
+    logger.info("Radio background loop started")
+    tick = 0
+    try:
+        while True:
+            await asyncio.sleep(RADIO_TICK_INTERVAL)
+            tick += 1
+            try:
+                store = await get_radio_store()
+                state = await store.load_state()
+                update_radio_position(state)
+                if tick % RADIO_TOPUP_EVERY_TICKS == 0:
+                    await auto_populate_queue(state)
+                await store.save_state(state)
+            except Exception:
+                logger.exception("Radio background loop tick failed")
+    except asyncio.CancelledError:
+        logger.info("Radio background loop cancelled")
+        raise
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the agent/RAG/DB singletons at startup and release them at shutdown."""
-    global agent, rag, db_manager
+    """Initialize the agent/RAG/DB singletons and start the radio background
+    clock/top-up task at startup; release them all at shutdown."""
+    global agent, rag, db_manager, radio_task
 
     logger.info("Startup: initializing backend singletons...")
 
@@ -83,11 +125,23 @@ async def lifespan(app: FastAPI):
     await agent.initialize()
     logger.info("Startup: BigFlavorAgent initialized")
 
+    # Start the radio clock only after the DB is up — the loop loads/saves radio
+    # state through the store, which needs the connected db_manager.
+    radio_task = asyncio.create_task(radio_background_loop())
+    logger.info("Startup: radio background loop scheduled")
+
     logger.info("Startup complete: backend ready to serve requests")
 
     yield
 
     logger.info("Shutdown: closing backend resources...")
+    if radio_task is not None:
+        radio_task.cancel()
+        try:
+            await radio_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Shutdown: radio background loop stopped")
     # The agent owns its own DatabaseManager (created in BigFlavorAgent.initialize()),
     # so close that pool too, not just the backend's.
     if agent is not None and getattr(agent, "db_manager", None) is not None:
@@ -609,22 +663,20 @@ async def get_radio_state(
         if not listener_id:
             listener_id = str(uuid.uuid4())
 
-        # Register this listener (may start playback)
-        await register_listener(store, listener_id, state)
+        # Register this listener (may start playback for the first listener).
+        # The playback clock and queue top-up are owned by radio_background_loop(),
+        # so this read does NOT advance the song, mutate playback position, or
+        # invoke the agent/search — it only registers presence.
+        mutated = await register_listener(store, listener_id, state)
 
-        # Update position based on elapsed time
-        update_radio_position(state)
-
-        # Auto-populate queue if needed
-        await auto_populate_queue(state)
-
-        # If no active listeners remain, pause the radio
+        # NOTE: playback is intentionally NOT paused when the listener count
+        # drops to zero — the radio is a continuous broadcast driven by
+        # radio_background_loop() (issue #5). active_listeners is reported for
+        # observability only.
         active_listeners = await store.count_active_listeners()
-        if active_listeners == 0 and state["is_playing"]:
-            state["is_playing"] = False
-            logger.info("No active listeners - pausing radio")
 
-        await store.save_state(state)
+        if mutated:
+            await store.save_state(state)
 
         return {
             "current_song": state["current_song"],
@@ -780,14 +832,10 @@ async def radio_stream(request: Request, store: RadioStateStore = Depends(get_ra
     Can be used with any HLS-compatible player (VLC, browsers with hls.js, etc.)
     """
     try:
+        # Read-only: the playback clock and queue top-up are driven by
+        # radio_background_loop(), not by this stream request. We only load the
+        # current state to render the playlist.
         state = await store.load_state()
-
-        update_radio_position(state)
-
-        # Auto-populate queue if needed
-        await auto_populate_queue(state)
-
-        await store.save_state(state)
 
         # Build base URL from request
         base_url = f"{request.url.scheme}://{request.url.netloc}"
@@ -841,14 +889,10 @@ async def radio_stream_m3u(request: Request, store: RadioStateStore = Depends(ge
     Compatible with most media players (VLC, Winamp, etc.)
     """
     try:
+        # Read-only: the playback clock and queue top-up are driven by
+        # radio_background_loop(), not by this stream request. We only load the
+        # current state to render the playlist.
         state = await store.load_state()
-
-        update_radio_position(state)
-
-        # Auto-populate queue if needed
-        await auto_populate_queue(state)
-
-        await store.save_state(state)
 
         # Build base URL from request
         base_url = f"{request.url.scheme}://{request.url.netloc}"
