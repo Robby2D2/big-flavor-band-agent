@@ -74,3 +74,9 @@ audio_library/*.flac
 # Database
 sql/init/*.sql.bak
 postgres_data/
+
+# Runtime-generated radio playlist (written by backend write_playlist_file())
+streaming/playlist/radio.m3u
+
+# Local Claude Code settings (machine-specific permission allowlist)
+.claude/settings.local.json
