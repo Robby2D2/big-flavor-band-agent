@@ -6,6 +6,7 @@ import os
 import json
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,6 @@ from pathlib import Path
 from src.agent.big_flavor_agent import BigFlavorAgent
 from src.rag.big_flavor_rag import SongRAGSystem
 from database import DatabaseManager
-
 
 class JsonLogFormatter(logging.Formatter):
     """Emit each log record as a single JSON object for production log aggregation."""
@@ -57,7 +57,52 @@ def configure_logging() -> None:
 configure_logging()
 logger = logging.getLogger("backend-api")
 
-app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0")
+# Long-lived singletons. These are constructed exactly once in the lifespan
+# handler at startup (not lazily on first request), so the first request never
+# pays cold-start and two concurrent first requests can't race an unlocked init.
+agent: Optional[BigFlavorAgent] = None
+rag: Optional[SongRAGSystem] = None
+db_manager: Optional[DatabaseManager] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize the agent/RAG/DB singletons at startup and release them at shutdown."""
+    global agent, rag, db_manager
+
+    logger.info("Startup: initializing backend singletons...")
+
+    db_manager = DatabaseManager()
+    await db_manager.connect()
+    logger.info("Startup: DatabaseManager connected")
+
+    rag = SongRAGSystem(db_manager, use_clap=True)
+    logger.info("Startup: SongRAGSystem ready")
+
+    agent = BigFlavorAgent()
+    await agent.initialize()
+    logger.info("Startup: BigFlavorAgent initialized")
+
+    logger.info("Startup complete: backend ready to serve requests")
+
+    yield
+
+    logger.info("Shutdown: closing backend resources...")
+    # The agent owns its own DatabaseManager (created in BigFlavorAgent.initialize()),
+    # so close that pool too, not just the backend's.
+    if agent is not None and getattr(agent, "db_manager", None) is not None:
+        await agent.db_manager.close()
+        logger.info("Shutdown: agent DatabaseManager pool closed")
+    if db_manager is not None:
+        await db_manager.close()
+        logger.info("Shutdown: DatabaseManager pool closed")
+    agent = None
+    rag = None
+    db_manager = None
+    logger.info("Shutdown complete: backend resources released")
+
+
+app = FastAPI(title="BigFlavor Band Agent API", version="1.0.0", lifespan=lifespan)
 
 # CORS middleware for Next.js frontend
 app.add_middleware(
@@ -70,11 +115,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize agent and RAG system
-agent: Optional[BigFlavorAgent] = None
-rag: Optional[SongRAGSystem] = None
-db_manager: Optional[DatabaseManager] = None
 
 # Radio station state
 import time
@@ -134,33 +174,23 @@ active_listeners = {}
 
 
 async def get_agent() -> BigFlavorAgent:
-    """Dependency to get or create agent instance"""
-    global agent
+    """Dependency: return the agent initialized at startup."""
     if agent is None:
-        agent = BigFlavorAgent()
-        await agent.initialize()
+        raise HTTPException(status_code=503, detail="Agent not initialized")
     return agent
 
 
 async def get_rag() -> SongRAGSystem:
-    """Dependency to get or create RAG instance"""
-    global rag, db_manager
+    """Dependency: return the RAG system initialized at startup."""
     if rag is None:
-        # Initialize database manager if needed
-        if db_manager is None:
-            db_manager = DatabaseManager()
-            await db_manager.connect()
-        # Create RAG system with database manager
-        rag = SongRAGSystem(db_manager, use_clap=True)
+        raise HTTPException(status_code=503, detail="RAG system not initialized")
     return rag
 
 
 async def get_db() -> DatabaseManager:
-    """Dependency to get or create database manager instance"""
-    global db_manager
+    """Dependency: return the database manager initialized at startup."""
     if db_manager is None:
-        db_manager = DatabaseManager()
-        await db_manager.connect()
+        raise HTTPException(status_code=503, detail="Database not initialized")
     return db_manager
 
 
