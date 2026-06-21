@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, UserRole } from '@/lib/server-auth';
+import { backendAuthHeaders } from '@/lib/backend';
 
 export async function PUT(request: NextRequest) {
   try {
@@ -21,6 +22,7 @@ export async function PUT(request: NextRequest) {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
+        ...backendAuthHeaders('admin'),
       },
       body: JSON.stringify({
         user_id,

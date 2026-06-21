@@ -1,23 +1,29 @@
 """Tests for the backend_api router split (issue #7).
 
-These guard the structural refactor that decomposed the single ~890-line
-`backend_api.py` into per-concern routers plus a `RadioService`. They assert
-the externally observable contract is unchanged: every endpoint is still
-mounted at the same path/method, the radio playlist builder still applies the
-Liquidsoap path rewrite, and the audio-stream route still serves files with
-HTTP Range support.
+These guard the structural refactor that decomposed the single ~970-line
+`backend_api.py` into per-concern routers (`src/api/routers/*`) plus the radio
+domain logic in `src/api/radio_service.py` and shared dependencies in
+`src/api/dependencies.py`. They assert the externally observable contract is
+unchanged: every endpoint is still mounted at the same path/method, the radio
+playlist builder still applies the Liquidsoap path rewrite, and the audio-stream
+route still serves files with HTTP Range support.
 
-No live DB, no LLM, no real catalog — the audio dir is a temp dir pointed at
-via the module-level AUDIO_LIBRARY_DIR constant, and the RadioService is
-exercised directly.
+Radio state is process-external (issue #2): the playback/queue helpers operate on
+a plain state dict loaded from / saved back to RadioStateStore, so the queue tests
+drive those helpers (and the remove endpoint) with a fake store rather than an
+in-memory service object. No live DB, no LLM, no real catalog.
 """
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 
 import backend_api
-from src.api.radio_service import RadioService, _build_and_write_playlist, _find_audio_file
+from src.api import radio_service
+from src.api.radio_service import (
+    _build_and_write_playlist,
+    _find_audio_file,
+    advance_to_next_song,
+)
+from src.api.dependencies import get_radio_store
 
 
 # --- Routes are all still mounted at the same path/method ------------------
@@ -102,49 +108,94 @@ def test_build_and_write_playlist_skips_songs_without_audio(tmp_path):
     assert playlist_file.read_text().splitlines() == ["#EXTM3U"]
 
 
-# --- RadioService queue/playback logic ------------------------------------
+# --- Radio queue/playback logic (state-dict helpers) ----------------------
 
-def test_advance_to_next_song_promotes_queue_head(tmp_path, monkeypatch):
-    svc = RadioService()
+def _state(**overrides):
+    state = {
+        "current_song": None,
+        "queue": [],
+        "is_playing": False,
+        "position": 0,
+        "last_update": 0,
+    }
+    state.update(overrides)
+    return state
+
+
+def test_advance_to_next_song_promotes_queue_head(monkeypatch):
     # Avoid touching the real /app playlist path during the test.
-    monkeypatch.setattr(svc, "write_playlist_file", lambda: None)
-    svc.radio_state["queue"] = [
-        {"id": 1, "title": "First"},
-        {"id": 2, "title": "Second"},
-    ]
+    monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
+    state = _state(queue=[{"id": 1, "title": "First"}, {"id": 2, "title": "Second"}])
 
-    svc.advance_to_next_song()
+    advance_to_next_song(state)
 
-    assert svc.radio_state["current_song"]["id"] == 1
-    assert svc.radio_state["is_playing"] is True
-    assert [s["id"] for s in svc.radio_state["queue"]] == [2]
+    assert state["current_song"]["id"] == 1
+    assert state["is_playing"] is True
+    assert [s["id"] for s in state["queue"]] == [2]
 
 
 def test_advance_with_empty_queue_stops_playback(monkeypatch):
-    svc = RadioService()
-    monkeypatch.setattr(svc, "write_playlist_file", lambda: None)
-    svc.radio_state["current_song"] = {"id": 5, "title": "Last"}
-    svc.radio_state["is_playing"] = True
+    monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
+    state = _state(current_song={"id": 5, "title": "Last"}, is_playing=True)
 
-    svc.advance_to_next_song()
+    advance_to_next_song(state)
 
-    assert svc.radio_state["current_song"] is None
-    assert svc.radio_state["is_playing"] is False
+    assert state["current_song"] is None
+    assert state["is_playing"] is False
 
 
-def test_remove_from_queue_drops_matching_song():
-    client = TestClient(backend_api.app)
-    from src.api.routers import radio as radio_router
+class FakeStore:
+    """Minimal RadioStateStore stand-in backed by an in-memory state dict."""
 
-    radio_router.radio_service.radio_state["queue"] = [
+    def __init__(self, state):
+        self._state = state
+        self.saved = False
+
+    async def load_state(self):
+        return self._state
+
+    async def save_state(self, state):
+        self._state = state
+        self.saved = True
+
+    async def count_active_listeners(self):
+        return 0
+
+    async def cleanup_stale_listeners(self):
+        pass
+
+    async def register_listener(self, listener_id):
+        pass
+
+
+_EDITOR_SECRET = "test-secret-value"
+
+
+def _editor_headers(monkeypatch):
+    monkeypatch.setenv("BACKEND_API_SECRET", _EDITOR_SECRET)
+    return {"X-Service-Secret": _EDITOR_SECRET, "X-User-Role": "editor"}
+
+
+def test_remove_from_queue_drops_matching_song(monkeypatch):
+    monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
+    fake = FakeStore(_state(queue=[
         {"id": 1, "title": "Keep"},
         {"id": 2, "title": "Drop"},
-    ]
-    resp = client.post("/api/radio/queue/remove", json={"song_id": 2})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body == {"removed": True, "queue_length": 1}
-    assert [s["id"] for s in radio_router.radio_service.radio_state["queue"]] == [1]
+    ]))
+    backend_api.app.dependency_overrides[get_radio_store] = lambda: fake
+    try:
+        client = TestClient(backend_api.app)
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 2},
+            headers=_editor_headers(monkeypatch),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"removed": True, "queue_length": 1}
+        assert [s["id"] for s in fake._state["queue"]] == [1]
+        assert fake.saved is True
+    finally:
+        backend_api.app.dependency_overrides.clear()
 
 
 # --- Audio streaming route (Range support), AUDIO_LIBRARY_DIR patchable ----
@@ -155,9 +206,9 @@ def audio_client(tmp_path, monkeypatch):
     audio_library.mkdir()
     payload = bytes(range(256)) * 8
     (audio_library / "5_test-track.mp3").write_bytes(payload)
-    # The route resolves AUDIO_LIBRARY_DIR off the backend_api module at call
-    # time, so monkeypatching it here must flow through to the handler.
-    monkeypatch.setattr(backend_api, "AUDIO_LIBRARY_DIR", audio_library)
+    # The route resolves AUDIO_LIBRARY_DIR off src.api.radio_service at call time,
+    # so monkeypatching it there must flow through to the handler.
+    monkeypatch.setattr(radio_service, "AUDIO_LIBRARY_DIR", audio_library)
     return TestClient(backend_api.app), payload
 
 
@@ -183,7 +234,8 @@ def test_stream_audio_missing_song_returns_404(audio_client):
     assert resp.status_code == 404
 
 
-def test_find_audio_file_matches_song_id_prefix(tmp_path):
+def test_find_audio_file_matches_song_id_prefix(tmp_path, monkeypatch):
+    monkeypatch.setattr(radio_service, "AUDIO_LIBRARY_DIR", tmp_path)
     (tmp_path / "7_track.mp3").write_bytes(b"x")
-    assert _find_audio_file(7, tmp_path).name == "7_track.mp3"
-    assert _find_audio_file(8, tmp_path) is None
+    assert _find_audio_file(7).name == "7_track.mp3"
+    assert _find_audio_file(8) is None

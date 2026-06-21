@@ -1,4 +1,10 @@
-"""Search routes — call the RAG system directly (fast path, no LLM round-trip)."""
+"""Search + lyrics routes.
+
+Natural-language search goes through the agent; text/lyrics search hit the RAG
+system directly (fast path, no LLM round-trip). Lyrics lookups go through
+DatabaseManager methods (issue #8). Raw exceptions propagate to the centralized
+error handlers (issue #9).
+"""
 from fastapi import APIRouter, HTTPException, Depends
 
 from src.rag.big_flavor_rag import SongRAGSystem
@@ -17,24 +23,18 @@ async def natural_language_search(
     Natural language search using the agent to interpret the query
     and use the appropriate tools
     """
-    try:
-        agent_instance = await get_agent()
+    agent_instance = await get_agent()
 
-        # Use the agent's search_songs method to get both text and song data
-        result = await agent_instance.search_songs(request.query, request.limit)
+    # Use the agent's search_songs method to get both text and song data
+    result = await agent_instance.search_songs(request.query, request.limit)
 
-        return {
-            "query": request.query,
-            "search_summary": result.get("search_summary"),
-            "songs": result["songs"],
-            "total_found": result["total_found"],
-            "limit": request.limit
-        }
-    except Exception as e:
-        import traceback
-        print(f"ERROR in natural_language_search: {e}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "query": request.query,
+        "search_summary": result.get("search_summary"),
+        "songs": result["songs"],
+        "total_found": result["total_found"],
+        "limit": request.limit
+    }
 
 
 @router.post("/api/search/text")
@@ -43,14 +43,11 @@ async def search_by_text(
     rag: SongRAGSystem = Depends(get_rag)
 ):
     """Search songs by text description using semantic search"""
-    try:
-        results = await rag.search_by_text_description(
-            description=request.query,
-            limit=request.limit
-        )
-        return {"results": results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    results = await rag.search_by_text_description(
+        description=request.query,
+        limit=request.limit
+    )
+    return {"results": results}
 
 
 @router.post("/api/search/lyrics")
@@ -59,14 +56,11 @@ async def search_by_lyrics(
     rag: SongRAGSystem = Depends(get_rag)
 ):
     """Search songs by lyrics keywords"""
-    try:
-        results = await rag.search_lyrics_by_keyword(
-            keyword=request.query,
-            limit=request.limit
-        )
-        return {"results": results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    results = await rag.search_lyrics_by_keyword(
+        keyword=request.query,
+        limit=request.limit
+    )
+    return {"results": results}
 
 
 @router.get("/api/songs/{song_id}/lyrics")
@@ -75,18 +69,12 @@ async def get_song_lyrics(
     db: DatabaseManager = Depends(get_db)
 ):
     """Get lyrics for a specific song"""
-    try:
-        query = """
-            SELECT content as lyrics
-            FROM text_embeddings
-            WHERE song_id = $1 AND content_type = 'lyrics'
-        """
-        async with db.pool.acquire() as conn:
-            row = await conn.fetchrow(query, song_id)
+    if await db.get_song(song_id) is None:
+        raise HTTPException(status_code=404, detail="Song not found")
 
-        if row:
-            return {"lyrics": row["lyrics"]}
-        else:
-            return {"lyrics": "Lyrics not available for this song."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    lyrics = await db.get_song_lyrics(song_id)
+
+    if lyrics is not None:
+        return {"lyrics": lyrics}
+    else:
+        return {"lyrics": "Lyrics not available for this song."}
