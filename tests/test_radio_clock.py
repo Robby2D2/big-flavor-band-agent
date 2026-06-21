@@ -16,12 +16,18 @@ import time
 import pytest
 
 import backend_api
+from src.api import radio_service
 
 
 @pytest.fixture(autouse=True)
 def stub_playlist_writer(monkeypatch):
-    """No real playlist writes; advance_to_next_song calls write_playlist_file(state)."""
-    monkeypatch.setattr(backend_api, "write_playlist_file", lambda *a, **k: None)
+    """No real playlist writes; advance_to_next_song calls write_playlist_file(state).
+
+    The clock/top-up helpers live in src.api.radio_service and call each other by
+    that module's names, so patches must target radio_service (not the backend_api
+    re-export) to intercept the internal calls.
+    """
+    monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
     yield
 
 
@@ -94,7 +100,7 @@ async def test_auto_populate_fills_queue_when_low(monkeypatch):
     async def fake_get_agent():
         return FakeAgent()
 
-    monkeypatch.setattr(backend_api, "get_agent", fake_get_agent)
+    monkeypatch.setattr(radio_service, "get_agent", fake_get_agent)
 
     state = _state(queue=[])
     await backend_api.auto_populate_queue(state)
@@ -111,7 +117,7 @@ async def test_auto_populate_skips_when_queue_full(monkeypatch):
         called = True
         raise AssertionError("agent must not be called when queue is full")
 
-    monkeypatch.setattr(backend_api, "get_agent", fake_get_agent)
+    monkeypatch.setattr(radio_service, "get_agent", fake_get_agent)
 
     state = _state(queue=[_song(i) for i in range(6)])
     await backend_api.auto_populate_queue(state)

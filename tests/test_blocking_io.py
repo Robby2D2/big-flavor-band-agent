@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend_api
+from src.api import radio_service
 
 
 def test_build_and_write_playlist_writes_m3u_with_path_rewrite(tmp_path):
@@ -62,7 +63,9 @@ def audio_client(tmp_path, monkeypatch):
     audio_library.mkdir()
     payload = bytes(range(256)) * 8  # 2048 bytes of deterministic content
     (audio_library / "5_test-track.mp3").write_bytes(payload)
-    monkeypatch.setattr(backend_api, "AUDIO_LIBRARY_DIR", audio_library)
+    # _find_audio_file resolves AUDIO_LIBRARY_DIR off src.api.radio_service at
+    # call time, so the patch must target that module.
+    monkeypatch.setattr(radio_service, "AUDIO_LIBRARY_DIR", audio_library)
     return TestClient(backend_api.app), payload
 
 
