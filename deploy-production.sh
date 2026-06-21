@@ -36,20 +36,38 @@ source .env.production
 # Check critical environment variables
 MISSING_VARS=0
 
-if [ -z "$ANTHROPIC_API_KEY" ] || [ "$ANTHROPIC_API_KEY" = "sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" ]; then
-    echo -e "${RED}ERROR: ANTHROPIC_API_KEY not configured${NC}"
+# Database + backend trust boundary (always required in production)
+if [ -z "$POSTGRES_PASSWORD" ] || [[ "$POSTGRES_PASSWORD" == *your_secure_database_password* ]]; then
+    echo -e "${RED}ERROR: POSTGRES_PASSWORD not configured${NC}"
     MISSING_VARS=1
 fi
 
-if [ -z "$AUTH0_SECRET" ] || [ "$AUTH0_SECRET" = "your_long_random_secret_string_here_minimum_32_characters" ]; then
-    echo -e "${RED}ERROR: AUTH0_SECRET not configured${NC}"
+if [ -z "$BACKEND_API_SECRET" ] || [[ "$BACKEND_API_SECRET" == *your_backend_api_secret* ]]; then
+    echo -e "${RED}ERROR: BACKEND_API_SECRET not configured${NC}"
     echo "Generate one with: openssl rand -hex 32"
     MISSING_VARS=1
 fi
 
-if [ -z "$AUTH0_CLIENT_ID" ] || [ "$AUTH0_CLIENT_ID" = "your_client_id_here" ]; then
-    echo -e "${RED}ERROR: AUTH0_CLIENT_ID not configured${NC}"
+# Google OAuth (frontend sign-in)
+if [ -z "$GOOGLE_CLIENT_ID" ] || [[ "$GOOGLE_CLIENT_ID" == *your_google_client_id* ]]; then
+    echo -e "${RED}ERROR: GOOGLE_CLIENT_ID not configured${NC}"
     MISSING_VARS=1
+fi
+
+if [ -z "$GOOGLE_CLIENT_SECRET" ] || [[ "$GOOGLE_CLIENT_SECRET" == *your_google_client_secret* ]]; then
+    echo -e "${RED}ERROR: GOOGLE_CLIENT_SECRET not configured${NC}"
+    MISSING_VARS=1
+fi
+
+# Anthropic key is only required when using the hosted LLM provider.
+LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+if [ "$LLM_PROVIDER" = "anthropic" ]; then
+    if [ -z "$ANTHROPIC_API_KEY" ] || [[ "$ANTHROPIC_API_KEY" == *xxxxx* ]]; then
+        echo -e "${RED}ERROR: ANTHROPIC_API_KEY not configured (required when LLM_PROVIDER=anthropic)${NC}"
+        MISSING_VARS=1
+    fi
+else
+    echo -e "${GREEN}✓ LLM_PROVIDER=$LLM_PROVIDER (Anthropic key not required)${NC}"
 fi
 
 if [ $MISSING_VARS -eq 1 ]; then
@@ -105,7 +123,7 @@ sleep 10
 # Pull the local LLM model when running with the Ollama provider.
 # The model is required for the agent to work, so we download it as part of
 # the deploy instead of relying on a separate manual setup step.
-LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+LLM_PROVIDER=${LLM_PROVIDER:-ollama}
 if [ "$LLM_PROVIDER" = "ollama" ]; then
     OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:14b}
     echo ""

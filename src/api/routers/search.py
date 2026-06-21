@@ -140,6 +140,26 @@ async def search_hybrid(
     return {"results": results}
 
 
+@router.get("/api/songs/{song_id}/related")
+async def get_related_songs(
+    song_id: int,
+    limit: int = 10,
+    rag: SongRAGSystem = Depends(get_rag),
+    db: DatabaseManager = Depends(get_db)
+):
+    """Find catalog songs that sound like the given song (audio more-like-this).
+
+    Returns a ranked list (most similar first) of other catalog songs based on
+    the source song's stored audio embedding. A valid song with no stored
+    embedding yields an empty list rather than an error.
+    """
+    if await db.get_song(song_id) is None:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    results = await rag.search_related_songs(song_id, limit=limit)
+    return {"results": results}
+
+
 @router.get("/api/songs/{song_id}/lyrics")
 async def get_song_lyrics(
     song_id: int,
