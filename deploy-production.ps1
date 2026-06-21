@@ -33,21 +33,38 @@ foreach ($line in $envContent) {
 # Check critical environment variables
 $missingVars = 0
 
-if (-not $envVars["ANTHROPIC_API_KEY"] -or $envVars["ANTHROPIC_API_KEY"] -like "*xxxxx*") {
-    Write-Host "ERROR: ANTHROPIC_API_KEY not configured" -ForegroundColor Red
+# Database + backend trust boundary (always required in production)
+if (-not $envVars["POSTGRES_PASSWORD"] -or $envVars["POSTGRES_PASSWORD"] -like "*your_secure_database_password*") {
+    Write-Host "ERROR: POSTGRES_PASSWORD not configured" -ForegroundColor Red
     $missingVars++
 }
 
-if (-not $envVars["AUTH0_SECRET"] -or $envVars["AUTH0_SECRET"] -like "*your_long_random*") {
-    Write-Host "ERROR: AUTH0_SECRET not configured" -ForegroundColor Red
-    Write-Host "Generate one with PowerShell:" -ForegroundColor Yellow
-    Write-Host '  -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | % {[char]$_})' -ForegroundColor Cyan
+if (-not $envVars["BACKEND_API_SECRET"] -or $envVars["BACKEND_API_SECRET"] -like "*your_backend_api_secret*") {
+    Write-Host "ERROR: BACKEND_API_SECRET not configured" -ForegroundColor Red
+    Write-Host "Generate one with: openssl rand -hex 32" -ForegroundColor Yellow
     $missingVars++
 }
 
-if (-not $envVars["AUTH0_CLIENT_ID"] -or $envVars["AUTH0_CLIENT_ID"] -like "*your_client_id*") {
-    Write-Host "ERROR: AUTH0_CLIENT_ID not configured" -ForegroundColor Red
+# Google OAuth (frontend sign-in)
+if (-not $envVars["GOOGLE_CLIENT_ID"] -or $envVars["GOOGLE_CLIENT_ID"] -like "*your_google_client_id*") {
+    Write-Host "ERROR: GOOGLE_CLIENT_ID not configured" -ForegroundColor Red
     $missingVars++
+}
+
+if (-not $envVars["GOOGLE_CLIENT_SECRET"] -or $envVars["GOOGLE_CLIENT_SECRET"] -like "*your_google_client_secret*") {
+    Write-Host "ERROR: GOOGLE_CLIENT_SECRET not configured" -ForegroundColor Red
+    $missingVars++
+}
+
+# Anthropic key is only required when using the hosted LLM provider.
+$llmProvider = if ($envVars["LLM_PROVIDER"]) { $envVars["LLM_PROVIDER"] } else { "ollama" }
+if ($llmProvider -eq "anthropic") {
+    if (-not $envVars["ANTHROPIC_API_KEY"] -or $envVars["ANTHROPIC_API_KEY"] -like "*xxxxx*") {
+        Write-Host "ERROR: ANTHROPIC_API_KEY not configured (required when LLM_PROVIDER=anthropic)" -ForegroundColor Red
+        $missingVars++
+    }
+} else {
+    Write-Host "[OK]LLM_PROVIDER=$llmProvider (Anthropic key not required)" -ForegroundColor Green
 }
 
 if ($missingVars -gt 0) {
@@ -56,13 +73,13 @@ if ($missingVars -gt 0) {
     exit 1
 }
 
-Write-Host "✓ Environment configuration validated" -ForegroundColor Green
+Write-Host "[OK]Environment configuration validated" -ForegroundColor Green
 Write-Host ""
 
 # Check if Docker is running
 try {
     docker info | Out-Null
-    Write-Host "✓ Docker is running" -ForegroundColor Green
+    Write-Host "[OK]Docker is running" -ForegroundColor Green
 } catch {
     Write-Host "ERROR: Docker is not running" -ForegroundColor Red
     Write-Host "Please start Docker Desktop and try again" -ForegroundColor Yellow
@@ -104,7 +121,7 @@ Start-Sleep -Seconds 10
 # Pull the local LLM model when running with the Ollama provider.
 # The model is required for the agent to work, so we download it as part of
 # the deploy instead of relying on a separate manual setup step.
-$llmProvider = if ($envVars["LLM_PROVIDER"]) { $envVars["LLM_PROVIDER"] } else { "anthropic" }
+$llmProvider = if ($envVars["LLM_PROVIDER"]) { $envVars["LLM_PROVIDER"] } else { "ollama" }
 if ($llmProvider -eq "ollama") {
     $ollamaModel = if ($envVars["OLLAMA_MODEL"]) { $envVars["OLLAMA_MODEL"] } else { "qwen2.5:14b" }
     Write-Host ""
@@ -129,10 +146,10 @@ if ($llmProvider -eq "ollama") {
     } else {
         $installed = docker exec bigflavor-ollama ollama list 2>$null | Select-String ([regex]::Escape($ollamaModel))
         if ($installed) {
-            Write-Host "✓ Model $ollamaModel already present" -ForegroundColor Green
+            Write-Host "[OK]Model $ollamaModel already present" -ForegroundColor Green
         } else {
             docker exec bigflavor-ollama ollama pull $ollamaModel
-            Write-Host "✓ Model $ollamaModel ready" -ForegroundColor Green
+            Write-Host "[OK]Model $ollamaModel ready" -ForegroundColor Green
         }
     }
 }
@@ -145,7 +162,7 @@ $healthy = $false
 while ($count -lt $retries) {
     $status = docker-compose ps
     if ($status -match "healthy") {
-        Write-Host "✓ Services are healthy" -ForegroundColor Green
+        Write-Host "[OK]Services are healthy" -ForegroundColor Green
         $healthy = $true
         break
     }
