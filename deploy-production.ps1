@@ -33,20 +33,34 @@ foreach ($line in $envContent) {
 # Check critical environment variables
 $missingVars = 0
 
-if (-not $envVars["ANTHROPIC_API_KEY"] -or $envVars["ANTHROPIC_API_KEY"] -like "*xxxxx*") {
-    Write-Host "ERROR: ANTHROPIC_API_KEY not configured" -ForegroundColor Red
+# Shared secret the Next.js BFF presents to the FastAPI backend. Without it the
+# backend fails closed (401 on every protected route).
+if (-not $envVars["BACKEND_API_SECRET"] -or $envVars["BACKEND_API_SECRET"] -like "*your_backend_api_secret*") {
+    Write-Host "ERROR: BACKEND_API_SECRET not configured" -ForegroundColor Red
+    Write-Host "Generate one with:" -ForegroundColor Yellow
+    Write-Host "  openssl rand -hex 32" -ForegroundColor Cyan
     $missingVars++
 }
 
-if (-not $envVars["AUTH0_SECRET"] -or $envVars["AUTH0_SECRET"] -like "*your_long_random*") {
-    Write-Host "ERROR: AUTH0_SECRET not configured" -ForegroundColor Red
-    Write-Host "Generate one with PowerShell:" -ForegroundColor Yellow
-    Write-Host '  -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | % {[char]$_})' -ForegroundColor Cyan
+if (-not $envVars["POSTGRES_PASSWORD"] -or $envVars["POSTGRES_PASSWORD"] -like "*your_secure_database_password*") {
+    Write-Host "ERROR: POSTGRES_PASSWORD not configured" -ForegroundColor Red
     $missingVars++
 }
 
-if (-not $envVars["AUTH0_CLIENT_ID"] -or $envVars["AUTH0_CLIENT_ID"] -like "*your_client_id*") {
-    Write-Host "ERROR: AUTH0_CLIENT_ID not configured" -ForegroundColor Red
+# Anthropic key is only required when using the Anthropic LLM provider.
+$llmProviderCheck = if ($envVars["LLM_PROVIDER"]) { $envVars["LLM_PROVIDER"] } else { "ollama" }
+if ($llmProviderCheck -eq "anthropic" -and (-not $envVars["ANTHROPIC_API_KEY"] -or $envVars["ANTHROPIC_API_KEY"] -like "*xxxxx*")) {
+    Write-Host "ERROR: ANTHROPIC_API_KEY not configured (required when LLM_PROVIDER=anthropic)" -ForegroundColor Red
+    $missingVars++
+}
+
+if (-not $envVars["GOOGLE_CLIENT_ID"] -or $envVars["GOOGLE_CLIENT_ID"] -like "*your_google_client_id*") {
+    Write-Host "ERROR: GOOGLE_CLIENT_ID not configured" -ForegroundColor Red
+    $missingVars++
+}
+
+if (-not $envVars["GOOGLE_CLIENT_SECRET"] -or $envVars["GOOGLE_CLIENT_SECRET"] -like "*your_google_client_secret*") {
+    Write-Host "ERROR: GOOGLE_CLIENT_SECRET not configured" -ForegroundColor Red
     $missingVars++
 }
 
