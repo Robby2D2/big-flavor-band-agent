@@ -240,17 +240,15 @@ class UserCreate(BaseModel):
 
 
 @app.post("/api/users")
-async def create_or_update_user(user: UserCreate):
+async def create_or_update_user(
+    user: UserCreate,
+    db: DatabaseManager = Depends(get_db)
+):
     """Create or update a user in the database"""
     try:
-        db_manager = DatabaseManager()
-        await db_manager.connect()
-
-        result = await db_manager.upsert_user(
+        result = await db.upsert_user(
             user.id, user.email, user.name, user.picture
         )
-
-        await db_manager.close()
 
         return {
             "id": result['id'],
@@ -266,15 +264,13 @@ async def create_or_update_user(user: UserCreate):
 
 
 @app.get("/api/users/{user_id}/role")
-async def get_user_role(user_id: str):
+async def get_user_role(
+    user_id: str,
+    db: DatabaseManager = Depends(get_db)
+):
     """Get a user's role from the database"""
     try:
-        db_manager = DatabaseManager()
-        await db_manager.connect()
-
-        role = await db_manager.get_user_role(user_id)
-
-        await db_manager.close()
+        role = await db.get_user_role(user_id)
 
         if role is None:
             raise HTTPException(status_code=404, detail="User not found")
@@ -288,15 +284,10 @@ async def get_user_role(user_id: str):
 
 # Admin endpoints
 @app.get("/api/admin/users")
-async def get_all_users():
+async def get_all_users(db: DatabaseManager = Depends(get_db)):
     """Get all users (admin only)"""
     try:
-        db_manager = DatabaseManager()
-        await db_manager.connect()
-
-        results = await db_manager.list_users()
-
-        await db_manager.close()
+        results = await db.list_users()
 
         users = [
             {
@@ -322,7 +313,10 @@ class UpdateRoleRequest(BaseModel):
 
 
 @app.put("/api/admin/users/role")
-async def update_user_role(request: UpdateRoleRequest):
+async def update_user_role(
+    request: UpdateRoleRequest,
+    db: DatabaseManager = Depends(get_db)
+):
     """Update a user's role (admin only)"""
     try:
         # Validate role
@@ -330,12 +324,7 @@ async def update_user_role(request: UpdateRoleRequest):
         if request.role not in valid_roles:
             raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}")
 
-        db_manager = DatabaseManager()
-        await db_manager.connect()
-
-        result = await db_manager.set_user_role(request.user_id, request.role)
-
-        await db_manager.close()
+        result = await db.set_user_role(request.user_id, request.role)
 
         if not result:
             raise HTTPException(status_code=404, detail="User not found")
