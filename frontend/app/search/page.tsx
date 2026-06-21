@@ -18,11 +18,13 @@ export default function SearchPage() {
   const [error, setError] = useState<string | null>(null);
   const [currentSong, setCurrentSong] = useState<any>(null);
   const [searchSummary, setSearchSummary] = useState<SearchSummary | null>(null);
+  const [similarTo, setSimilarTo] = useState<string | null>(null);
 
   const handleSearch = async (query: string) => {
     setLoading(true);
     setError(null);
     setSearchSummary(null);
+    setSimilarTo(null);
 
     try {
       const response = await fetch('/api/search', {
@@ -51,6 +53,28 @@ export default function SearchPage() {
     setCurrentSong(song);
   };
 
+  const handleFindSimilar = async (song: any) => {
+    setLoading(true);
+    setError(null);
+    setSearchSummary(null);
+    setSimilarTo(song.title);
+
+    try {
+      const response = await fetch(`/api/songs/${song.id}/related?limit=20`);
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to find similar songs');
+      }
+      setResults(data.results || []);
+    } catch (err: any) {
+      setError(err.message || 'An error occurred');
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       <Header
@@ -77,8 +101,16 @@ export default function SearchPage() {
             </div>
           )}
 
-          {!loading && (results.length > 0 || searchSummary) && (
+          {!loading && (results.length > 0 || searchSummary || similarTo) && (
             <div className="mt-6">
+              {/* Similar-to banner */}
+              {similarTo && (
+                <div className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+                  Songs that sound like{' '}
+                  <span className="font-semibold">{similarTo}</span>
+                </div>
+              )}
+
               {/* Search Summary Card */}
               {searchSummary && (
                 <div className="mb-6 bg-gradient-to-br from-indigo-50 to-purple-50 dark:from-indigo-900/40 dark:to-purple-900/40 rounded-xl p-6 border border-indigo-100 dark:border-indigo-800 shadow-sm">
@@ -135,11 +167,17 @@ export default function SearchPage() {
               )}
 
               {results.length > 0 && (
-                <SongList songs={results} onPlay={handlePlaySong} />
+                <SongList
+                  songs={results}
+                  onPlay={handlePlaySong}
+                  onFindSimilar={handleFindSimilar}
+                />
               )}
               {results.length === 0 && (
                 <div className="text-center text-gray-600 dark:text-gray-400">
-                  No songs found. Try a different search.
+                  {similarTo
+                    ? 'No related songs available for this song.'
+                    : 'No songs found. Try a different search.'}
                 </div>
               )}
             </div>

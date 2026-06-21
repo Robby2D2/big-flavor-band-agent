@@ -914,12 +914,12 @@ class SongRAGSystem:
         logger.info(f"Title search for '{title}' found {len(results)} results")
         return results
     
-    async def get_song_embedding(self, song_id: str) -> Optional[Dict[str, Any]]:
+    async def get_song_embedding(self, song_id: int) -> Optional[Dict[str, Any]]:
         """
         Get stored embedding for a song.
-        
+
         Args:
-            song_id: Song ID
+            song_id: Song ID (integer)
         
         Returns:
             Embedding data or None
@@ -933,7 +933,44 @@ class SongRAGSystem:
             )
         
         return dict(row) if row else None
-    
+
+    async def search_related_songs(
+        self,
+        song_id: int,
+        limit: int = 10,
+        similarity_threshold: float = 0.0
+    ) -> List[Dict[str, Any]]:
+        """
+        Find catalog songs that are acoustically similar to a given song,
+        based on its stored audio embedding (audio "more-like-this").
+
+        Args:
+            song_id: Source song ID
+            limit: Maximum number of related songs to return
+            similarity_threshold: Minimum similarity score (0-1)
+
+        Returns:
+            Related songs ordered most-similar first. Empty list if the source
+            song has no stored audio embedding.
+        """
+        embedding_row = await self.get_song_embedding(song_id)
+        if not embedding_row or embedding_row.get('combined_embedding') is None:
+            logger.info(f"No audio embedding stored for song {song_id}; no related songs")
+            return []
+
+        # Fetch one extra so we can drop the source song itself without
+        # shrinking the requested result count.
+        results = await self.search_by_embedding(
+            embedding_row['combined_embedding'],
+            limit=limit + 1,
+            similarity_threshold=similarity_threshold
+        )
+
+        related = [r for r in results if str(r.get('song_id')) != str(song_id)]
+        related = related[:limit]
+        logger.info(f"Found {len(related)} related songs for song {song_id}")
+        return related
+
     async def find_songs_without_embeddings(self) -> List[Dict[str, Any]]:
         """
         Find songs that don't have audio embeddings yet.
