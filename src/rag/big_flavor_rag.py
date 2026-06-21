@@ -749,7 +749,66 @@ class SongRAGSystem:
         results = [_serialize_row(row) for row in rows]
         logger.info(f"Text search found {len(results)} results for '{description}' (semantic + keywords)")
         return results
-    
+
+    async def search_text_with_tempo(
+        self,
+        description: str,
+        min_tempo: Optional[float] = None,
+        max_tempo: Optional[float] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Hybrid text + tempo search: match songs on a text/mood description and
+        keep only those whose tempo falls in the given BPM band (e.g. "calm" +
+        ~90 BPM). Runs entirely on the RAG read path, so it is deterministic.
+
+        Args:
+            description: Text/mood description (reuses search_by_text_description)
+            min_tempo: Minimum tempo in BPM (optional, inclusive)
+            max_tempo: Maximum tempo in BPM (optional, inclusive)
+            limit: Maximum number of results
+
+        Returns:
+            Text matches filtered to the tempo band, most-relevant first. If the
+            band is empty/invalid (min > max), returns an empty list.
+        """
+        if (
+            min_tempo is not None
+            and max_tempo is not None
+            and min_tempo > max_tempo
+        ):
+            logger.info(
+                f"Hybrid search band invalid (min {min_tempo} > max {max_tempo}); no results"
+            )
+            return []
+
+        # Over-fetch from the text path so the tempo filter still has room to
+        # return up to `limit` matches.
+        text_results = await self.search_by_text_description(
+            description=description,
+            limit=limit * 5
+        )
+
+        if min_tempo is None and max_tempo is None:
+            return text_results[:limit]
+
+        def in_band(song: Dict[str, Any]) -> bool:
+            tempo = song.get('tempo_bpm')
+            if tempo is None:
+                return False
+            if min_tempo is not None and tempo < min_tempo:
+                return False
+            if max_tempo is not None and tempo > max_tempo:
+                return False
+            return True
+
+        filtered = [song for song in text_results if in_band(song)][:limit]
+        logger.info(
+            f"Hybrid text+tempo search found {len(filtered)} results for "
+            f"'{description}' in [{min_tempo}, {max_tempo}] BPM"
+        )
+        return filtered
+
     async def search_lyrics_by_keyword(
         self,
         keyword: str,
@@ -914,7 +973,7 @@ class SongRAGSystem:
         logger.info(f"Title search for '{title}' found {len(results)} results")
         return results
     
-    async def get_song_embedding(self, song_id: str) -> Optional[Dict[str, Any]]:
+    async def get_song_embedding(self, song_id: int) -> Optional[Dict[str, Any]]:
         """
         Get stored embedding for a song.
         
@@ -933,7 +992,43 @@ class SongRAGSystem:
             )
         
         return dict(row) if row else None
-    
+
+    async def search_related_songs(
+        self,
+        song_id: int,
+        limit: int = 10,
+        similarity_threshold: float = 0.0
+    ) -> List[Dict[str, Any]]:
+        """
+        Find catalog songs acoustically similar to a given song, based on its
+        stored audio embedding (audio "more-like-this"). Deterministic — no
+        feature extraction, just a vector search on the stored embedding.
+
+        Args:
+            song_id: Source song ID
+            limit: Maximum number of related songs to return
+            similarity_threshold: Minimum similarity score (0-1)
+
+        Returns:
+            Related songs ordered most-similar first. Empty list if the source
+            song has no stored audio embedding.
+        """
+        embedding_row = await self.get_song_embedding(song_id)
+        if not embedding_row or embedding_row.get('combined_embedding') is None:
+            logger.info(f"No audio embedding stored for song {song_id}; no related songs")
+            return []
+
+        # Fetch one extra so we can drop the source song itself without
+        # shrinking the requested result count.
+        results = await self.search_by_embedding(
+            embedding_row['combined_embedding'],
+            limit=limit + 1,
+            similarity_threshold=similarity_threshold
+        )
+
+        related = [r for r in results if str(r.get('song_id')) != str(song_id)]
+        return related[:limit]
+
     async def find_songs_without_embeddings(self) -> List[Dict[str, Any]]:
         """
         Find songs that don't have audio embeddings yet.

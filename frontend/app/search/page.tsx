@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Header from '@/components/Header';
-import SearchBar from '@/components/SearchBar';
+import SearchBar, { SearchParams } from '@/components/SearchBar';
 import SongList from '@/components/SongList';
 import AudioPlayer from '@/components/AudioPlayer';
 
@@ -19,29 +19,89 @@ export default function SearchPage() {
   const [currentSong, setCurrentSong] = useState<any>(null);
   const [searchSummary, setSearchSummary] = useState<SearchSummary | null>(null);
 
-  const handleSearch = async (query: string) => {
+  const postJson = async (url: string, body: unknown) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || 'Search failed');
+    }
+    return data;
+  };
+
+  // Resolve a typed song title to a catalog song id via the text-search path,
+  // so the audio-similarity mode can reference an existing catalog song.
+  const resolveReferenceSongId = async (title: string): Promise<number> => {
+    const data = await postJson('/api/search/text', { query: title, limit: 1 });
+    const match = (data.results || [])[0];
+    if (!match) {
+      throw new Error(`No catalog song found matching "${title}".`);
+    }
+    return match.id;
+  };
+
+  const handleSearch = async (params: SearchParams) => {
     setLoading(true);
     setError(null);
     setSearchSummary(null);
 
     try {
-      const response = await fetch('/api/search', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ query, limit: 20 }),
-      });
+      let data: any;
 
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Search failed');
+      switch (params.mode) {
+        case 'natural':
+          data = await postJson('/api/search', {
+            query: params.query,
+            limit: 20,
+          });
+          setSearchSummary(data.search_summary || null);
+          break;
+        case 'text':
+          data = await postJson('/api/search/text', {
+            query: params.query,
+            limit: 20,
+          });
+          break;
+        case 'lyrics':
+          data = await postJson('/api/search/lyrics', {
+            query: params.query,
+            limit: 20,
+          });
+          break;
+        case 'tempo':
+          data = await postJson('/api/search/tempo', {
+            min_bpm: params.minBpm ?? null,
+            max_bpm: params.maxBpm ?? null,
+            limit: 20,
+          });
+          break;
+        case 'hybrid':
+          data = await postJson('/api/search/hybrid', {
+            query: params.query,
+            min_bpm: params.minBpm ?? null,
+            max_bpm: params.maxBpm ?? null,
+            limit: 20,
+          });
+          break;
+        case 'audio': {
+          const songId = await resolveReferenceSongId(params.query || '');
+          data = await postJson('/api/search/audio', {
+            song_id: songId,
+            limit: 20,
+          });
+          break;
+        }
+        default:
+          throw new Error('Unknown search mode');
       }
-      setSearchSummary(data.search_summary || null);
+
       setResults(data.songs || data.results || []);
     } catch (err: any) {
       setError(err.message || 'An error occurred');
+      setResults([]);
     } finally {
       setLoading(false);
     }
