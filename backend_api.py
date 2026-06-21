@@ -10,7 +10,8 @@ from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import Response, FileResponse
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import anthropic
 from pathlib import Path
@@ -183,27 +184,25 @@ import uuid
 # Playlist file path for Liquidsoap integration
 PLAYLIST_FILE = Path("/app/streaming/playlist/radio.m3u")
 
-def write_playlist_file(state: Dict[str, Any]):
-    """Write the given radio state's queue to the playlist file for Liquidsoap"""
-    try:
-        audio_library = Path("/app/audio_library")
+# Directory the per-song audio files live in (named "{song_id}_*.mp3"). Used by
+# the /api/audio/stream endpoint; the cwd in the container is /app, so this
+# resolves to the same /app/audio_library mount the playlist writer uses.
+AUDIO_LIBRARY_DIR = Path("audio_library")
 
-        # Build playlist with current song first, then queue
+
+def _build_and_write_playlist(current_song, queue, audio_library: Path, playlist_file: Path):
+    """Build the Liquidsoap .m3u from a state snapshot and write it.
+
+    Pure/synchronous: does the blocking filesystem work (directory glob + file
+    write). Run off the event loop via write_playlist_file() so a queue change
+    never blocks other requests. Operates on a snapshot (not the live radio
+    state) so it is safe to run in a worker thread.
+    """
+    try:
         playlist_lines = ["#EXTM3U"]
 
-        # Add current song if playing
-        if state["current_song"]:
-            song_id = state["current_song"].get("id")
-            title = state["current_song"].get("title", "Unknown")
-            audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
-            if audio_files:
-                playlist_lines.append(f"#EXTINF:-1,{title}")
-                # Convert path for Liquidsoap container: /app/audio_library -> /audio_library
-                liquidsoap_path = str(audio_files[0]).replace("/app/audio_library", "/audio_library")
-                playlist_lines.append(liquidsoap_path)
-
-        # Add queue
-        for song in state["queue"]:
+        # Current song first, then the queue.
+        for song in ([current_song] if current_song else []) + queue:
             song_id = song.get("id")
             title = song.get("title", "Unknown")
             audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
@@ -213,12 +212,33 @@ def write_playlist_file(state: Dict[str, Any]):
                 liquidsoap_path = str(audio_files[0]).replace("/app/audio_library", "/audio_library")
                 playlist_lines.append(liquidsoap_path)
 
-        # Write playlist file
-        PLAYLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        PLAYLIST_FILE.write_text("\n".join(playlist_lines))
+        playlist_file.parent.mkdir(parents=True, exist_ok=True)
+        playlist_file.write_text("\n".join(playlist_lines))
         logger.info("Playlist updated: %d songs", len(playlist_lines) // 2)
     except Exception:
         logger.exception("Error writing playlist")
+
+
+def write_playlist_file(state: Dict[str, Any]):
+    """Schedule a non-blocking playlist write for Liquidsoap.
+
+    Offloads the blocking glob + file write to a thread so the event loop is
+    never stalled. Operates on a snapshot of the given radio state; all callers
+    run on the event loop (async request handlers, or the radio background loop,
+    directly or via advance_to_next_song). The write is a fire-and-forget side
+    effect, so callers do not await the result.
+    """
+    current_song = state["current_song"]
+    queue = list(state["queue"])
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        None,
+        _build_and_write_playlist,
+        current_song,
+        queue,
+        Path("/app/audio_library"),
+        PLAYLIST_FILE,
+    )
 
 
 async def get_radio_store() -> RadioStateStore:
@@ -935,34 +955,32 @@ async def radio_stream_m3u(request: Request, store: RadioStateStore = Depends(ge
 
 
 # Audio streaming endpoint
+def _find_audio_file(song_id: int) -> Optional[Path]:
+    """Locate the audio file for a song id. Synchronous (does a directory glob)."""
+    audio_files = list(AUDIO_LIBRARY_DIR.glob(f"{song_id}_*.mp3"))
+    return audio_files[0] if audio_files else None
+
+
 @app.get("/api/audio/stream/{song_id}")
 async def stream_audio(song_id: int):
     """
-    Stream audio file for a song
+    Stream audio file for a song.
+
+    Uses FileResponse so the file is sent off the event loop (no blocking
+    read in the request path) and HTTP Range requests are honored natively
+    (206 Partial Content), enabling seeking in the player.
     """
     try:
-        # Find the audio file directly (don't create RAG system - too expensive)
-        audio_library = Path("audio_library")
+        # Run the filesystem lookup in a thread so the event loop is not blocked.
+        audio_path = await run_in_threadpool(_find_audio_file, song_id)
 
-        # Look for file matching the song ID pattern
-        audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
-
-        if not audio_files:
+        if audio_path is None:
             raise HTTPException(status_code=404, detail=f"Audio file for song {song_id} not found")
 
-        audio_path = audio_files[0]
-
-        def iterfile():
-            with open(audio_path, mode="rb") as file_like:
-                yield from file_like
-
-        return StreamingResponse(
-            iterfile(),
+        return FileResponse(
+            audio_path,
             media_type="audio/mpeg",
-            headers={
-                "Content-Disposition": f"inline; filename={audio_path.name}",
-                "Accept-Ranges": "bytes"
-            }
+            headers={"Content-Disposition": f"inline; filename={audio_path.name}"},
         )
     except HTTPException:
         raise
