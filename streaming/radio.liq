@@ -13,9 +13,9 @@ settings.frame.audio.channels := 2
 
 # Dynamic playlist from backend
 # Reloads every 5 seconds to pick up queue changes
-# Use "randomize" mode with a single item to ensure source stays ready
+# Use "normal" mode to play songs in order
 radio_queue = playlist(
-  mode="randomize",
+  mode="normal",
   reload=5,
   reload_mode="watch",
   "/playlist/radio.m3u"

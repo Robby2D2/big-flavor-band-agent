@@ -42,11 +42,7 @@ from datetime import datetime
 import uuid
 
 radio_state = {
-    "current_song": None,  # {song_id, title, started_at, duration}
-    "queue": [],  # List of song objects
-    "is_playing": False,
-    "position": 0,  # Current position in seconds
-    "last_update": time.time()
+    "queue": [],  # List of song objects - Liquidsoap handles actual playback
 }
 
 # Playlist file path for Liquidsoap integration
@@ -56,22 +52,9 @@ def write_playlist_file():
     """Write current queue to playlist file for Liquidsoap"""
     try:
         audio_library = Path("/app/audio_library")
-
-        # Build playlist with current song first, then queue
         playlist_lines = ["#EXTM3U"]
 
-        # Add current song if playing
-        if radio_state["current_song"]:
-            song_id = radio_state["current_song"].get("id")
-            title = radio_state["current_song"].get("title", "Unknown")
-            audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
-            if audio_files:
-                playlist_lines.append(f"#EXTINF:-1,{title}")
-                # Convert path for Liquidsoap container: /app/audio_library -> /audio_library
-                liquidsoap_path = str(audio_files[0]).replace("/app/audio_library", "/audio_library")
-                playlist_lines.append(liquidsoap_path)
-
-        # Add queue
+        # Add all songs from queue
         for song in radio_state["queue"]:
             song_id = song.get("id")
             title = song.get("title", "Unknown")
@@ -85,7 +68,7 @@ def write_playlist_file():
         # Write playlist file
         PLAYLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
         PLAYLIST_FILE.write_text("\n".join(playlist_lines))
-        print(f"Playlist updated: {len(playlist_lines) // 2} songs")
+        print(f"Playlist updated with {len(radio_state['queue'])} songs")
     except Exception as e:
         print(f"Error writing playlist: {e}")
 
@@ -472,46 +455,6 @@ Explain your selections and the vibe you're creating."""
 
 
 # Radio Station endpoints
-def update_radio_position():
-    """Update current playback position based on elapsed time"""
-    global radio_state
-    if radio_state["is_playing"] and radio_state["current_song"]:
-        elapsed = time.time() - radio_state["last_update"]
-        radio_state["position"] += elapsed
-        radio_state["last_update"] = time.time()
-
-        # Check if song finished (only if duration is valid)
-        duration = radio_state["current_song"].get("duration")
-        if duration and duration > 0 and radio_state["position"] >= duration:
-            # Move to next song
-            print(f"Song finished: {radio_state['current_song'].get('title')} ({radio_state['position']:.1f}s / {duration:.1f}s)")
-            advance_to_next_song()
-
-
-def advance_to_next_song():
-    """Advance to the next song in queue"""
-    global radio_state
-
-    if len(radio_state["queue"]) > 0:
-        radio_state["current_song"] = radio_state["queue"].pop(0)
-        radio_state["position"] = 0
-        radio_state["is_playing"] = True
-        radio_state["last_update"] = time.time()
-
-        # Debug logging
-        duration = radio_state["current_song"].get("duration", "NOT SET")
-        print(f"Now playing: {radio_state['current_song'].get('title')} (duration: {duration}s)")
-
-        # Update playlist file for Liquidsoap
-        write_playlist_file()
-    else:
-        radio_state["current_song"] = None
-        radio_state["position"] = 0
-        radio_state["is_playing"] = False
-        print("Queue empty - stopping playback")
-
-        # Update playlist file for Liquidsoap
-        write_playlist_file()
 
 
 async def auto_populate_queue():
@@ -549,33 +492,16 @@ def cleanup_stale_listeners():
     for listener_id in stale_listeners:
         del active_listeners[listener_id]
 
-    # If no active listeners remain, pause the radio
-    if len(active_listeners) == 0 and radio_state["is_playing"]:
-        radio_state["is_playing"] = False
-        print("No active listeners - pausing radio")
-
 
 def register_listener(listener_id: str):
     """Register a listener as active"""
-    global active_listeners, radio_state
-
-    was_empty = len(active_listeners) == 0
+    global active_listeners
     active_listeners[listener_id] = time.time()
-
-    # If this is the first listener, start playing
-    if was_empty and not radio_state["is_playing"]:
-        if radio_state["current_song"] or len(radio_state["queue"]) > 0:
-            if not radio_state["current_song"] and len(radio_state["queue"]) > 0:
-                advance_to_next_song()
-            else:
-                radio_state["is_playing"] = True
-                radio_state["last_update"] = time.time()
-            print(f"First listener connected - starting playback")
 
 
 @app.get("/api/radio/state")
 async def get_radio_state(listener_id: str = None):
-    """Get current radio state (synchronized for all listeners)"""
+    """Get current radio state (queue management only - Liquidsoap handles playback)"""
     try:
         # Clean up stale listeners
         cleanup_stale_listeners()
@@ -587,19 +513,18 @@ async def get_radio_state(listener_id: str = None):
         # Register this listener
         register_listener(listener_id)
 
-        # Update position based on elapsed time
-        update_radio_position()
-
         # Auto-populate queue if needed
         await auto_populate_queue()
 
+        # Get first song as "current" for display purposes
+        current_song = radio_state["queue"][0] if len(radio_state["queue"]) > 0 else None
+
         return {
-            "current_song": radio_state["current_song"],
-            "queue": radio_state["queue"][:10],  # Only send next 10 songs
-            "is_playing": radio_state["is_playing"],
-            "position": radio_state["position"],
+            "current_song": current_song,  # First song in queue for display
+            "queue": radio_state["queue"],  # All songs in queue
+            "is_playing": len(radio_state["queue"]) > 0,
             "queue_length": len(radio_state["queue"]),
-            "listener_id": listener_id,  # Return listener ID for future requests
+            "listener_id": listener_id,
             "active_listeners": len(active_listeners)
         }
     except Exception as e:
@@ -607,39 +532,83 @@ async def get_radio_state(listener_id: str = None):
 
 
 class AddToQueueRequest(BaseModel):
-    message: str  # Natural language request for songs
+    message: Optional[str] = None  # Natural language request for songs
+    song_id: Optional[int] = None  # Specific song ID to add
 
 
 @app.post("/api/radio/queue/add")
 async def add_to_queue(
     request: AddToQueueRequest,
-    agent: BigFlavorAgent = Depends(get_agent)
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db)
 ):
     """Add songs to queue via DJ agent (all authenticated users)"""
     try:
-        # Use agent to find songs
-        result = await agent.search_songs(request.message, limit=20)
-
-        # Add to queue
         added_count = 0
-        for song in result["songs"]:
-            # Check if song not already in queue
-            if not any(s.get("id") == song.get("id") for s in radio_state["queue"]):
-                # Normalize field names: duration_seconds -> duration
-                if "duration_seconds" in song and "duration" not in song:
-                    song["duration"] = song["duration_seconds"]
-                radio_state["queue"].append(song)
-                added_count += 1
+        response_text = ""
 
-        # If nothing is playing, start playing
-        if not radio_state["current_song"] and len(radio_state["queue"]) > 0:
-            advance_to_next_song()
-        elif added_count > 0:
-            # Update playlist file even if we didn't start playback
+        # If song_id is provided, add that specific song
+        if request.song_id:
+            # Fetch song from database
+            query = """
+                SELECT id, title, genre, tempo_bpm, key, duration_seconds,
+                       mood, energy, recording_date
+                FROM songs
+                WHERE id = $1
+            """
+            async with db.pool.acquire() as conn:
+                row = await conn.fetchrow(query, request.song_id)
+
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Song ID {request.song_id} not found")
+
+            # Convert database row to song dict
+            song = {
+                "id": row["id"],
+                "title": row["title"],
+                "genre": row["genre"],
+                "tempo_bpm": row["tempo_bpm"],
+                "key": row["key"],
+                "duration": row["duration_seconds"],
+                "duration_seconds": row["duration_seconds"],
+                "mood": row["mood"],
+                "energy": row["energy"],
+                "recording_date": row["recording_date"].isoformat() if row["recording_date"] else None,
+            }
+
+            # Check if song not already in queue
+            if not any(s.get("id") == song["id"] for s in radio_state["queue"]):
+                radio_state["queue"].append(song)
+                added_count = 1
+                response_text = f"Added '{song['title']}' to the queue"
+            else:
+                response_text = f"'{song['title']}' is already in the queue"
+
+        # Otherwise, use agent to find songs by message
+        elif request.message:
+            # Use agent to find songs
+            result = await agent.search_songs(request.message, limit=20)
+
+            # Add to queue
+            for song in result["songs"]:
+                # Check if song not already in queue
+                if not any(s.get("id") == song.get("id") for s in radio_state["queue"]):
+                    # Normalize field names: duration_seconds -> duration
+                    if "duration_seconds" in song and "duration" not in song:
+                        song["duration"] = song["duration_seconds"]
+                    radio_state["queue"].append(song)
+                    added_count += 1
+
+            response_text = result["response"]
+        else:
+            raise HTTPException(status_code=400, detail="Either message or song_id is required")
+
+        # Update playlist file if songs were added
+        if added_count > 0:
             write_playlist_file()
 
         return {
-            "response": result["response"],
+            "response": response_text,
             "added_count": added_count,
             "queue_length": len(radio_state["queue"])
         }
@@ -649,15 +618,20 @@ async def add_to_queue(
 
 @app.post("/api/radio/skip")
 async def skip_song():
-    """Skip to next song (editor/admin only)"""
+    """Skip to next song (editor/admin only) - removes first song from queue"""
     try:
-        advance_to_next_song()
+        if len(radio_state["queue"]) > 0:
+            skipped = radio_state["queue"].pop(0)
+            print(f"Skipped: {skipped.get('title')}")
+            write_playlist_file()
 
         # Auto-populate if needed
         await auto_populate_queue()
 
+        current_song = radio_state["queue"][0] if len(radio_state["queue"]) > 0 else None
+
         return {
-            "current_song": radio_state["current_song"],
+            "current_song": current_song,
             "queue_length": len(radio_state["queue"])
         }
     except Exception as e:
@@ -686,31 +660,6 @@ async def remove_from_queue(request: RemoveFromQueueRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/radio/play")
-async def play_radio():
-    """Start/resume radio playback (editor/admin only)"""
-    try:
-        if not radio_state["current_song"] and len(radio_state["queue"]) > 0:
-            advance_to_next_song()
-        else:
-            radio_state["is_playing"] = True
-            radio_state["last_update"] = time.time()
-
-        return {"is_playing": radio_state["is_playing"]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/radio/pause")
-async def pause_radio():
-    """Pause radio playback (editor/admin only)"""
-    try:
-        update_radio_position()
-        radio_state["is_playing"] = False
-
-        return {"is_playing": radio_state["is_playing"]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Radio Stream endpoint (HLS playlist)
@@ -721,8 +670,6 @@ async def radio_stream(request: Request):
     Can be used with any HLS-compatible player (VLC, browsers with hls.js, etc.)
     """
     try:
-        update_radio_position()
-
         # Auto-populate queue if needed
         await auto_populate_queue()
 
@@ -737,18 +684,9 @@ async def radio_stream(request: Request):
             "#EXT-X-MEDIA-SEQUENCE:0",
         ]
 
-        # Add current song if playing
-        if radio_state["current_song"]:
-            duration = radio_state["current_song"].get("duration", 180)
-            title = radio_state["current_song"].get("title", "Unknown")
-            song_id = radio_state["current_song"].get("id")
-
-            playlist_lines.append(f"#EXTINF:{duration},{title}")
-            playlist_lines.append(f"{base_url}/api/audio/stream/{song_id}")
-
-        # Add upcoming songs from queue
+        # Add all songs from queue
         for song in radio_state["queue"][:10]:  # Next 10 songs
-            duration = song.get("duration", 180)
+            duration = song.get("duration", song.get("duration_seconds", 180))
             title = song.get("title", "Unknown")
             song_id = song.get("id")
 
@@ -778,8 +716,6 @@ async def radio_stream_m3u(request: Request):
     Compatible with most media players (VLC, Winamp, etc.)
     """
     try:
-        update_radio_position()
-
         # Auto-populate queue if needed
         await auto_populate_queue()
 
@@ -789,18 +725,9 @@ async def radio_stream_m3u(request: Request):
         # Build M3U playlist
         playlist_lines = ["#EXTM3U"]
 
-        # Add current song if playing
-        if radio_state["current_song"]:
-            duration = int(radio_state["current_song"].get("duration", 180))
-            title = radio_state["current_song"].get("title", "Unknown")
-            song_id = radio_state["current_song"].get("id")
-
-            playlist_lines.append(f"#EXTINF:{duration},{title}")
-            playlist_lines.append(f"{base_url}/api/audio/stream/{song_id}")
-
-        # Add upcoming songs from queue
+        # Add all songs from queue
         for song in radio_state["queue"][:10]:
-            duration = int(song.get("duration", 180))
+            duration = int(song.get("duration", song.get("duration_seconds", 180)))
             title = song.get("title", "Unknown")
             song_id = song.get("id")
 

@@ -38,11 +38,11 @@ export async function POST(request: NextRequest) {
     await requireAuth(UserRole.LISTENER);
 
     const body = await request.json();
-    const { message } = body;
+    const { message, song_id } = body;
 
-    if (!message) {
+    if (!message && !song_id) {
       return NextResponse.json(
-        { error: 'message is required' },
+        { error: 'message or song_id is required' },
         { status: 400 }
       );
     }
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(message ? { message } : { song_id }),
     });
 
     if (!response.ok) {

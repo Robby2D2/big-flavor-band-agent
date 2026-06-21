@@ -58,7 +58,7 @@ export default function SongList({ songs, onPlay, onAddToQueue }: SongListProps)
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          message: `Add "${song.title}" to the queue`,
+          song_id: song.id,
         }),
       });
 
