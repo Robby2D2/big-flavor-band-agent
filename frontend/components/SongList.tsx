@@ -26,9 +26,10 @@ interface SongListProps {
   songs: Song[];
   onPlay: (song: Song) => void;
   onAddToQueue?: (song: Song) => void;
+  onFindSimilar?: (song: Song) => void;
 }
 
-export default function SongList({ songs, onPlay, onAddToQueue }: SongListProps) {
+export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar }: SongListProps) {
   const [addingToQueue, setAddingToQueue] = useState<number | null>(null);
   const [queueMessage, setQueueMessage] = useState<{ id: number; message: string } | null>(null);
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
@@ -186,6 +187,20 @@ export default function SongList({ songs, onPlay, onAddToQueue }: SongListProps)
 
                   {openMenuId === song.id && (
                     <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-10">
+                      {onFindSimilar && (
+                        <button
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            onFindSimilar(song);
+                          }}
+                          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 first:rounded-t-lg border-b border-gray-100 dark:border-gray-700"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                          </svg>
+                          Find similar
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           setOpenMenuId(null);
