@@ -9,6 +9,17 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-20 — First tagged release `v0.1.0` (release-manager)
+Adopted `vX.Y.Z` git-tag versioning. Cut the **first release `v0.1.0`** from `main` (HEAD `775e747`,
+44 commits, no prior tag) and published a GitHub Release with auto-generated notes:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.1.0. No issues notified — the
+initial history has no `#NN` PR references in commit subjects, so there were no linked closed issues.
+Sanity gate skipped (Docker stack not running locally — infra, not a `main` error). The hygiene work
+on `fix/container-config-hygiene-11` (`97c4eb6`) was **not** merged to `main` and is correctly out of
+this release.
+
+---
+
 ## Project snapshot (as of 2026-06-19)
 
 AI music-discovery & production assistant over the Big Flavor Band catalog (~1,300 songs).
@@ -101,4 +112,5 @@ version, `15b3901`, was superseded by the Python implementation.)
 - **Hot reload:** restart `bigflavor-backend`, don't rebuild (source is volume-mounted). Liquidsoap
   config changes need a **no-cache** rebuild.
 - **Schema changes are migrations** under `database/sql/migrations/`, not edits to `init/*.sql`.
-- No git tags / no formal test suite yet — see [TESTING.md](TESTING.md).
+- **Releases are git tags `vX.Y.Z` on `main`** (first: `v0.1.0`, 2026-06-20); patch-bump by default,
+  minor-bump if the range adds a clear feature. No formal test suite yet — see [TESTING.md](TESTING.md).
