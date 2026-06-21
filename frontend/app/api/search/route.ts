@@ -33,6 +33,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(data);
   } catch (error: any) {
     console.error('Search error:', error);
+
+    // Surface auth failures as 401/403 with a clear message instead of a
+    // generic 500, so the UI can tell the user to log in.
+    if (error.message?.startsWith('Unauthorized')) {
+      return NextResponse.json(
+        { error: 'Please log in to search songs.' },
+        { status: 401 }
+      );
+    }
+    if (error.message?.startsWith('Forbidden')) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 403 }
+      );
+    }
+
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
       { status: 500 }

@@ -33,11 +33,11 @@ export default function SearchPage() {
         body: JSON.stringify({ query, limit: 20 }),
       });
 
-      if (!response.ok) {
-        throw new Error('Search failed');
-      }
+      const data = await response.json().catch(() => ({}));
 
-      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Search failed');
+      }
       setSearchSummary(data.search_summary || null);
       setResults(data.songs || data.results || []);
     } catch (err: any) {
