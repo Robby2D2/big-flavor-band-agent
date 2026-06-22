@@ -53,6 +53,14 @@ export default function Header({
                     Edit
                   </Link>
                 )}
+                {canEdit && (
+                  <Link
+                    href="/produce"
+                    className="text-gray-300 hover:text-white transition-colors"
+                  >
+                    Produce
+                  </Link>
+                )}
                 {canAdmin && (
                   <Link
                     href="/admin"

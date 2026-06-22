@@ -27,7 +27,7 @@ from src.api_errors import register_error_handlers
 from database import DatabaseManager
 
 from src.api import dependencies as deps
-from src.api.routers import admin, search, agent as agent_router, radio, tools
+from src.api.routers import admin, search, agent as agent_router, radio, tools, produce
 from src.api.radio_service import radio_background_loop
 
 # Re-exported so the in-repo tests can import these names off this module (the
@@ -170,6 +170,7 @@ app.include_router(search.router)
 app.include_router(agent_router.router)
 app.include_router(radio.router)
 app.include_router(tools.router)
+app.include_router(produce.router)
 
 
 if __name__ == "__main__":
