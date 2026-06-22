@@ -243,6 +243,10 @@ export default function ProducePage() {
   }
 
   const analysisOk = analysis && analysis.status === 'success';
+  // Force reclean is a no-op under the not-cleaned selection (already-cleaned songs
+  // are excluded before the force check), so present it as non-actionable there.
+  const forceRecleanDisabled =
+    batchStatus?.status === 'running' || batchSelection === 'not_cleaned';
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -415,7 +419,13 @@ export default function ProducePage() {
               </label>
               <select
                 value={batchSelection}
-                onChange={(e) => setBatchSelection(e.target.value as BatchSelection)}
+                onChange={(e) => {
+                  const next = e.target.value as BatchSelection;
+                  setBatchSelection(next);
+                  // Force reclean only applies to the all-songs selection; clear it
+                  // when switching to not-cleaned so it can't appear checked-but-inert.
+                  if (next === 'not_cleaned') setBatchForceReclean(false);
+                }}
                 disabled={batchStatus?.status === 'running'}
                 className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
               >
@@ -424,16 +434,29 @@ export default function ProducePage() {
               </select>
             </div>
 
-            <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200 mb-2">
-              <input
-                type="checkbox"
-                checked={batchForceReclean}
-                onChange={(e) => setBatchForceReclean(e.target.checked)}
-                disabled={batchStatus?.status === 'running'}
-                className="h-4 w-4"
-              />
-              Force re-clean all (reprocess already-cleaned songs)
-            </label>
+            <div className="mb-2">
+              <label
+                className={`flex items-center gap-2 text-sm ${
+                  forceRecleanDisabled
+                    ? 'text-gray-400 dark:text-gray-500 cursor-not-allowed'
+                    : 'text-gray-800 dark:text-gray-200'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={batchForceReclean}
+                  onChange={(e) => setBatchForceReclean(e.target.checked)}
+                  disabled={forceRecleanDisabled}
+                  className="h-4 w-4 disabled:cursor-not-allowed"
+                />
+                Force re-clean all (reprocess already-cleaned songs)
+              </label>
+              {batchSelection === 'not_cleaned' && (
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Force reclean only applies to the <span className="font-medium">All songs</span> selection.
+                </p>
+              )}
+            </div>
 
             <button
               onClick={handleStartBatch}
