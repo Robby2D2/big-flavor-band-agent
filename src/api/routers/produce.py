@@ -413,9 +413,15 @@ async def approve_version(
             request.song_id, request.candidate_path, db, rag
         )
     except ValueError as exc:
-        # Path-safety / missing-file errors are client errors; publish failure is a 500.
-        status = 500 if str(exc) == "Failed to publish version" else 400
-        raise HTTPException(status_code=status, detail=str(exc))
+        # Missing resource -> 404, publish failure -> 500, other bad input -> 400.
+        message = str(exc)
+        if message == "Candidate file not found":
+            status = 404
+        elif message == "Failed to publish version":
+            status = 500
+        else:
+            status = 400
+        raise HTTPException(status_code=status, detail=message)
 
 
 @router.post("/api/produce/discard")
