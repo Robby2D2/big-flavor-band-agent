@@ -127,6 +127,18 @@ export default function AdminPage() {
       />
 
       <main className="container mx-auto px-4 py-8">
+        <div className="mb-6">
+          <a
+            href="/admin/produce"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            Open Producer Studio
+          </a>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
+            Audition, diff, and publish cleaned audio versions of catalog songs.
+          </p>
+        </div>
+
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white">

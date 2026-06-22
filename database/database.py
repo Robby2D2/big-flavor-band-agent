@@ -279,6 +279,169 @@ class DatabaseManager:
 
         return row['lyrics'] if row else None
 
+    # Song version operations (issue #30 — cleanup audition/publish loop)
+    async def ensure_song_versions_table(self) -> None:
+        """Create the song_versions table if missing. Idempotent.
+
+        Mirrors how radio_state is ensured at startup: the canonical schema lives
+        in database/sql/migrations/07-create-song-versions-table.sql, and this
+        method applies the same idempotent DDL so the table exists without a
+        manual migration step.
+        """
+        ddl = """
+            CREATE TABLE IF NOT EXISTS song_versions (
+                id SERIAL PRIMARY KEY,
+                song_id INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+                audio_path TEXT NOT NULL,
+                label VARCHAR(32) NOT NULL DEFAULT 'cleaned',
+                is_published BOOLEAN NOT NULL DEFAULT FALSE,
+                metrics JSONB,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (audio_path)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_song_versions_one_published
+                ON song_versions (song_id) WHERE is_published;
+            CREATE INDEX IF NOT EXISTS idx_song_versions_song_id
+                ON song_versions (song_id);
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+        logger.info("song_versions table ensured")
+
+    async def ensure_original_version(
+        self, song_id: int, audio_path: str
+    ) -> Dict[str, Any]:
+        """Seed the song's 'original' version row (published) if it has none yet.
+
+        Idempotent: returns the existing original if present, otherwise inserts a
+        published 'original' row pointing at the catalog audio file. This is the
+        baseline every later cleaned version is auditioned against.
+        """
+        async with self.pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT * FROM song_versions WHERE song_id = $1 AND label = 'original'",
+                song_id,
+            )
+            if existing:
+                return dict(existing)
+
+            # Only make the original the published version if nothing else is.
+            has_published = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM song_versions WHERE song_id = $1 AND is_published)",
+                song_id,
+            )
+            row = await conn.fetchrow(
+                """
+                INSERT INTO song_versions (song_id, audio_path, label, is_published)
+                VALUES ($1, $2, 'original', $3)
+                ON CONFLICT (audio_path) DO UPDATE SET song_id = EXCLUDED.song_id
+                RETURNING *
+                """,
+                song_id,
+                audio_path,
+                not has_published,
+            )
+        return dict(row)
+
+    async def list_song_versions(self, song_id: int) -> List[Dict[str, Any]]:
+        """Return all versions for a song, newest first."""
+        query = """
+            SELECT id, song_id, audio_path, label, is_published, metrics, created_at
+            FROM song_versions
+            WHERE song_id = $1
+            ORDER BY created_at DESC
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, song_id)
+        return [dict(row) for row in rows]
+
+    async def get_song_version(self, version_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single version by id, or None."""
+        query = "SELECT * FROM song_versions WHERE id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, version_id)
+        return dict(row) if row else None
+
+    async def add_song_version(
+        self,
+        song_id: int,
+        audio_path: str,
+        label: str = "cleaned",
+        metrics: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Insert a new (unpublished) version. Returns the inserted row."""
+        query = """
+            INSERT INTO song_versions (song_id, audio_path, label, is_published, metrics)
+            VALUES ($1, $2, $3, FALSE, $4)
+            ON CONFLICT (audio_path) DO UPDATE SET
+                song_id = EXCLUDED.song_id,
+                label = EXCLUDED.label,
+                metrics = EXCLUDED.metrics
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                song_id,
+                audio_path,
+                label,
+                json.dumps(metrics) if metrics is not None else None,
+            )
+        return dict(row)
+
+    async def publish_song_version(
+        self, song_id: int, version_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Mark exactly one version published for a song (unpublishing the rest).
+
+        Runs in a transaction so there is never a moment with zero or two
+        published versions. Returns the newly published row, or None if the
+        version doesn't belong to the song.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                owned = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM song_versions WHERE id = $1 AND song_id = $2)",
+                    version_id,
+                    song_id,
+                )
+                if not owned:
+                    return None
+                await conn.execute(
+                    "UPDATE song_versions SET is_published = FALSE WHERE song_id = $1 AND is_published",
+                    song_id,
+                )
+                row = await conn.fetchrow(
+                    "UPDATE song_versions SET is_published = TRUE WHERE id = $1 RETURNING *",
+                    version_id,
+                )
+        return dict(row) if row else None
+
+    async def get_published_version(self, song_id: int) -> Optional[Dict[str, Any]]:
+        """Return the published version for a song, or None if none is published."""
+        query = "SELECT * FROM song_versions WHERE song_id = $1 AND is_published"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id)
+        return dict(row) if row else None
+
+    async def get_published_audio_paths(self) -> Dict[int, str]:
+        """Return {song_id: audio_path} for every song that has a published version.
+
+        Used to seed the published-version path override the radio/stream consult
+        when resolving which file to serve.
+        """
+        query = "SELECT song_id, audio_path FROM song_versions WHERE is_published"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return {row["song_id"]: row["audio_path"] for row in rows}
+
+    async def delete_song_version(self, version_id: int) -> Optional[Dict[str, Any]]:
+        """Delete a version by id. Returns the deleted row, or None if absent."""
+        query = "DELETE FROM song_versions WHERE id = $1 RETURNING *"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, version_id)
+        return dict(row) if row else None
+
     # Audio analysis operations
     async def insert_audio_analysis(self, analysis: Dict[str, Any]) -> int:
         """Insert or update audio analysis."""
