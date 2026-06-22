@@ -73,6 +73,27 @@ class SearchRequest(BaseModel):
     limit: int = 10
 
 
+class TempoSearchRequest(BaseModel):
+    """Direct tempo (BPM) search — at least one bound should be set."""
+    min_bpm: Optional[float] = None
+    max_bpm: Optional[float] = None
+    limit: int = 10
+
+
+class AudioSimilaritySearchRequest(BaseModel):
+    """Direct audio-similarity search referencing an existing catalog song."""
+    song_id: int
+    limit: int = 10
+
+
+class HybridSearchRequest(BaseModel):
+    """Direct hybrid search — text/mood description combined with a tempo band."""
+    query: str
+    min_bpm: Optional[float] = None
+    max_bpm: Optional[float] = None
+    limit: int = 10
+
+
 class AgentChatRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None
