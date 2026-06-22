@@ -63,6 +63,17 @@ class DiscardRequest(BaseModel):
     candidate_path: str
 
 
+class BatchStartRequest(BaseModel):
+    """Start a catalog-wide auto-clean batch (issue #29).
+
+    ``selection`` is "all" or "not_cleaned"; ``force_reclean_all`` reprocesses
+    songs that already have a cleaned version even under "not_cleaned".
+    """
+    selection: str = "not_cleaned"
+    aggressiveness: str = "moderate"
+    force_reclean_all: bool = False
+
+
 def _resolve_source_path(song_id: int) -> Path:
     """Locate the catalog audio file for a song, or 404."""
     audio_files = list(radio_service.AUDIO_LIBRARY_DIR.glob(f"{song_id}_*.mp3"))
@@ -281,6 +292,89 @@ async def stream_candidate_preview(
     return FileResponse(candidate, headers={"Content-Disposition": "inline"})
 
 
+async def clean_song_to_candidate(
+    song_id: int,
+    aggressiveness: str,
+    agent: BigFlavorAgent,
+    db: DatabaseManager,
+) -> Dict[str, Any]:
+    """Run auto-clean for one song into a non-destructive candidate file.
+
+    Seeds the song's 'original' version, runs ``auto_clean_recording`` to a fresh
+    file under produced/, and returns the candidate path plus a before/after diff.
+    Shared by the single-track audition endpoint and the catalog batch runner
+    (issue #29) so the cleanup behaviour can never diverge between them. Raises
+    ValueError on a tool failure so callers can surface a reason.
+    """
+    source_path = await run_in_threadpool(_resolve_source_path, song_id)
+    await db.ensure_original_version(song_id, str(source_path))
+    output_path = _build_output_path(song_id)
+
+    cleanup_result = await agent.execute_tool(
+        "auto_clean_recording",
+        {
+            "file_path": str(source_path),
+            "output_path": str(output_path),
+            "aggressiveness": aggressiveness,
+        },
+    )
+    if cleanup_result.get("status") != "success":
+        raise ValueError(cleanup_result.get("error", "Auto-clean failed"))
+
+    before = await run_in_threadpool(_measure_audio, str(source_path))
+    after = await run_in_threadpool(_measure_audio, str(output_path))
+
+    return {
+        "song_id": song_id,
+        "candidate_path": str(output_path),
+        "diff": _build_diff(cleanup_result, before, after),
+    }
+
+
+async def publish_candidate_version(
+    song_id: int,
+    candidate_path: str,
+    db: DatabaseManager,
+    rag: SongRAGSystem,
+) -> Dict[str, Any]:
+    """Save a cleaned candidate as the song's new published version.
+
+    Creates the version, indexes its audio embedding (same seam the catalog uses,
+    so the new version is findable by audio similarity), marks it the single
+    published version, and refreshes the radio/stream published-path override.
+    Shared by the single-track approve endpoint and the batch runner (issue #29).
+    Raises ValueError if the candidate is not a safe produced file or publish fails.
+    """
+    if not _is_within_produced(candidate_path):
+        raise ValueError("Candidate must be a produced file")
+    if not Path(candidate_path).exists():
+        raise ValueError("Candidate file not found")
+
+    # Capture the cleaned take's metrics so the version row records what was published.
+    metrics = await run_in_threadpool(_measure_audio, candidate_path)
+    version = await db.add_song_version(
+        song_id,
+        candidate_path,
+        label="cleaned",
+        metrics={"after": metrics} if metrics else None,
+    )
+
+    indexed = await rag.index_audio_file(candidate_path, song_id)
+
+    published = await db.publish_song_version(song_id, version["id"])
+    if published is None:
+        raise ValueError("Failed to publish version")
+
+    radio_service.set_published_version_path(song_id, candidate_path)
+
+    return {
+        "song_id": song_id,
+        "version_id": version["id"],
+        "is_published": True,
+        "embedding_indexed": indexed,
+    }
+
+
 @router.post("/api/produce/clean")
 async def clean_song(
     request: CleanRequest,
@@ -293,32 +387,12 @@ async def clean_song(
     Does not change any version — it produces a candidate the producer auditions,
     then approves or discards.
     """
-    source_path = await run_in_threadpool(_resolve_source_path, request.song_id)
-    await db.ensure_original_version(request.song_id, str(source_path))
-    output_path = _build_output_path(request.song_id)
-
-    cleanup_result = await agent.execute_tool(
-        "auto_clean_recording",
-        {
-            "file_path": str(source_path),
-            "output_path": str(output_path),
-            "aggressiveness": request.aggressiveness,
-        },
-    )
-    if cleanup_result.get("status") != "success":
-        raise HTTPException(
-            status_code=502,
-            detail=cleanup_result.get("error", "Auto-clean failed"),
+    try:
+        return await clean_song_to_candidate(
+            request.song_id, request.aggressiveness, agent, db
         )
-
-    before = await run_in_threadpool(_measure_audio, str(source_path))
-    after = await run_in_threadpool(_measure_audio, str(output_path))
-
-    return {
-        "song_id": request.song_id,
-        "candidate_path": str(output_path),
-        "diff": _build_diff(cleanup_result, before, after),
-    }
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @router.post("/api/produce/approve")
@@ -334,34 +408,14 @@ async def approve_version(
     so the new version is findable by audio similarity), marks it the single
     published version, and refreshes the radio/stream published-path override.
     """
-    if not _is_within_produced(request.candidate_path):
-        raise HTTPException(status_code=400, detail="Candidate must be a produced file")
-    if not Path(request.candidate_path).exists():
-        raise HTTPException(status_code=404, detail="Candidate file not found")
-
-    # Capture the cleaned take's metrics so the version row records what was published.
-    metrics = await run_in_threadpool(_measure_audio, request.candidate_path)
-    version = await db.add_song_version(
-        request.song_id,
-        request.candidate_path,
-        label="cleaned",
-        metrics={"after": metrics} if metrics else None,
-    )
-
-    indexed = await rag.index_audio_file(request.candidate_path, request.song_id)
-
-    published = await db.publish_song_version(request.song_id, version["id"])
-    if published is None:
-        raise HTTPException(status_code=500, detail="Failed to publish version")
-
-    radio_service.set_published_version_path(request.song_id, request.candidate_path)
-
-    return {
-        "song_id": request.song_id,
-        "version_id": version["id"],
-        "is_published": True,
-        "embedding_indexed": indexed,
-    }
+    try:
+        return await publish_candidate_version(
+            request.song_id, request.candidate_path, db, rag
+        )
+    except ValueError as exc:
+        # Path-safety / missing-file errors are client errors; publish failure is a 500.
+        status = 500 if str(exc) == "Failed to publish version" else 400
+        raise HTTPException(status_code=status, detail=str(exc))
 
 
 @router.post("/api/produce/discard")
@@ -374,3 +428,51 @@ async def discard_candidate(
         raise HTTPException(status_code=400, detail="Candidate must be a produced file")
     removed = await run_in_threadpool(_remove_file, request.candidate_path)
     return {"discarded": removed, "candidate_path": request.candidate_path}
+
+
+# ---- issue #29: catalog-wide auto-clean batch ----
+
+@router.post("/api/produce/batch/start")
+async def start_batch_clean(
+    request: BatchStartRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    rag: SongRAGSystem = Depends(get_rag),
+    _role: str = Depends(require_role("editor")),
+):
+    """Start a hands-off catalog-wide auto-clean batch.
+
+    Selects "all" or "not_cleaned" songs, cleans each through the existing
+    pipeline, and publishes each result as a new cleaned version (originals
+    untouched). Returns immediately with the initial status; progress is polled
+    from ``/api/produce/batch/status``. 409 if a batch is already running.
+    """
+    # Imported here to avoid a circular import (produce_batch imports this module).
+    from src.api import produce_batch
+
+    try:
+        return produce_batch.manager.start(
+            request.selection,
+            request.aggressiveness,
+            request.force_reclean_all,
+            agent,
+            db,
+            rag,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/api/produce/batch/status")
+async def batch_clean_status(
+    _role: str = Depends(require_role("editor")),
+):
+    """Return the current/last catalog-clean batch's progress and per-track summary."""
+    from src.api import produce_batch
+
+    status = produce_batch.manager.status()
+    if status is None:
+        return {"status": "idle"}
+    return status
