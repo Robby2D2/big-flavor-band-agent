@@ -30,6 +30,12 @@ class FakeDatabaseManager:
     async def close(self):
         self.closed = True
 
+    async def ensure_song_versions_table(self):
+        self.song_versions_ensured = True
+
+    async def get_published_audio_paths(self):
+        return {}
+
 
 class FakeRAG:
     def __init__(self, db_manager, use_clap=True):

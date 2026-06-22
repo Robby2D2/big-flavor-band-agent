@@ -36,6 +36,25 @@ PLAYLIST_FILE = Path("/app/streaming/playlist/radio.m3u")
 # mount the playlist writer uses.
 AUDIO_LIBRARY_DIR = Path("audio_library")
 
+# Published-version path overrides ({song_id: audio_path}), seeded from
+# song_versions at startup and refreshed when a producer publishes a new version
+# (issue #30). When a song has a published version, its file is served by the
+# radio playlist and /api/audio/stream instead of the default
+# "{song_id}_*.mp3" glob. Kept in process memory so the synchronous playlist
+# writer (which runs in a worker thread) never has to touch the DB.
+_published_version_paths: Dict[int, str] = {}
+
+
+def set_published_version_paths(paths: Dict[int, str]) -> None:
+    """Replace the published-version path overrides (full refresh)."""
+    global _published_version_paths
+    _published_version_paths = dict(paths)
+
+
+def set_published_version_path(song_id: int, audio_path: str) -> None:
+    """Record/replace the published-version override for one song."""
+    _published_version_paths[song_id] = audio_path
+
 # How often the background loop ticks the playback clock, and how often (in
 # ticks) it runs the heavier agent/search queue top-up off the request path.
 RADIO_TICK_INTERVAL = 1.0  # seconds
@@ -59,11 +78,20 @@ def _build_and_write_playlist(current_song, queue, audio_library: Path, playlist
         for song in ([current_song] if current_song else []) + queue:
             song_id = song.get("id")
             title = song.get("title", "Unknown")
-            audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
-            if audio_files:
+            # Prefer the published version's file (issue #30); fall back to the
+            # catalog "{song_id}_*.mp3" glob.
+            published = _resolve_published_file(song_id)
+            source_path = None
+            if published is not None:
+                source_path = str(published)
+            else:
+                audio_files = list(audio_library.glob(f"{song_id}_*.mp3"))
+                if audio_files:
+                    source_path = str(audio_files[0])
+            if source_path:
                 playlist_lines.append(f"#EXTINF:-1,{title}")
                 # Convert path for Liquidsoap container: /app/audio_library -> /audio_library
-                liquidsoap_path = str(audio_files[0]).replace("/app/audio_library", "/audio_library")
+                liquidsoap_path = source_path.replace("/app/audio_library", "/audio_library")
                 playlist_lines.append(liquidsoap_path)
 
         playlist_file.parent.mkdir(parents=True, exist_ok=True)
@@ -95,8 +123,33 @@ def write_playlist_file(state: Dict[str, Any]):
     )
 
 
+def _resolve_published_file(song_id) -> Optional[Path]:
+    """Return the published-version file for a song id if one exists on disk.
+
+    The override stores absolute container paths (/app/audio_library/...) but the
+    glob fallback resolves relative to the cwd (/app); accept either form.
+    """
+    try:
+        sid = int(song_id)
+    except (TypeError, ValueError):
+        return None
+    override = _published_version_paths.get(sid)
+    if override:
+        path = Path(override)
+        if path.exists():
+            return path
+    return None
+
+
 def _find_audio_file(song_id: int) -> Optional[Path]:
-    """Locate the audio file for a song id. Synchronous (does a directory glob)."""
+    """Locate the audio file for a song id. Synchronous (does a directory glob).
+
+    Prefers the published version's file (issue #30) when one is set; otherwise
+    falls back to the catalog "{song_id}_*.mp3" glob.
+    """
+    published = _resolve_published_file(song_id)
+    if published is not None:
+        return published
     audio_files = list(AUDIO_LIBRARY_DIR.glob(f"{song_id}_*.mp3"))
     return audio_files[0] if audio_files else None
 
