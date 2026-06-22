@@ -172,7 +172,10 @@ services:
       - bigflavor-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      # Use 127.0.0.1, not localhost - musl/alpine resolves localhost to ::1
+      # first and nginx.conf only binds IPv4, so the IPv6 attempt always
+      # fails with "connection refused" even while nginx is serving fine.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
