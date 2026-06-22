@@ -13,6 +13,10 @@ python-dotenv>=1.0.0
 # AI/LLM
 anthropic>=0.39.0
 
+# MCP (Model Context Protocol) - required by src/production/big_flavor_mcp.py
+# for the audio-cleanup tools (analyze_and_recommend_processing, auto_clean_recording)
+mcp>=1.0.0
+
 # Database
 asyncpg>=0.29.0
 pg8000  # Additional PostgreSQL driver

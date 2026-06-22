@@ -1133,7 +1133,7 @@ class BigFlavorMCPServer:
             # ===== COMPILE RECOMMENDATIONS =====
             recommendations = {
                 "trim": {
-                    "recommended": trim_from_start > 0.5 or trim_from_end > 0.5,
+                    "recommended": bool(trim_from_start > 0.5 or trim_from_end > 0.5),
                     "trim_start_seconds": round(float(trim_from_start), 2),
                     "trim_end_seconds": round(float(trim_from_end), 2),
                     "detected_music_start": round(float(trim_start_time), 2),
@@ -1141,7 +1141,7 @@ class BigFlavorMCPServer:
                     "reason": "Non-musical content detected before/after main audio"
                 },
                 "noise_reduction": {
-                    "recommended": noise_level_db > -55,
+                    "recommended": bool(noise_level_db > -55),
                     "noise_level_db": round(float(noise_level_db), 1),
                     "recommended_strength": float(recommended_noise_reduction),
                     "recommended_profile_duration": 1.0,
@@ -1164,7 +1164,7 @@ class BigFlavorMCPServer:
                     "reason": f"Dynamic range: {crest_factor_db:.1f} dB"
                 },
                 "normalization": {
-                    "recommended": peak_db < -6 or peak_db > -1,
+                    "recommended": bool(peak_db < -6 or peak_db > -1),
                     "current_peak_db": round(float(peak_db), 1),
                     "target_peak_db": -3.0,
                     "reason": "Level optimization needed"
