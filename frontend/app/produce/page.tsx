@@ -391,7 +391,31 @@ export default function ProducePage() {
                     <p className="mt-1 text-sm break-all">
                       Cleaned output: {cleanResult.output_file}
                     </p>
-                    <pre className="mt-2 text-xs overflow-auto max-h-72">
+
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs font-medium mb-1">Before (original)</p>
+                        <audio
+                          controls
+                          preload="none"
+                          src={`/api/audio/${selectedSongId}`}
+                          className="w-full h-8"
+                        />
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium mb-1">After (cleaned)</p>
+                        <audio
+                          controls
+                          preload="none"
+                          src={`/api/produce/clean/preview?path=${encodeURIComponent(
+                            cleanResult.output_file
+                          )}`}
+                          className="w-full h-8"
+                        />
+                      </div>
+                    </div>
+
+                    <pre className="mt-3 text-xs overflow-auto max-h-72">
                       {JSON.stringify(cleanResult.steps_applied, null, 2)}
                     </pre>
                   </div>
