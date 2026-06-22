@@ -1244,17 +1244,22 @@ class BigFlavorMCPServer:
         file_path: str,
         output_path: str,
         aggressiveness: str = "moderate",
-        keep_intermediates: bool = False
+        keep_intermediates: bool = False,
+        steps_override: dict = None
     ) -> dict:
         """
         Automatically analyze and clean a raw recording with intelligent settings.
-        
+
         Args:
             file_path: Path to raw recording
             output_path: Path for final cleaned output
             aggressiveness: 'gentle', 'moderate', or 'aggressive'
             keep_intermediates: Save intermediate processing steps
-            
+            steps_override: Optional per-step on/off map keyed by
+                'trim', 'noise_reduction', 'eq', 'normalize', 'master'. A value
+                forces that step on (True) or off (False), overriding the
+                analysis recommendation; unspecified steps follow the analysis.
+
         Returns:
             Processing results with steps taken
         """
@@ -1264,17 +1269,27 @@ class BigFlavorMCPServer:
             import numpy as np
             from pathlib import Path
             from scipy import signal
-            
+
             logger.info(f"Auto-cleaning recording: {file_path} (aggressiveness: {aggressiveness})")
-            
+
             # Step 1: Analyze to get recommendations
             analysis = await self.analyze_and_recommend_processing(file_path)
-            
+
             if analysis.get("status") != "success":
                 return analysis
-            
+
             recommendations = analysis["recommendations"]
-            
+
+            # Apply caller step toggles on top of the recommendations. trim /
+            # noise_reduction / eq are gated by their "recommended" flag below,
+            # so flip that flag; normalize / master always run unless turned off.
+            overrides = steps_override or {}
+            for _step in ("trim", "noise_reduction", "eq"):
+                if _step in overrides:
+                    recommendations[_step]["recommended"] = bool(overrides[_step])
+            do_normalize = bool(overrides.get("normalize", True))
+            do_master = bool(overrides.get("master", True))
+
             # Adjust recommendations based on aggressiveness
             aggressiveness_multipliers = {
                 "gentle": 0.7,
@@ -1407,56 +1422,63 @@ class BigFlavorMCPServer:
                     })
             
             # Step 5: Normalize with compression
-            logger.info("Step 4: Normalization...")
-            
-            comp_ratio = recommendations["compression"]["ratio"]
-            if aggressiveness == "aggressive":
-                comp_ratio *= 1.2
-            elif aggressiveness == "gentle":
-                comp_ratio *= 0.8
-            
-            if keep_intermediates:
-                norm_output = intermediate_dir / "04_normalized.wav"
+            if do_normalize:
+                logger.info("Step 4: Normalization...")
+
+                comp_ratio = recommendations["compression"]["ratio"]
+                if aggressiveness == "aggressive":
+                    comp_ratio *= 1.2
+                elif aggressiveness == "gentle":
+                    comp_ratio *= 0.8
+
+                if keep_intermediates:
+                    norm_output = intermediate_dir / "04_normalized.wav"
+                else:
+                    import tempfile
+                    norm_output = Path(tempfile.mktemp(suffix=".wav"))
+
+                result = await self.normalize_audio(
+                    current_file,
+                    -3.0,
+                    True,
+                    str(norm_output)
+                )
+
+                if result.get("status") == "success":
+                    current_file = str(norm_output)
+                    steps_taken.append({
+                        "step": "normalize",
+                        "target_peak_db": -3.0,
+                        "gain_applied_db": result.get("gain_applied_db"),
+                        "output": str(norm_output) if keep_intermediates else "temp"
+                    })
+
+            # Step 6: Final mastering. Mastering normally writes output_path; if
+            # the caller disabled it, write the current intermediate there so the
+            # cleaned result still lands at output_path.
+            if do_master:
+                logger.info("Step 5: Mastering...")
+
+                target_lufs = recommendations["mastering"]["target_lufs"]
+
+                result = await self.apply_mastering(
+                    current_file,
+                    target_lufs,
+                    output_path
+                )
+
+                if result.get("status") == "success":
+                    steps_taken.append({
+                        "step": "mastering",
+                        "target_lufs": target_lufs,
+                        "actual_lufs": result.get("actual_loudness_lufs"),
+                        "gain_applied_db": result.get("gain_applied_db"),
+                        "output": output_path
+                    })
             else:
-                import tempfile
-                norm_output = Path(tempfile.mktemp(suffix=".wav"))
-            
-            result = await self.normalize_audio(
-                current_file,
-                -3.0,
-                True,
-                str(norm_output)
-            )
-            
-            if result.get("status") == "success":
-                current_file = str(norm_output)
-                steps_taken.append({
-                    "step": "normalize",
-                    "target_peak_db": -3.0,
-                    "gain_applied_db": result.get("gain_applied_db"),
-                    "output": str(norm_output) if keep_intermediates else "temp"
-                })
-            
-            # Step 6: Final mastering
-            logger.info("Step 5: Mastering...")
-            
-            target_lufs = recommendations["mastering"]["target_lufs"]
-            
-            result = await self.apply_mastering(
-                current_file,
-                target_lufs,
-                output_path
-            )
-            
-            if result.get("status") == "success":
-                steps_taken.append({
-                    "step": "mastering",
-                    "target_lufs": target_lufs,
-                    "actual_lufs": result.get("actual_loudness_lufs"),
-                    "gain_applied_db": result.get("gain_applied_db"),
-                    "output": output_path
-                })
-            
+                import shutil
+                shutil.copyfile(current_file, output_path)
+
             # Clean up temp files if not keeping intermediates
             if not keep_intermediates:
                 for step in steps_taken:

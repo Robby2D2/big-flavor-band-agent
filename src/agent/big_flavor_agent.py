@@ -488,6 +488,10 @@ class BigFlavorAgent:
                         "keep_intermediates": {
                             "type": "boolean",
                             "description": "Save intermediate steps for review (default: false)"
+                        },
+                        "steps_override": {
+                            "type": "object",
+                            "description": "Optional per-step on/off map keyed by 'trim', 'noise_reduction', 'eq', 'normalize', 'master'. true forces a step on, false off; unspecified steps follow the analysis recommendation."
                         }
                     },
                     "required": ["file_path", "output_path"]
@@ -744,7 +748,8 @@ class BigFlavorAgent:
                         tool_input["file_path"],
                         tool_input["output_path"],
                         tool_input.get("aggressiveness", "moderate"),
-                        tool_input.get("keep_intermediates", False)
+                        tool_input.get("keep_intermediates", False),
+                        tool_input.get("steps_override")
                     )
                 elif tool_name == "match_tempo":
                     result = await self.production_server.match_tempo(

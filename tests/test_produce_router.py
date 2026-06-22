@@ -1,11 +1,16 @@
-"""Tests for the produce / cleanup-audition router (issue #30).
+"""Tests for the produce / audio-cleanup router (issues #28, #30).
 
-The /api/produce/* endpoints wrap the existing MCP auto_clean_recording tool with
-the audition + metrics-diff + version-and-publish loop. These assert the contract
-without a live DB, LLM, or real audio:
+The /api/produce/* endpoints are a path-safe wrapper over the existing MCP
+audio-cleanup tools: the browser sends a catalog song_id only, and the backend
+resolves the source audio path and a NON-destructive output path before calling
+the tool. These guards assert the contract without a live DB, LLM, or real audio:
   - endpoints are editor-gated (reject calls without the service secret),
-  - clean() returns a non-destructive candidate under produced/ plus a
-    before/after metrics diff (LUFS/peak/duration + steps + noise reduction),
+  - analyze/auto-clean route to the right MCP tool for the resolved source file,
+    and steps_override toggles are forwarded to the tool (issue #28),
+  - the output path is derived non-destructively (never the source, always under
+    the produced/ subdir),
+  - clean() returns a candidate under produced/ plus a before/after metrics diff
+    (LUFS/peak/duration + steps + noise reduction) (issue #30),
   - approve() saves a cleaned version, indexes its embedding, marks exactly one
     version published, and refreshes the radio published-path override,
   - discard() removes the candidate file and leaves versions untouched,
@@ -31,15 +36,20 @@ def _editor_headers(monkeypatch):
 
 
 class FakeAgent:
-    """Stands in for the MCP agent; writes the 'cleaned' output and returns a payload."""
+    """Captures the tool calls the router makes and stands in for the MCP agent.
+
+    Writes the 'cleaned' output file when an output_path is supplied (clean /
+    auto-clean), and returns a cleanup-style payload. The analyze call passes no
+    output_path, so the write is conditional.
+    """
 
     def __init__(self):
         self.calls = []
 
     async def execute_tool(self, tool_name, parameters):
         self.calls.append((tool_name, parameters))
-        # Simulate the tool producing the cleaned output file.
-        Path(parameters["output_path"]).write_bytes(b"cleaned-audio")
+        if "output_path" in parameters:
+            Path(parameters["output_path"]).write_bytes(b"cleaned-audio")
         return {
             "status": "success",
             "aggressiveness": parameters.get("aggressiveness"),
@@ -135,7 +145,10 @@ def produce_client(tmp_path, monkeypatch):
 
 def test_produce_endpoints_require_service_secret(produce_client):
     client, *_ = produce_client
+    # No service-secret header -> backend trust boundary rejects with 401.
     assert client.get("/api/produce/songs").status_code == 401
+    assert client.post("/api/produce/analyze", json={"song_id": 5}).status_code == 401
+    assert client.post("/api/produce/auto-clean", json={"song_id": 5}).status_code == 401
     assert client.post("/api/produce/clean", json={"song_id": 5}).status_code == 401
     assert (
         client.post(
@@ -143,6 +156,68 @@ def test_produce_endpoints_require_service_secret(produce_client):
         ).status_code
         == 401
     )
+    assert (
+        client.post(
+            "/api/produce/discard", json={"candidate_path": "x"}
+        ).status_code
+        == 401
+    )
+
+
+def test_list_catalog_songs_returns_id_title(produce_client, monkeypatch):
+    client, *_ = produce_client
+    resp = client.get("/api/produce/songs", headers=_editor_headers(monkeypatch))
+    assert resp.status_code == 200
+    assert resp.json() == {"songs": [{"id": 5, "title": "Test Track"}]}
+
+
+def test_analyze_routes_to_tool_with_resolved_source(produce_client, monkeypatch):
+    client, agent, _, _, audio_library = produce_client
+    resp = client.post(
+        "/api/produce/analyze",
+        json={"song_id": 5},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200
+    tool_name, params = agent.calls[0]
+    assert tool_name == "analyze_and_recommend_processing"
+    assert params["file_path"] == str(audio_library / "5_test-track.mp3")
+
+
+def test_auto_clean_output_is_non_destructive(produce_client, monkeypatch):
+    client, agent, _, _, audio_library = produce_client
+    resp = client.post(
+        "/api/produce/auto-clean",
+        json={
+            "song_id": 5,
+            "aggressiveness": "aggressive",
+            "steps_override": {"eq": False, "master": True},
+        },
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200
+
+    tool_name, params = agent.calls[0]
+    assert tool_name == "auto_clean_recording"
+
+    source = str(audio_library / "5_test-track.mp3")
+    assert params["file_path"] == source
+    # Output must never overwrite the catalog source, and must land under produced/.
+    output = Path(params["output_path"])
+    assert str(output) != source
+    assert output.parent == audio_library / produce.PRODUCED_SUBDIR
+    assert params["aggressiveness"] == "aggressive"
+    assert params["steps_override"] == {"eq": False, "master": True}
+
+
+def test_auto_clean_unknown_song_returns_404(produce_client, monkeypatch):
+    client, *_ = produce_client
+    resp = client.post(
+        "/api/produce/auto-clean",
+        json={"song_id": 9999},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 404
 
 
 def test_clean_returns_candidate_and_diff(produce_client, monkeypatch):
@@ -187,7 +262,7 @@ def test_approve_creates_indexed_published_version(produce_client, monkeypatch):
     monkeypatch.setattr(produce, "_measure_audio", lambda path: {"peak_db": -1.0})
 
     # Seed the original and produce a candidate file under produced/.
-    await_original = db._insert(5, "/app/audio_library/5_test-track.mp3", "original", True)
+    original = db._insert(5, "/app/audio_library/5_test-track.mp3", "original", True)
     candidate = produce._produced_dir() / "5_cleaned_1.wav"
     candidate.write_bytes(b"cleaned-audio")
 
@@ -209,7 +284,7 @@ def test_approve_creates_indexed_published_version(produce_client, monkeypatch):
     published = [v for v in versions if v["is_published"]]
     assert len(published) == 1
     assert published[0]["label"] == "cleaned"
-    assert await_original["is_published"] is False
+    assert original["is_published"] is False
 
     # Radio/stream override now points at the published cleaned take.
     assert radio_service._published_version_paths[5] == str(candidate)

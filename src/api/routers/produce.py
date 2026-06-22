@@ -1,17 +1,23 @@
-"""Production / audio-cleanup audition routes (issue #30).
+"""Production / audio-cleanup routes (issues #28, #30).
 
-The audition + metrics-diff + version-and-publish loop around the existing MCP
-``auto_clean_recording`` tool, surfaced in the Admin producer area. The browser
-passes a catalog ``song_id`` only — source and (non-destructive) output paths are
-resolved on the backend, so container paths never leave the server and a cleanup
-run can never overwrite the original catalog audio.
+A path-safe delivery layer over the existing MCP audio-cleanup tools
+(``analyze_and_recommend_processing``, ``auto_clean_recording``), surfaced in two
+editor-gated producer surfaces:
 
-Approving a cleaned take creates a new *version* of the song (the original is
-preserved), indexes that version's audio embedding through the same RAG seam the
-catalog uses (so every version is findable by audio similarity), and marks it the
-single published version that the radio/stream then serve.
+- A quick **analyze → auto-clean** flow (issue #28) with per-step overrides and an
+  intensity selector, used by the ``/produce`` page.
+- An **audition + metrics-diff + version-and-publish** loop (issue #30) in the
+  Admin producer area: a cleanup run produces a candidate the producer auditions,
+  then approves (creating a new published *version* — the original is preserved
+  and the new version is indexed through the same RAG audio seam the catalog uses,
+  so every version is findable by audio similarity, and the radio/stream then
+  serve the single published version) or discards.
 
-Editor-gated, consistent with the existing tools endpoint (issue #1).
+In every case the browser passes a catalog ``song_id`` only — the source file and
+a non-destructive output path are resolved on the backend, so container paths
+never leave the server and a cleanup run can never overwrite the original catalog
+audio or trigger a re-index of the original. Editor-gated, consistent with the
+existing tools endpoint (issue #1).
 """
 import time
 from pathlib import Path
@@ -32,8 +38,15 @@ from database import DatabaseManager
 router = APIRouter()
 
 # Cleaned takes land in a dedicated subdirectory so they can never collide with a
-# catalog file (named "{song_id}_*.mp3") and are never mistaken for the original.
+# catalog file (named "{song_id}_*.mp3") that the RAG/radio paths index and serve,
+# and are never mistaken for the original.
 PRODUCED_SUBDIR = "produced"
+
+
+class ProduceRequest(BaseModel):
+    song_id: int
+    aggressiveness: str = "moderate"
+    steps_override: Optional[Dict[str, bool]] = None
 
 
 class CleanRequest(BaseModel):
@@ -87,6 +100,15 @@ def _is_within_produced(candidate_path: str) -> bool:
         return produced in resolved.parents
     except (OSError, ValueError):
         return False
+
+
+def _remove_file(path: str) -> bool:
+    """Delete a file if present. Synchronous (filesystem)."""
+    target = Path(path)
+    if target.exists():
+        target.unlink()
+        return True
+    return False
 
 
 def _measure_audio(file_path: str) -> Optional[Dict[str, Any]]:
@@ -155,6 +177,51 @@ async def list_catalog_songs(
         ]
     }
 
+
+# ---- issue #28: quick analyze + auto-clean ----
+
+@router.post("/api/produce/analyze")
+async def analyze_song(
+    request: ProduceRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    _role: str = Depends(require_role("editor")),
+):
+    """Analyze a catalog song and return detected issues + recommended steps."""
+    source_path = await run_in_threadpool(_resolve_source_path, request.song_id)
+    result = await agent.execute_tool(
+        "analyze_and_recommend_processing", {"file_path": str(source_path)}
+    )
+    return {"result": result}
+
+
+@router.post("/api/produce/auto-clean")
+async def auto_clean_song(
+    request: ProduceRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    _role: str = Depends(require_role("editor")),
+):
+    """Auto-clean a catalog song to a new derived file (original untouched).
+
+    A quick one-shot clean: writes a cleaned file under produced/ and returns the
+    tool payload. It does not create a version — approving/publishing a cleaned
+    take is the audition flow's job (``/api/produce/clean`` → ``/approve``).
+    """
+    source_path = await run_in_threadpool(_resolve_source_path, request.song_id)
+    output_path = _build_output_path(request.song_id)
+
+    parameters: Dict[str, Any] = {
+        "file_path": str(source_path),
+        "output_path": str(output_path),
+        "aggressiveness": request.aggressiveness,
+    }
+    if request.steps_override is not None:
+        parameters["steps_override"] = request.steps_override
+
+    result = await agent.execute_tool("auto_clean_recording", parameters)
+    return {"result": result}
+
+
+# ---- issue #30: versions, audition, approve/discard ----
 
 @router.get("/api/produce/songs/{song_id}/versions")
 async def list_versions(
@@ -307,12 +374,3 @@ async def discard_candidate(
         raise HTTPException(status_code=400, detail="Candidate must be a produced file")
     removed = await run_in_threadpool(_remove_file, request.candidate_path)
     return {"discarded": removed, "candidate_path": request.candidate_path}
-
-
-def _remove_file(path: str) -> bool:
-    """Delete a file if present. Synchronous (filesystem)."""
-    target = Path(path)
-    if target.exists():
-        target.unlink()
-        return True
-    return False
