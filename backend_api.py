@@ -27,8 +27,8 @@ from src.api_errors import register_error_handlers
 from database import DatabaseManager
 
 from src.api import dependencies as deps
-from src.api.routers import admin, search, agent as agent_router, radio, tools
-from src.api.radio_service import radio_background_loop
+from src.api.routers import admin, search, agent as agent_router, radio, tools, produce
+from src.api.radio_service import radio_background_loop, set_published_version_paths
 
 # Re-exported so the in-repo tests can import these names off this module (the
 # domain logic now lives in src/api/* but the tests target the public surface
@@ -107,6 +107,12 @@ async def lifespan(app: FastAPI):
     await deps.db_manager.connect()
     logger.info("Startup: DatabaseManager connected")
 
+    # Ensure the song_versions table exists and seed the published-version path
+    # overrides so the radio/stream serve published cleaned takes (issue #30).
+    await deps.db_manager.ensure_song_versions_table()
+    set_published_version_paths(await deps.db_manager.get_published_audio_paths())
+    logger.info("Startup: song_versions ensured, published-version overrides loaded")
+
     deps.rag = SongRAGSystem(deps.db_manager, use_clap=True)
     logger.info("Startup: SongRAGSystem ready")
 
@@ -170,6 +176,7 @@ app.include_router(search.router)
 app.include_router(agent_router.router)
 app.include_router(radio.router)
 app.include_router(tools.router)
+app.include_router(produce.router)
 
 
 if __name__ == "__main__":
