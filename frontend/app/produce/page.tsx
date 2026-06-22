@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Header from '@/components/Header';
 
 interface CatalogSong {
@@ -9,6 +9,26 @@ interface CatalogSong {
 }
 
 type Intensity = 'gentle' | 'moderate' | 'aggressive';
+type BatchSelection = 'all' | 'not_cleaned';
+
+interface BatchTrackResult {
+  song_id: number;
+  title: string;
+  outcome: 'succeeded' | 'skipped' | 'failed';
+  reason: string | null;
+}
+
+interface BatchStatus {
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  selection?: BatchSelection;
+  total?: number;
+  completed?: number;
+  succeeded?: number;
+  skipped?: number;
+  failed?: number;
+  results?: BatchTrackResult[];
+  error?: string | null;
+}
 
 // The cleanup steps the editor can toggle, in processing order. Keys match the
 // backend steps_override map (trim / noise_reduction / eq / normalize / master).
@@ -35,9 +55,74 @@ export default function ProducePage() {
   const [cleanResult, setCleanResult] = useState<any>(null);
   const [cleaning, setCleaning] = useState(false);
 
+  // Catalog-wide batch clean (issue #29).
+  const [batchSelection, setBatchSelection] = useState<BatchSelection>('not_cleaned');
+  const [batchForceReclean, setBatchForceReclean] = useState(false);
+  const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
+  const [batchStarting, setBatchStarting] = useState(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     loadSongs();
+    refreshBatchStatus();
+    return () => stopBatchPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const stopBatchPolling = () => {
+    if (batchPollRef.current) {
+      clearInterval(batchPollRef.current);
+      batchPollRef.current = null;
+    }
+  };
+
+  const refreshBatchStatus = async () => {
+    try {
+      const response = await fetch('/api/produce/batch/status');
+      if (!response.ok) return;
+      const data: BatchStatus = await response.json();
+      setBatchStatus(data);
+      if (data.status === 'running') {
+        startBatchPolling();
+      } else {
+        stopBatchPolling();
+      }
+    } catch {
+      // status polling is best-effort; ignore transient errors
+    }
+  };
+
+  const startBatchPolling = () => {
+    if (batchPollRef.current) return;
+    batchPollRef.current = setInterval(refreshBatchStatus, 2000);
+  };
+
+  const handleStartBatch = async () => {
+    setBatchStarting(true);
+    setBatchError(null);
+    try {
+      const response = await fetch('/api/produce/batch/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          selection: batchSelection,
+          aggressiveness: intensity,
+          force_reclean_all: batchForceReclean,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || data.error || 'Failed to start batch');
+      }
+      setBatchStatus(data);
+      startBatchPolling();
+    } catch (err: any) {
+      setBatchError(err.message);
+    } finally {
+      setBatchStarting(false);
+    }
+  };
 
   const loadSongs = async () => {
     try {
@@ -310,6 +395,130 @@ export default function ProducePage() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Catalog-wide batch clean (issue #29) */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mt-6">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+            Clean catalog (batch)
+          </h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            Run auto-clean over the whole catalog hands-off. Each result is published
+            as a new cleaned version — originals are never overwritten. Uses the
+            intensity selected above.
+          </p>
+
+          <div className="flex flex-wrap items-end gap-4 mb-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Songs
+              </label>
+              <select
+                value={batchSelection}
+                onChange={(e) => setBatchSelection(e.target.value as BatchSelection)}
+                disabled={batchStatus?.status === 'running'}
+                className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+              >
+                <option value="not_cleaned">Not yet cleaned</option>
+                <option value="all">All songs</option>
+              </select>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200 mb-2">
+              <input
+                type="checkbox"
+                checked={batchForceReclean}
+                onChange={(e) => setBatchForceReclean(e.target.checked)}
+                disabled={batchStatus?.status === 'running'}
+                className="h-4 w-4"
+              />
+              Force re-clean all (reprocess already-cleaned songs)
+            </label>
+
+            <button
+              onClick={handleStartBatch}
+              disabled={batchStarting || batchStatus?.status === 'running'}
+              className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            >
+              {batchStatus?.status === 'running'
+                ? 'Running...'
+                : batchStarting
+                ? 'Starting...'
+                : 'Start batch'}
+            </button>
+          </div>
+
+          {batchError && (
+            <div className="p-3 mb-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg text-sm">
+              {batchError}
+            </div>
+          )}
+
+          {batchStatus && batchStatus.status !== 'idle' && (
+            <div className="mt-2">
+              <div className="flex items-center justify-between text-sm text-gray-700 dark:text-gray-300 mb-2">
+                <span className="font-medium capitalize">{batchStatus.status}</span>
+                <span>
+                  {batchStatus.completed ?? 0} / {batchStatus.total ?? 0} processed
+                </span>
+              </div>
+
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mb-3">
+                <div
+                  className="bg-purple-600 h-2 rounded-full transition-all"
+                  style={{
+                    width: `${
+                      batchStatus.total
+                        ? Math.round(
+                            ((batchStatus.completed ?? 0) / batchStatus.total) * 100
+                          )
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+
+              <div className="flex gap-4 text-sm text-gray-600 dark:text-gray-400 mb-3">
+                <span>✓ {batchStatus.succeeded ?? 0} succeeded</span>
+                <span>↷ {batchStatus.skipped ?? 0} skipped</span>
+                <span>✕ {batchStatus.failed ?? 0} failed</span>
+              </div>
+
+              {batchStatus.error && (
+                <div className="p-3 mb-3 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg text-sm">
+                  {batchStatus.error}
+                </div>
+              )}
+
+              {batchStatus.results && batchStatus.results.length > 0 && (
+                <div className="max-h-72 overflow-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 dark:bg-gray-900 text-left text-gray-500 dark:text-gray-400 sticky top-0">
+                      <tr>
+                        <th className="py-2 px-3">Song</th>
+                        <th className="py-2 px-3">Outcome</th>
+                        <th className="py-2 px-3">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-gray-900 dark:text-white">
+                      {batchStatus.results.map((r) => (
+                        <tr
+                          key={r.song_id}
+                          className="border-t border-gray-200 dark:border-gray-700"
+                        >
+                          <td className="py-2 px-3">{r.title}</td>
+                          <td className="py-2 px-3 capitalize">{r.outcome}</td>
+                          <td className="py-2 px-3 text-gray-500 dark:text-gray-400">
+                            {r.reason ?? '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </main>
     </div>

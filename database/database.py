@@ -424,6 +424,19 @@ class DatabaseManager:
             row = await conn.fetchrow(query, song_id)
         return dict(row) if row else None
 
+    async def get_song_ids_with_cleaned_versions(self) -> set:
+        """Return the set of song_ids that already have a cleaned version.
+
+        A song is "already cleaned" when it has any ``song_versions`` row whose
+        label is not 'original' (i.e. a produced/cleaned take exists). The batch
+        runner (issue #29) uses this in one bulk read to skip already-cleaned
+        songs by default, instead of N+1 per-song lookups.
+        """
+        query = "SELECT DISTINCT song_id FROM song_versions WHERE label <> 'original'"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return {row["song_id"] for row in rows}
+
     async def get_published_audio_paths(self) -> Dict[int, str]:
         """Return {song_id: audio_path} for every song that has a published version.
 
