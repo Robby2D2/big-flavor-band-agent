@@ -71,6 +71,9 @@ audio_library/*.mp3
 audio_library/*.wav
 audio_library/*.flac
 
+# Auto-clean output dir (runtime-generated, host-side writable mount)
+audio_library/produced/
+
 # Database
 sql/init/*.sql.bak
 postgres_data/

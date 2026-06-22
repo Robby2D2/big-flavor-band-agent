@@ -73,6 +73,9 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:14b}
     volumes:
       - ./audio_library:/app/audio_library:ro
+      # Writable output dir for auto-clean, nested under the read-only catalog
+      # mount above so cleaned files can be written without exposing originals.
+      - ./audio_library/produced:/app/audio_library/produced
       # Mount source code for hot reloading (restart instead of rebuild)
       - ./src:/app/src:ro
       - ./database:/app/database:ro
