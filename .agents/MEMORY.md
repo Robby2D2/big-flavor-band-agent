@@ -9,6 +9,31 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-22 — `/produce` Analyze was a silent no-op: missing `mcp` dep + numpy JSON bug
+`requirements-api.txt` never picked up the `mcp` package that
+`src/production/big_flavor_mcp.py` needs (it's only listed in the older
+`setup/requirements.txt`), so `BigFlavorMCPServer` failed to import and every
+production tool call (`analyze_and_recommend_processing`, `auto_clean_recording`)
+silently fell back to a generic `{"error": ..., "message": ...}` dict with no
+`status` field — the `/produce` page couldn't tell it was an error and rendered an
+empty "Detected issues" section instead. Fixed by adding `mcp>=1.0.0` to
+`requirements-api.txt` and rebuilding the backend image (`baf940c`). Recreating
+the backend container to pick up the new image also exposed that
+`BACKEND_API_SECRET` was never persisted to `.env` (only set via an exported shell
+var at the original `docker-compose up`), so every authenticated route 401'd
+("Server auth is not configured") until it was added to `.env`. With the
+dependency actually loaded, the real analysis code ran for the first time and hit
+a third bug: three `"recommended"` flags were raw `numpy.bool_` values from numpy
+comparisons, which FastAPI can't JSON-encode (500). Cast to `bool()`. Same day, a
+separate fix (`2e76db0`, not from this session) repaired nginx's resolver-based
+upstream variables, which had silently broken path forwarding (`/stream`,
+`/icecast/`, the backend catch-all) and were missing frontend-BFF routes for
+`/api/admin`, `/api/produce`, `/api/songs` — worth knowing if nginx 404s/502s show
+up in this area again. **Lesson:** `requirements-api.txt` is maintained
+separately from `setup/requirements.txt` and can silently drift; when a backend
+tool "does nothing," check the startup log for "MCP production server loaded" vs
+"not available" before chasing the data/network layer.
+
 ### 2026-06-20 — First tagged release `v0.1.0` (release-manager)
 Adopted `vX.Y.Z` git-tag versioning. Cut the **first release `v0.1.0`** from `main` (HEAD `775e747`,
 44 commits, no prior tag) and published a GitHub Release with auto-generated notes:
