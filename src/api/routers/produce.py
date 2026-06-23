@@ -63,6 +63,10 @@ class DiscardRequest(BaseModel):
     candidate_path: str
 
 
+class RenameVersionRequest(BaseModel):
+    name: str
+
+
 class BatchStartRequest(BaseModel):
     """Start a catalog-wide auto-clean batch (issue #29).
 
@@ -120,6 +124,46 @@ def _remove_file(path: str) -> bool:
         target.unlink()
         return True
     return False
+
+
+def _file_size_bytes(path: str) -> Optional[int]:
+    """Return a file's size in bytes, or None if it can't be read."""
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return None
+
+
+def _version_display_name(version: Dict[str, Any]) -> str:
+    """The name shown in the versions list: producer-set name, else a label default."""
+    name = version.get("name")
+    if name:
+        return name
+    return "Original" if version.get("label") == "original" else "Cleaned"
+
+
+def _version_view(version: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a song_versions row for the /produce versions list.
+
+    Surfaces enough to tell versions apart: a display name, original/cleaned
+    label, the published-default flag, produced-at timestamp, file size, and the
+    steps/intensity/duration captured in metrics at publish time.
+    """
+    metrics = version.get("metrics") or {}
+    after = metrics.get("after") if isinstance(metrics, dict) else None
+    created_at = version.get("created_at")
+    return {
+        "id": version["id"],
+        "name": _version_display_name(version),
+        "label": version["label"],
+        "is_published": version["is_published"],
+        "steps_applied": metrics.get("steps_applied") if isinstance(metrics, dict) else None,
+        "aggressiveness": metrics.get("aggressiveness") if isinstance(metrics, dict) else None,
+        "duration_seconds": after.get("duration_seconds") if isinstance(after, dict) else None,
+        "file_size_bytes": _file_size_bytes(version["audio_path"]),
+        "metrics": version.get("metrics"),
+        "created_at": created_at.isoformat() if created_at else None,
+    }
 
 
 def _measure_audio(file_path: str) -> Optional[Dict[str, Any]]:
@@ -244,19 +288,9 @@ async def list_versions(
     source_path = await run_in_threadpool(_resolve_source_path, song_id)
     await db.ensure_original_version(song_id, str(source_path))
     versions = await db.list_song_versions(song_id)
-    return {
-        "song_id": song_id,
-        "versions": [
-            {
-                "id": v["id"],
-                "label": v["label"],
-                "is_published": v["is_published"],
-                "metrics": v["metrics"],
-                "created_at": v["created_at"].isoformat() if v["created_at"] else None,
-            }
-            for v in versions
-        ],
-    }
+    # _version_view stats each file; run it off the event loop.
+    views = await run_in_threadpool(lambda: [_version_view(v) for v in versions])
+    return {"song_id": song_id, "versions": views}
 
 
 @router.get("/api/produce/versions/{version_id}/audio")
@@ -273,6 +307,99 @@ async def stream_version_audio(
     if not path.exists():
         raise HTTPException(status_code=404, detail="Version audio file missing")
     return FileResponse(path, headers={"Content-Disposition": "inline"})
+
+
+@router.post("/api/produce/versions/{version_id}/default")
+async def set_default_version(
+    version_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Make a version the song's default (published) one.
+
+    Reuses the transactional publish (exactly one published per song) and then
+    refreshes the in-process published-path override so the radio playlist,
+    search/preview, the /produce before/after preview, and downloads all flip to
+    this version together — the same seam /approve uses.
+    """
+    version = await db.get_song_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    published = await db.publish_song_version(version["song_id"], version_id)
+    if published is None:
+        raise HTTPException(status_code=500, detail="Failed to set default version")
+    radio_service.set_published_version_path(version["song_id"], version["audio_path"])
+    return {
+        "song_id": version["song_id"],
+        "version_id": version_id,
+        "is_published": True,
+    }
+
+
+@router.patch("/api/produce/versions/{version_id}")
+async def rename_version(
+    version_id: int,
+    request: RenameVersionRequest,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Rename a version (sets its producer-facing display name)."""
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name must not be empty")
+    if len(name) > 120:
+        raise HTTPException(status_code=400, detail="Name must be 120 characters or fewer")
+    updated = await db.rename_song_version(version_id, name)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    return {"version_id": version_id, "name": name}
+
+
+@router.delete("/api/produce/versions/{version_id}")
+async def delete_version(
+    version_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Delete a version (its row and audio file).
+
+    The song must always keep a resolvable default, so the song's last remaining
+    version cannot be deleted, and deleting the current default promotes a
+    fallback version (preferring the original) to default and refreshes the
+    radio/stream override.
+    """
+    version = await db.get_song_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    song_id = version["song_id"]
+    if await db.count_song_versions(song_id) <= 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete the song's only version",
+        )
+
+    fallback = None
+    if version["is_published"]:
+        fallback = await db.pick_fallback_version(song_id, version_id)
+        if fallback is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete the song's only version",
+            )
+
+    await db.delete_song_version(version_id)
+    await run_in_threadpool(_remove_file, version["audio_path"])
+
+    if fallback is not None:
+        await db.publish_song_version(song_id, fallback["id"])
+        radio_service.set_published_version_path(song_id, fallback["audio_path"])
+
+    return {
+        "deleted_version_id": version_id,
+        "song_id": song_id,
+        "new_default_version_id": fallback["id"] if fallback else None,
+    }
 
 
 @router.get("/api/produce/preview")
