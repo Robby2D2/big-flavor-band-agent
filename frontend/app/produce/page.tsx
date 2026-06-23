@@ -32,13 +32,54 @@ interface BatchStatus {
 
 // The cleanup steps the editor can toggle, in processing order. Keys match the
 // backend steps_override map (trim / noise_reduction / eq / normalize / master).
-const STEPS: { key: string; label: string }[] = [
-  { key: 'trim', label: 'Trim non-musical content' },
-  { key: 'noise_reduction', label: 'Reduce noise' },
-  { key: 'eq', label: 'Apply EQ corrections' },
-  { key: 'normalize', label: 'Normalize' },
-  { key: 'master', label: 'Master' },
+// `help` copy reflects what auto_clean_recording() in big_flavor_mcp.py actually
+// does for each step — keep it in sync if the pipeline changes.
+const STEPS: { key: string; label: string; help: string }[] = [
+  {
+    key: 'trim',
+    label: 'Trim non-musical content',
+    help: 'Cuts the silence, noise, or talking detected before the music starts and after it ends, so the track begins and finishes on the music.',
+  },
+  {
+    key: 'noise_reduction',
+    label: 'Reduce noise',
+    help: 'Removes steady background noise such as hiss, hum, or room tone. How hard it is applied depends on the Intensity setting.',
+  },
+  {
+    key: 'eq',
+    label: 'Apply EQ corrections',
+    help: 'Balances the frequencies: filters out low rumble, tames a boomy or muddy low end, and adds clarity (or softens harsh highs) based on the analysis.',
+  },
+  {
+    key: 'normalize',
+    label: 'Normalize',
+    help: 'Raises the track to a consistent volume and evens out the loud and quiet parts with light compression. Intensity sets how strong that compression is.',
+  },
+  {
+    key: 'master',
+    label: 'Master',
+    help: 'A final polish that brings the track up to a standard, cohesive loudness so it sits well alongside other songs.',
+  },
 ];
+
+const INTENSITY_HELP =
+  'How strongly the enabled steps are applied. Gentle is a light touch (less noise reduction, EQ, and compression), Moderate is the balanced default, and Aggressive pushes each effect harder for noisier or more uneven recordings.';
+
+// Discoverable inline help: an info icon with a hover/focus tooltip. Uses the
+// native `title` attribute (the same tooltip pattern used elsewhere in the app),
+// so it needs no extra layout and reads correctly in light and dark mode.
+function InfoTip({ text, label }: { text: string; label: string }) {
+  return (
+    <span
+      title={text}
+      aria-label={`${label}: ${text}`}
+      tabIndex={0}
+      className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-400 dark:border-gray-500 text-[10px] font-semibold leading-none text-gray-500 dark:text-gray-400 cursor-help select-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+    >
+      i
+    </span>
+  );
+}
 
 export default function ProducePage() {
   const [songs, setSongs] = useState<CatalogSong[]>([]);
@@ -327,8 +368,9 @@ export default function ProducePage() {
             ) : (
               <>
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                     Intensity
+                    <InfoTip text={INTENSITY_HELP} label="Intensity" />
                   </label>
                   <select
                     value={intensity}
@@ -358,6 +400,7 @@ export default function ProducePage() {
                           className="h-4 w-4"
                         />
                         {step.label}
+                        <InfoTip text={step.help} label={step.label} />
                       </label>
                     ))}
                   </div>
