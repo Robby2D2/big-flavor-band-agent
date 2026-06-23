@@ -294,11 +294,15 @@ class DatabaseManager:
                 song_id INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
                 audio_path TEXT NOT NULL,
                 label VARCHAR(32) NOT NULL DEFAULT 'cleaned',
+                name VARCHAR(120),
                 is_published BOOLEAN NOT NULL DEFAULT FALSE,
                 metrics JSONB,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (audio_path)
             );
+            -- Older deployments created the table before the name column existed
+            -- (issue #43); add it idempotently so this stays a single source of DDL.
+            ALTER TABLE song_versions ADD COLUMN IF NOT EXISTS name VARCHAR(120);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_song_versions_one_published
                 ON song_versions (song_id) WHERE is_published;
             CREATE INDEX IF NOT EXISTS idx_song_versions_song_id
@@ -346,7 +350,7 @@ class DatabaseManager:
     async def list_song_versions(self, song_id: int) -> List[Dict[str, Any]]:
         """Return all versions for a song, newest first."""
         query = """
-            SELECT id, song_id, audio_path, label, is_published, metrics, created_at
+            SELECT id, song_id, audio_path, label, name, is_published, metrics, created_at
             FROM song_versions
             WHERE song_id = $1
             ORDER BY created_at DESC
@@ -360,6 +364,40 @@ class DatabaseManager:
         query = "SELECT * FROM song_versions WHERE id = $1"
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, version_id)
+        return dict(row) if row else None
+
+    async def rename_song_version(
+        self, version_id: int, name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Set a version's display name. Returns the updated row, or None if absent."""
+        query = "UPDATE song_versions SET name = $2 WHERE id = $1 RETURNING *"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, version_id, name)
+        return dict(row) if row else None
+
+    async def count_song_versions(self, song_id: int) -> int:
+        """Return how many versions a song has."""
+        query = "SELECT COUNT(*) FROM song_versions WHERE song_id = $1"
+        async with self.pool.acquire() as conn:
+            return int(await conn.fetchval(query, song_id))
+
+    async def pick_fallback_version(
+        self, song_id: int, exclude_version_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Choose which version should become default after the current one is deleted.
+
+        Prefers the 'original' (so deleting a cleaned default reverts to the
+        source); otherwise the most recently created remaining version. Returns
+        None if no other version exists.
+        """
+        query = """
+            SELECT * FROM song_versions
+            WHERE song_id = $1 AND id <> $2
+            ORDER BY (label = 'original') DESC, created_at DESC
+            LIMIT 1
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id, exclude_version_id)
         return dict(row) if row else None
 
     async def add_song_version(
