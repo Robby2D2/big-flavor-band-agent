@@ -249,17 +249,87 @@ async def analyze_song(
     return {"result": result}
 
 
+def _autoclean_dedup_key(cleanup_result: Dict[str, Any]) -> str:
+    """A stable key identifying an auto-clean candidate by its inputs (issue #47).
+
+    Two auto-clean runs for the same song are "identical" when they applied the
+    same set of steps at the same intensity, so the key is the aggressiveness plus
+    the sorted set of applied step names. A re-run producing the same key replaces
+    the prior candidate instead of appending an indistinguishable duplicate.
+    """
+    steps = sorted(
+        {
+            step.get("step")
+            for step in cleanup_result.get("steps_applied", []) or []
+            if step.get("step")
+        }
+    )
+    aggressiveness = cleanup_result.get("aggressiveness") or ""
+    return f"{aggressiveness}|{','.join(steps)}"
+
+
+async def save_autoclean_candidate(
+    song_id: int,
+    output_path: str,
+    cleanup_result: Dict[str, Any],
+    db: DatabaseManager,
+) -> Dict[str, Any]:
+    """Save a completed auto-clean run as a new candidate version (issue #47).
+
+    Seeds the song's 'original' version, then records the rendered file as a
+    *candidate* (label 'cleaned', NOT published — the song's default is left
+    unchanged so the producer can promote it themselves). The version carries the
+    steps/intensity/produced-at metadata the versions list renders. If an identical
+    auto-clean candidate already exists for the song (same steps + intensity), its
+    audio file and metrics are replaced in place rather than appending a duplicate.
+    """
+    source_path = await run_in_threadpool(_resolve_source_path, song_id)
+    await db.ensure_original_version(song_id, str(source_path))
+
+    after = await run_in_threadpool(_measure_audio, output_path)
+    dedup_key = _autoclean_dedup_key(cleanup_result)
+    metrics: Dict[str, Any] = {
+        "steps_applied": cleanup_result.get("steps_applied", []),
+        "aggressiveness": cleanup_result.get("aggressiveness"),
+        "after": after,
+        "produced_at": time.time(),
+        "dedup_key": dedup_key,
+    }
+
+    existing = await db.find_cleaned_version_by_dedup_key(song_id, dedup_key)
+    if existing is not None:
+        # Identical re-run: swap the file in place and drop the superseded one,
+        # keeping the row id and its publish state (never auto-promote here).
+        if existing["audio_path"] != output_path:
+            await run_in_threadpool(_remove_file, existing["audio_path"])
+        version = await db.replace_song_version_audio(
+            existing["id"], output_path, metrics
+        )
+        if version is None:
+            version = await db.add_song_version(
+                song_id, output_path, label="cleaned", metrics=metrics
+            )
+    else:
+        version = await db.add_song_version(
+            song_id, output_path, label="cleaned", metrics=metrics
+        )
+
+    return {"version_id": version["id"], "is_published": version["is_published"]}
+
+
 @router.post("/api/produce/auto-clean")
 async def auto_clean_song(
     request: ProduceRequest,
     agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ):
     """Auto-clean a catalog song to a new derived file (original untouched).
 
-    A quick one-shot clean: writes a cleaned file under produced/ and returns the
-    tool payload. It does not create a version — approving/publishing a cleaned
-    take is the audition flow's job (``/api/produce/clean`` → ``/approve``).
+    A quick one-shot clean: writes a cleaned file under produced/, saves it as a new
+    candidate version of the song (NOT promoted to default — the producer chooses
+    that), and returns the tool payload. Publishing a candidate as the default is
+    the versions list's job (set-default), consistent with the audition flow.
     """
     source_path = await run_in_threadpool(_resolve_source_path, request.song_id)
     output_path = _build_output_path(request.song_id)
@@ -273,6 +343,15 @@ async def auto_clean_song(
         parameters["steps_override"] = request.steps_override
 
     result = await agent.execute_tool("auto_clean_recording", parameters)
+
+    # Only a successful run produces a file worth versioning; a failure must leave
+    # the versions list and default untouched (issue #47).
+    if result.get("status") == "success":
+        version = await save_autoclean_candidate(
+            request.song_id, str(output_path), result, db
+        )
+        return {"result": result, "version": version}
+
     return {"result": result}
 
 
