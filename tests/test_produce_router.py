@@ -112,6 +112,24 @@ class FakeDB:
     async def add_song_version(self, song_id, audio_path, label="cleaned", metrics=None):
         return self._insert(song_id, audio_path, label, False, metrics)
 
+    async def find_cleaned_version_by_dedup_key(self, song_id, dedup_key):
+        for v in self._versions.values():
+            if (
+                v["song_id"] == song_id
+                and v["label"] == "cleaned"
+                and (v["metrics"] or {}).get("dedup_key") == dedup_key
+            ):
+                return v
+        return None
+
+    async def replace_song_version_audio(self, version_id, audio_path, metrics=None):
+        row = self._versions.get(version_id)
+        if row is None:
+            return None
+        row["audio_path"] = audio_path
+        row["metrics"] = metrics
+        return row
+
     async def publish_song_version(self, song_id, version_id):
         if version_id not in self._versions:
             return None
@@ -218,6 +236,113 @@ def test_auto_clean_unknown_song_returns_404(produce_client, monkeypatch):
         headers=_editor_headers(monkeypatch),
     )
     assert resp.status_code == 404
+
+
+def test_auto_clean_creates_unpublished_candidate_version(produce_client, monkeypatch):
+    """A successful auto-clean saves a candidate version without changing the default."""
+    client, _, _, db, _ = produce_client
+    monkeypatch.setattr(produce, "_measure_audio", lambda path: {"duration_seconds": 12.0})
+
+    # Seed an existing published original so we can assert the default is unchanged.
+    original = db._insert(5, "/app/audio_library/5_test-track.mp3", "original", True)
+
+    resp = client.post(
+        "/api/produce/auto-clean",
+        json={"song_id": 5, "aggressiveness": "moderate"},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["result"]["status"] == "success"
+    assert body["version"]["is_published"] is False
+
+    # A new cleaned candidate exists, unpublished, carrying step/intensity/produced-at.
+    cleaned = [v for v in db._versions.values() if v["label"] == "cleaned"]
+    assert len(cleaned) == 1
+    version = cleaned[0]
+    assert version["is_published"] is False
+    assert version["metrics"]["aggressiveness"] == "moderate"
+    assert [s["step"] for s in version["metrics"]["steps_applied"]] == [
+        "noise_reduction",
+        "mastering",
+    ]
+    assert "produced_at" in version["metrics"]
+
+    # The original is still the published default — the candidate did not promote.
+    assert original["is_published"] is True
+
+
+def test_auto_clean_identical_rerun_replaces_candidate(produce_client, monkeypatch):
+    """Re-running auto-clean with the same steps/intensity replaces, not duplicates."""
+    client, _, _, db, _ = produce_client
+    monkeypatch.setattr(produce, "_measure_audio", lambda path: {"duration_seconds": 12.0})
+    db._insert(5, "/app/audio_library/5_test-track.mp3", "original", True)
+
+    first = client.post(
+        "/api/produce/auto-clean",
+        json={"song_id": 5, "aggressiveness": "moderate"},
+        headers=_editor_headers(monkeypatch),
+    )
+    second = client.post(
+        "/api/produce/auto-clean",
+        json={"song_id": 5, "aggressiveness": "moderate"},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    cleaned = [v for v in db._versions.values() if v["label"] == "cleaned"]
+    assert len(cleaned) == 1, "identical re-run should replace, not append"
+    # Same version row id reused across the two runs.
+    assert first.json()["version"]["version_id"] == second.json()["version"]["version_id"]
+
+
+def test_auto_clean_different_intensity_adds_distinct_candidate(produce_client, monkeypatch):
+    """Different intensity is a distinct candidate, not a replacement."""
+    client, _, _, db, _ = produce_client
+    monkeypatch.setattr(produce, "_measure_audio", lambda path: {"duration_seconds": 12.0})
+    db._insert(5, "/app/audio_library/5_test-track.mp3", "original", True)
+
+    client.post(
+        "/api/produce/auto-clean",
+        json={"song_id": 5, "aggressiveness": "moderate"},
+        headers=_editor_headers(monkeypatch),
+    )
+    client.post(
+        "/api/produce/auto-clean",
+        json={"song_id": 5, "aggressiveness": "aggressive"},
+        headers=_editor_headers(monkeypatch),
+    )
+
+    cleaned = [v for v in db._versions.values() if v["label"] == "cleaned"]
+    assert len(cleaned) == 2
+    intensities = {v["metrics"]["aggressiveness"] for v in cleaned}
+    assert intensities == {"moderate", "aggressive"}
+
+
+def test_auto_clean_failure_creates_no_version(produce_client, monkeypatch):
+    """A failed auto-clean leaves the versions list and default untouched."""
+    client, agent, _, db, _ = produce_client
+    db._insert(5, "/app/audio_library/5_test-track.mp3", "original", True)
+
+    async def failing_tool(tool_name, parameters):
+        agent.calls.append((tool_name, parameters))
+        return {"status": "error", "error": "decode failed"}
+
+    monkeypatch.setattr(agent, "execute_tool", failing_tool)
+
+    resp = client.post(
+        "/api/produce/auto-clean",
+        json={"song_id": 5, "aggressiveness": "moderate"},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["result"]["status"] == "error"
+    assert "version" not in body
+
+    # No cleaned candidate was created; only the seeded original remains.
+    assert [v["label"] for v in db._versions.values()] == ["original"]
 
 
 def test_clean_returns_candidate_and_diff(produce_client, monkeypatch):

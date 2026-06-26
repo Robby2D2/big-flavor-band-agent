@@ -260,6 +260,11 @@ export default function ProducePage() {
         throw new Error(data.error || 'Auto-clean failed');
       }
       setCleanResult(data.result);
+      // A successful clean is saved as a new candidate version; surface it
+      // immediately so the producer can audition and promote it (issue #47).
+      if (data.result?.status === 'success' && selectedSongId != null) {
+        loadVersions(selectedSongId);
+      }
     } catch (err: any) {
       setCleanResult({ status: 'error', error: err.message });
     } finally {

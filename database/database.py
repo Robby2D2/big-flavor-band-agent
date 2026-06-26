@@ -427,6 +427,53 @@ class DatabaseManager:
             )
         return dict(row)
 
+    async def find_cleaned_version_by_dedup_key(
+        self, song_id: int, dedup_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Find an existing auto-clean candidate matching a dedup key, or None.
+
+        Used to replace (rather than duplicate) a prior auto-clean candidate when a
+        producer re-runs Auto-Clean with identical steps/intensity for the same song
+        (issue #47). The key is stored in the version's ``metrics`` JSON as
+        ``dedup_key`` when the candidate is created.
+        """
+        query = """
+            SELECT * FROM song_versions
+            WHERE song_id = $1 AND label = 'cleaned' AND metrics ->> 'dedup_key' = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id, dedup_key)
+        return dict(row) if row else None
+
+    async def replace_song_version_audio(
+        self,
+        version_id: int,
+        audio_path: str,
+        metrics: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Point an existing version at a freshly rendered file + refreshed metrics.
+
+        Replaces an identical auto-clean candidate in place (issue #47): keeps the
+        row id and publish state, only swapping its audio path and metrics. Returns
+        the updated row, or None if the version no longer exists.
+        """
+        query = """
+            UPDATE song_versions
+            SET audio_path = $2, metrics = $3
+            WHERE id = $1
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                version_id,
+                audio_path,
+                json.dumps(metrics) if metrics is not None else None,
+            )
+        return dict(row) if row else None
+
     async def publish_song_version(
         self, song_id: int, version_id: int
     ) -> Optional[Dict[str, Any]]:
