@@ -9,6 +9,17 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-27 — Release `v0.9.0` (release-manager)
+Cut **`v0.9.0`** from `main` (HEAD `feee75c`), a **minor** bump from `v0.8.0` because the 6-commit
+range includes a `feat:` commit (`1dfd759`, save auto-clean output as a candidate version on
+`/produce`) merged via PR #48. Range also covers chores: local-dev against Anthropic + scripts/docs
+reorg (`b295d6c`), node_modules gitignore + agent-memory update (`3328971`), and `cleanup` (`feee75c`).
+Published GitHub Release with auto-generated notes anchored to `v0.8.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.9.0. Notified linked closed issue
+#47. PR #50 was approved-but-unmerged and correctly **out of scope** for this release (per orchestrator
+note). Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check
+skipped; frontend `npm run build` **passed**. Proceeded per Step 4.5.
+
 ### 2026-06-26 — Release `v0.8.0` (release-manager)
 Cut **`v0.8.0`** from `main` (HEAD `2ed9f36`), a **minor** bump from `v0.7.0` because the 2-commit
 range includes a `feat:` commit (`71bc42d`, manage song versions and set a default from `/produce`)
