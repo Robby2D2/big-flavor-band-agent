@@ -9,6 +9,40 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-26 — Release `v0.8.0` (release-manager)
+Cut **`v0.8.0`** from `main` (HEAD `2ed9f36`), a **minor** bump from `v0.7.0` because the 2-commit
+range includes a `feat:` commit (`71bc42d`, manage song versions and set a default from `/produce`)
+merged via PR #46. Published GitHub Release with auto-generated notes anchored to `v0.7.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.8.0. Notified linked closed issue
+#43. Sanity gate: Docker daemon was down locally (infra, not a `main` error) so the backend-boot
+check was skipped; frontend `npm run build` **passed** and directly validated the changed `/produce`
+page plus the new version-management API routes (`/api/produce/versions/[versionId]/{audio,default,
+rename}`). Proceeded per Step 4.5.
+
+### 2026-06-23 — Release `v0.7.0` (release-manager)
+Cut **`v0.7.0`** from `main` (HEAD `425091e`), a **minor** bump from `v0.6.0` because the 2-commit
+range includes a `feat:` commit (`b3445e8`, inline help for the `/produce` configure-and-clean panel)
+merged via PR #45. The only product change in the range is `frontend/app/produce/page.tsx`. Published
+GitHub Release with auto-generated notes anchored to `v0.6.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.7.0. Notified linked closed issue
+#44. Sanity gate: frontend `npm run build` **passed** (directly validates the changed page). Backend
+boot **failed** with `asyncpg DatatypeMismatchError` on `song_versions_song_id_fkey` — local `songs.id`
+is `varchar` but `ensure_song_versions_table` (database/database.py:294) declares `song_id INTEGER
+REFERENCES songs(id)`. That code shipped in v0.6.0 (commit `6052d28`) and is **not** in this range, so
+the failure is a local DB-state divergence (env), not a `main` error introduced here — noted and
+proceeded per Step 4.5. Worth a human's eye if the local Postgres `songs.id` type ever needs
+reconciling with the integer FK the code expects.
+
+### 2026-06-22 — Release `v0.6.0` (release-manager)
+Cut **`v0.6.0`** from `main` (HEAD `0ed449d`), a **minor** bump from `v0.5.0` because the 11-commit
+range includes a `feat:` commit (`e970612`, clarify force-reclean has no effect) and merged feature
+PR #41. Range covered the `/produce` analyze/auto-clean fixes (mcp dep, numpy JSON, writable produced
+mount, before/after players), nginx path forwarding restore, and `AGENT_API_URL` next.config fallback.
+Published GitHub Release with auto-generated notes anchored to `v0.5.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.6.0. Notified linked closed issues
+#38 and #39. Sanity gate: Docker daemon was up but the full stack wasn't running (Postgres exited,
+backend started clean with no logs) — treated as infra, not a `main` error, so proceeded.
+
 ### 2026-06-22 — `/produce` Analyze was a silent no-op: missing `mcp` dep + numpy JSON bug
 `requirements-api.txt` never picked up the `mcp` package that
 `src/production/big_flavor_mcp.py` needs (it's only listed in the older
