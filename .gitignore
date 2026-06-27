@@ -27,6 +27,9 @@ env/
 ENV/
 .venv
 
+# Node (stray installs anywhere in the repo; frontend has its own anchored rule)
+node_modules/
+
 # IDEs
 .vscode/
 .idea/
