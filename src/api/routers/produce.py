@@ -20,6 +20,7 @@ audio or trigger a re-index of the original. Editor-gated, consistent with the
 existing tools endpoint (issue #1).
 """
 import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -246,11 +247,27 @@ def _build_diff(
     }
 
 
+def _iso_date(value: Any) -> Optional[str]:
+    """Serialize a recorded-on date to an ISO ``YYYY-MM-DD`` string, or ``None``.
+
+    asyncpg returns a ``date`` for a DATE column, but the catalog has rows where it
+    is null or already a string, so normalize all three to a stable ISO string the
+    frontend can format without hitting "Invalid Date" (issue #51).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()[:10]
+    return str(value)[:10]
+
+
 def _catalog_song_view(song: Dict[str, Any], cleaned_ids: set) -> Dict[str, Any]:
     """Shape a catalog song row for the producer catalog table (issue #49).
 
     Surfaces the columns the table sorts/filters on plus a ``cleaned`` flag
-    (whether the song has at least one non-original version).
+    (whether the song has at least one non-original version). ``recorded_on`` is the
+    bigflavorband.com recording date (issue #51), distinct from the system
+    ``created_at``.
     """
     return {
         "id": song["id"],
@@ -258,6 +275,7 @@ def _catalog_song_view(song: Dict[str, Any], cleaned_ids: set) -> Dict[str, Any]
         "genre": song.get("genre"),
         "tempo_bpm": song.get("tempo_bpm"),
         "duration_seconds": song.get("duration_seconds"),
+        "recorded_on": _iso_date(song.get("recorded_on")),
         "cleaned": song["id"] in cleaned_ids,
     }
 

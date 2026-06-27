@@ -10,6 +10,7 @@ interface CatalogSong {
   genre: string | null;
   tempo_bpm: number | null;
   duration_seconds: number | null;
+  recorded_on: string | null;
   cleaned: boolean;
 }
 
@@ -27,7 +28,7 @@ interface CleanResultRow {
 // Sortable/filterable columns of the catalog table. `value` pulls the raw cell
 // value off a song; `display` renders it. Filtering is a case-insensitive match
 // over `display`, so what a producer sees is what they filter on.
-type ColumnKey = 'title' | 'genre' | 'tempo_bpm' | 'duration_seconds' | 'cleaned';
+type ColumnKey = 'title' | 'genre' | 'tempo_bpm' | 'duration_seconds' | 'recorded_on' | 'cleaned';
 
 const formatDuration = (seconds: number | null): string => {
   if (seconds == null) return '';
@@ -35,6 +36,11 @@ const formatDuration = (seconds: number | null): string => {
   const s = Math.round(seconds % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
+
+// The backend sends recorded_on as an ISO 'YYYY-MM-DD' string (or null). Render it
+// as-is rather than via `new Date(...)` so a malformed value never becomes
+// "Invalid Date"; sorting on the raw ISO string is also chronological.
+const formatDate = (recordedOn: string | null): string => recordedOn ?? '';
 
 const COLUMNS: {
   key: ColumnKey;
@@ -57,6 +63,12 @@ const COLUMNS: {
     display: (s) => formatDuration(s.duration_seconds),
   },
   {
+    key: 'recorded_on',
+    label: 'Date',
+    value: (s) => s.recorded_on,
+    display: (s) => formatDate(s.recorded_on),
+  },
+  {
     key: 'cleaned',
     label: 'Cleaned',
     value: (s) => (s.cleaned ? 1 : 0),
@@ -74,6 +86,7 @@ export default function ProducePage() {
     genre: '',
     tempo_bpm: '',
     duration_seconds: '',
+    recorded_on: '',
     cleaned: '',
   });
   const [sortKey, setSortKey] = useState<ColumnKey>('title');
@@ -424,6 +437,9 @@ export default function ProducePage() {
                     </td>
                     <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
                       {formatDuration(song.duration_seconds) || '—'}
+                    </td>
+                    <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                      {formatDate(song.recorded_on) || '—'}
                     </td>
                     <td className="py-2 px-3">
                       {song.cleaned ? (

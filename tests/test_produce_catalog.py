@@ -3,9 +3,11 @@
 Exercise the pure routing/shaping helpers in src/api/routers/produce.py without a
 live database or any LLM call: the catalog-row view, the source-aware dedup key,
 and the version-aware source-path resolver (with a fake DB and a real temp file).
+Also covers surfacing the recorded-on date in the catalog row (issue #51).
 """
 
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ def test_catalog_song_view_marks_cleaned_and_surfaces_columns():
         "genre": "Funk",
         "tempo_bpm": 118.4,
         "duration_seconds": 212,
+        "recorded_on": date(2019, 7, 4),
     }
     view = produce._catalog_song_view(song, cleaned_ids={5, 9})
     assert view == {
@@ -32,6 +35,7 @@ def test_catalog_song_view_marks_cleaned_and_surfaces_columns():
         "genre": "Funk",
         "tempo_bpm": 118.4,
         "duration_seconds": 212,
+        "recorded_on": "2019-07-04",
         "cleaned": True,
     }
 
@@ -42,6 +46,14 @@ def test_catalog_song_view_not_cleaned_and_missing_title():
     assert view["cleaned"] is False
     assert view["title"] == "Unknown"
     assert view["genre"] is None
+    # A song with no recorded-on date surfaces null, not a crash (issue #51).
+    assert view["recorded_on"] is None
+
+
+def test_iso_date_normalizes_date_string_and_null():
+    assert produce._iso_date(date(2020, 1, 2)) == "2020-01-02"
+    assert produce._iso_date("2020-01-02T00:00:00") == "2020-01-02"
+    assert produce._iso_date(None) is None
 
 
 def _cleanup_result():
