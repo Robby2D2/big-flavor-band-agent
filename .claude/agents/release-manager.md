@@ -172,10 +172,32 @@ EOF
 )"
 ```
 
+## Step 8.5 — Record the release in agent memory (commit + push)
+
+Per **AGENTS.md → Key Changes**, append a concise, dated entry for this release to `.agents/MEMORY.md`
+(newest entries at the top). Unlike the tag, this file edit **must be committed** — otherwise it is
+left as an orphaned working-tree change on `main`. Commit it directly to `main` and push:
+
+```bash
+git config user.name "bigflavor-bot"
+git config user.email "rdanek@gmail.com"
+
+git add .agents/MEMORY.md
+git commit -m "chore: record v$next_version release in agent memory" || { echo "Nothing to commit for memory — continuing."; }
+
+# origin/main may have advanced since you tagged (e.g. a PR merged mid-sweep). Rebase, then push.
+git pull --rebase --quiet origin main || { echo "git pull --rebase failed — main diverged; needs human cleanup."; exit 1; }
+git push origin main || { echo "git push of memory commit to main rejected — flag for a human."; exit 1; }
+```
+
+A failed `git commit` because there is nothing staged (the memory edit was already committed, or
+unchanged) is a **benign** outcome — continue. A rejected `git push` or a diverged rebase is an
+unrecoverable failure: follow **On unexpected failure** below.
+
 ## Step 9 — Return
 
 ```
-Released v$next_version — N issues notified, GH Release created (ready for human deploy).
+Released v$next_version — N issues notified, GH Release created, memory committed (ready for human deploy).
 ```
 
 ## Failure modes you must handle gracefully
@@ -188,6 +210,8 @@ Released v$next_version — N issues notified, GH Release created (ready for hum
 | Sanity gate can't run (Docker down) | Note it and proceed — don't block on local infra. |
 | Tag didn't reach origin after push | Abort before creating a Release (Step 6); flag for a human. |
 | GitHub Release creation failed | Retry once; if still failing, post partial-state comment and exit. |
+| Nothing to commit for `.agents/MEMORY.md` (Step 8.5) | Benign — the entry is already recorded; continue. |
+| Memory commit push to `main` rejected / rebase diverged (Step 8.5) | Unrecoverable — the tag/Release are already published, so post a `<!-- release-agent:partial -->` comment noting the memory commit didn't land, and flag for a human. Do not leave it unreported. |
 
 ## Do not
 
