@@ -5,7 +5,7 @@ Database manager for PostgreSQL with pgvector
 import logging
 import os
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, date
 import asyncpg
 import json
 from dotenv import load_dotenv
@@ -38,6 +38,35 @@ def _resolve_db_password() -> str:
         "default outside a development environment. Set DB_PASSWORD, or set "
         "APP_ENV=development to allow the dev default."
     )
+
+
+def _parse_recorded_on(value: Any) -> Optional[date]:
+    """Coerce a scraped recorded-on value into a date for the DATE column.
+
+    Accepts a date/datetime, an ISO 'YYYY-MM-DD' string, or the scraper's
+    'M/D/YY' format (interpreted as 20YY). Returns None for empty or
+    unparseable input so a bad value never blocks a song insert.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        pass
+    parts = text.split("/")
+    if len(parts) == 3:
+        try:
+            month, day, yy = (int(p) for p in parts)
+            return date(2000 + yy, month, day)
+        except ValueError:
+            pass
+    logger.warning(f"Unparseable recorded_on value, storing NULL: {value!r}")
+    return None
 
 
 class DatabaseManager:
@@ -84,8 +113,9 @@ class DatabaseManager:
         query = """
             INSERT INTO songs (
                 id, title, genre, tempo_bpm, key, duration_seconds,
-                energy, mood, recording_date, audio_quality, audio_url
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                energy, mood, recording_date, audio_quality, audio_url,
+                session, recorded_on
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (id) DO UPDATE SET
                 title = EXCLUDED.title,
                 genre = EXCLUDED.genre,
@@ -97,6 +127,10 @@ class DatabaseManager:
                 recording_date = EXCLUDED.recording_date,
                 audio_quality = EXCLUDED.audio_quality,
                 audio_url = EXCLUDED.audio_url,
+                -- COALESCE so a re-scrape that lacks these doesn't wipe values
+                -- already present (e.g. the back-filled session/recorded_on).
+                session = COALESCE(EXCLUDED.session, songs.session),
+                recorded_on = COALESCE(EXCLUDED.recorded_on, songs.recorded_on),
                 updated_at = CURRENT_TIMESTAMP
             RETURNING id
         """
@@ -122,7 +156,9 @@ class DatabaseManager:
                 song.get('mood'),
                 song.get('recording_date'),
                 song.get('audio_quality'),
-                song.get('audio_url')
+                song.get('audio_url'),
+                song.get('session'),
+                _parse_recorded_on(song.get('recorded_on'))
             )
         
         logger.info(f"Inserted/updated song: {song_id}")
