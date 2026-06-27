@@ -17,7 +17,10 @@ export async function POST(request: NextRequest) {
         'Content-Type': 'application/json',
         ...backendAuthHeaders('editor'),
       },
-      body: JSON.stringify({ song_id: body.song_id }),
+      body: JSON.stringify({
+        song_id: body.song_id,
+        source_version_id: body.source_version_id ?? null,
+      }),
     });
 
     const data = await response.json().catch(() => ({}));
