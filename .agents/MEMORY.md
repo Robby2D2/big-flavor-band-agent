@@ -9,6 +9,17 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-27 — Release `v0.10.0` (release-manager)
+Cut **`v0.10.0`** from `main` (HEAD `21a3abf`), a **minor** bump from `v0.9.1` because the 9-commit
+range adds clear features: a `feat:` commit (`059df70`, add a recorded-on Date column to the Produce
+catalog table) merged via PR #53, plus the null-metadata back-fill/derivation work (back-fill script
+for `songs.session`/`recorded_on`, `insert_song()` now persisting them, and LLM-based energy/mood
+derivation for all 1341 songs). Published GitHub Release with auto-generated notes anchored to `v0.9.1`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.10.0. Notified linked closed issue
+#51. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check skipped;
+frontend `npm run build` **passed** and validated the changed `/produce` catalog page. Proceeded per
+Step 4.5.
+
 ### 2026-06-27 — Back-fill + derive null song metadata
 Eight `songs` columns were entirely null (`energy, mood, recording_date, audio_quality, rating,
 session, uploaded_on, recorded_on`). Root cause: `insert_song()` (`database/database.py`) only ever
