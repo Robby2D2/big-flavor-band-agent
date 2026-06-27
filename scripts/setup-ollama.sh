@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Always operate from the repo root (this script lives in scripts/).
+cd "$(dirname "$0")/.." || exit 1
+
 # Ollama Model Setup Script
 # Downloads and configures local LLM models for BigFlavor Band Agent
 

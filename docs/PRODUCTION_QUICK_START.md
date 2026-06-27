@@ -32,8 +32,8 @@ Your application now runs as 5 Docker containers:
 - `DOCKER_DEPLOYMENT.md` - Complete deployment guide
 
 ### Local LLM (Cost Savings)
-- `setup-ollama.sh` - Linux/Mac Ollama model downloader
-- `setup-ollama.ps1` - Windows Ollama model downloader
+- `scripts/setup-ollama.sh` - Linux/Mac Ollama model downloader
+- `scripts/setup-ollama.ps1` - Windows Ollama model downloader
 - `LOCAL_LLM_GUIDE.md` - Complete guide for local LLM usage
 - `src/llm/llm_provider.py` - LLM abstraction layer (supports Anthropic + Ollama)
 
@@ -72,13 +72,13 @@ want to pre-download the model (or a different one) before deploying:
 
 **Windows:**
 ```powershell
-.\setup-ollama.ps1
+.\scripts/setup-ollama.ps1
 ```
 
 **Linux/Mac:**
 ```bash
-chmod +x setup-ollama.sh
-./setup-ollama.sh
+chmod +x scripts/setup-ollama.sh
+./scripts/setup-ollama.sh
 ```
 
 This downloads the AI model (~9GB for the recommended `qwen2.5:14b`). See

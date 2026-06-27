@@ -85,8 +85,8 @@ Go to **http://localhost:3000** and enjoy! 🎉
 big-flavor-band-agent/
 ├── backend_api.py              ← FastAPI server (port 8000)
 ├── requirements-api.txt        ← API dependencies (installed ✓)
-├── start-backend.ps1          ← Helper script to start backend
-├── start-frontend.ps1         ← Helper script to start frontend
+├── scripts/start-backend.ps1          ← Helper script to start backend
+├── scripts/start-frontend.ps1         ← Helper script to start frontend
 ├── GOOGLE_OAUTH_SETUP_GUIDE.md ← Detailed Google OAuth instructions
 ├── FRONTEND_SETUP.md          ← Complete technical documentation
 └── frontend/                   ← Next.js application
@@ -114,7 +114,7 @@ I created two PowerShell scripts to make starting the servers easier:
 
 ### Start Backend
 ```powershell
-.\start-backend.ps1
+.\scripts/start-backend.ps1
 ```
 This will:
 - Activate Python virtual environment
@@ -123,7 +123,7 @@ This will:
 
 ### Start Frontend
 ```powershell
-.\start-frontend.ps1
+.\scripts/start-frontend.ps1
 ```
 This will:
 - Install npm dependencies if needed

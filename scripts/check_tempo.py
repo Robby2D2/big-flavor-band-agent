@@ -1,5 +1,11 @@
 """Quick check for tempo_bpm values in database"""
 import asyncio
+import sys
+from pathlib import Path
+
+# Allow running from anywhere: put the repo root (scripts/ -> ..) on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from database.database import DatabaseManager
 
 async def main():

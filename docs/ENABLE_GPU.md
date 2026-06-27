@@ -93,7 +93,7 @@ docker exec bigflavor-ollama nvidia-smi
 Run the test again and you should see MUCH faster responses:
 
 ```powershell
-.\run_local.ps1
+.\scripts/run_local.ps1
 ```
 
 Expected improvements:
@@ -175,7 +175,7 @@ docker-compose down ollama && docker-compose up -d ollama
 docker logs -f bigflavor-ollama
 
 # Run chat session
-.\run_local.ps1
+.\scripts/run_local.ps1
 ```
 
 ---

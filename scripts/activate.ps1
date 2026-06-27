@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Activate Virtual Environment Script
 # Quick script to activate the Python virtual environment for this project
 

@@ -86,3 +86,7 @@ streaming/playlist/radio.m3u
 
 # Local Claude Code settings (machine-specific permission allowlist)
 .claude/settings.local.json
+
+# Local Compose override (machine-specific dev setup).
+# Tracked template lives at docker-compose.override.yml.example — copy it to use.
+docker-compose.override.yml

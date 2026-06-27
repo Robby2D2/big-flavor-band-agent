@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Enable GPU for Ollama and verify it's working
 
 Write-Host "==========================================" -ForegroundColor Cyan
@@ -63,7 +66,7 @@ if ($gpuCheck -match "NVIDIA-SMI") {
     Write-Host "  2. NVIDIA Container Toolkit not installed" -ForegroundColor White
     Write-Host "  3. WSL2 integration not configured" -ForegroundColor White
     Write-Host ""
-    Write-Host "Follow the guide: ENABLE_GPU.md" -ForegroundColor Cyan
+    Write-Host "Follow the guide: docs/ENABLE_GPU.md" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Quick fix for Docker Desktop 4.50+:" -ForegroundColor Cyan
     Write-Host "  1. Open Docker Desktop Settings" -ForegroundColor White

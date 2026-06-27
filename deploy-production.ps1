@@ -194,7 +194,7 @@ Write-Host "Useful commands:" -ForegroundColor Cyan
 Write-Host "  View logs:           docker-compose logs -f"
 Write-Host "  Stop services:       docker-compose down"
 Write-Host "  Restart service:     docker-compose restart [service]"
-Write-Host "  View this guide:     cat DOCKER_DEPLOYMENT.md"
+Write-Host "  View this guide:     cat docs/DOCKER_DEPLOYMENT.md"
 Write-Host ""
 Write-Host "Check service health:" -ForegroundColor Cyan
 Write-Host "  curl http://localhost/health"

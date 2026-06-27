@@ -123,7 +123,7 @@ docker-compose up -d
 ### Database Migrations
 ```bash
 # Run migrations
-docker exec bigflavor-backend python run_migration.py
+docker exec bigflavor-backend python scripts/run_migration.py
 ```
 
 ### Access Logs

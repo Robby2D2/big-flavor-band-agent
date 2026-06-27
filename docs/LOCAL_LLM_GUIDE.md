@@ -31,21 +31,21 @@ Ollama is already configured in `docker-compose.yml`. It's set to start automati
 **Windows:**
 ```powershell
 # Default model (qwen2.5:14b - ~9GB)
-.\setup-ollama.ps1
+.\scripts/setup-ollama.ps1
 
 # Or specify a different model
 $env:OLLAMA_MODEL="qwen2.5:7b"
-.\setup-ollama.ps1
+.\scripts/setup-ollama.ps1
 ```
 
 **Linux/Mac:**
 ```bash
 # Default model
-chmod +x setup-ollama.sh
-./setup-ollama.sh
+chmod +x scripts/setup-ollama.sh
+./scripts/setup-ollama.sh
 
 # Or specify a different model
-OLLAMA_MODEL="qwen2.5:7b" ./setup-ollama.sh
+OLLAMA_MODEL="qwen2.5:7b" ./scripts/setup-ollama.sh
 ```
 
 ### 3. Configure Environment

@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Run Full BigFlavorAgent with Ollama + Database
 # Complete music search and analysis capabilities!
 
@@ -52,7 +55,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Activate virtual environment and run
-& .\venv\Scripts\python.exe run_full_agent.py
+& .\venv\Scripts\python.exe scripts\run_full_agent.py
 
 Write-Host ""
 Write-Host "Session ended." -ForegroundColor Cyan

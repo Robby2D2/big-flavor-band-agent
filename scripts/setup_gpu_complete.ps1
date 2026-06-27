@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Complete GPU Setup Script for Windows + Docker Desktop + WSL2
 # This handles everything needed to get Ollama using your RTX 3090
 
@@ -77,7 +80,7 @@ if ($toolkitInstalled) {
     Write-Host ""
 
     # Run setup script in WSL2
-    $setupScript = Get-Content .\setup_gpu_wsl2.sh -Raw
+    $setupScript = Get-Content .\scripts\setup_gpu_wsl2.sh -Raw
     $setupScript | wsl bash
 
     if ($LASTEXITCODE -eq 0) {
@@ -88,7 +91,7 @@ if ($toolkitInstalled) {
         Write-Host "  [FAIL] Installation failed" -ForegroundColor Red
         Write-Host "  Try running manually in WSL2:" -ForegroundColor Yellow
         Write-Host "    wsl" -ForegroundColor Cyan
-        Write-Host "    bash setup_gpu_wsl2.sh" -ForegroundColor Cyan
+        Write-Host "    bash scripts/setup_gpu_wsl2.sh" -ForegroundColor Cyan
         exit 1
     }
 }

@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Ollama Model Setup Script (Windows)
 # Downloads and configures local LLM models for BigFlavor Band Agent
 

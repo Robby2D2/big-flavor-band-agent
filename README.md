@@ -25,70 +25,98 @@ AI-powered music discovery and production assistant for the Big Flavor Band's 1,
 - **MCP Server** (`src/mcp/`) - Audio production tools
 - **Database** (`database/`) - PostgreSQL with pgvector
 
-## Quick Start
+## Running the stack
 
-### 1. Setup Environment
+The app runs as a set of Docker Compose services (FastAPI backend, Next.js
+frontend, PostgreSQL/pgvector, an LLM layer, and an Icecast + Liquidsoap radio
+stack). Source directories are mounted as volumes, so most code changes
+hot-reload — `docker restart <service>` instead of rebuilding.
 
-```powershell
-# Create virtual environment
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+### Prerequisites
 
-# Install dependencies
-pip install -r setup/requirements.txt
+- Docker Desktop (with Compose)
+- An `.env` file: `cp .env.example .env`, then set at least `ANTHROPIC_API_KEY`
+  (the project defaults to the Anthropic API — **no local LLM required**)
+
+### Option A — full stack in Docker
+
+```bash
+docker-compose up -d            # start everything
+docker-compose ps               # check status
+docker logs bigflavor-backend -f
 ```
 
-### 2. Configure Database
+By default this uses the Anthropic API. (A local Ollama model is still supported
+as an opt-in — see [`docs/LOCAL_LLM_GUIDE.md`](docs/LOCAL_LLM_GUIDE.md).)
 
-```powershell
-# Run database setup
-.\database\setup-database.ps1
+### Option B — run the web app on the host, infra in Docker
 
-# Apply schema
-python database/apply_schema.py
+Best for active development of the backend/frontend: Docker provides only the
+backing services (PostgreSQL + radio stack) while you run the FastAPI backend and
+Next.js frontend on your machine against Anthropic. This is wired up by a Compose
+override.
+
+```bash
+# One-time: enable the local override (it is gitignored)
+cp docker-compose.override.yml.example docker-compose.override.yml
+
+# Start just the backing services + print next steps
+pwsh scripts/dev-local.ps1          # or: docker-compose up -d
+
+# Then, in separate terminals, run the app on the host:
+uvicorn backend_api:app --reload --port 8000     # or: scripts/start-backend.ps1
+cd frontend && npm run dev                        # or: scripts/start-frontend.ps1
 ```
 
-### 3. Set API Key
+The host backend reads `.env` automatically. Make sure it contains
+`LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY=…`, and `DB_HOST=localhost`.
+See [`docker-compose.override.yml.example`](docker-compose.override.yml.example)
+for the full explanation of what the override does.
 
-```powershell
-# Create .env file
-echo "ANTHROPIC_API_KEY=your-key-here" > .env
+## Deploying to production
+
+Production is the Docker stack deployed with the production env. There is no app
+store — "releasing" means deploying the stack.
+
+```bash
+# 1. Configure production secrets (never commit this file)
+cp .env.production.example .env.production
+#    edit .env.production: POSTGRES_PASSWORD, ANTHROPIC_API_KEY,
+#    BACKEND_API_SECRET, Google OAuth, etc.
+
+# 2. Deploy
+./deploy-production.sh               # Linux / CI
+#  .\deploy-production.ps1           # Windows (PowerShell)
 ```
 
-### 4. Run the Agent
-
-```powershell
-python run_agent.py
-```
+The deploy script validates `.env.production`, then brings up the stack via
+`docker-compose` with the production environment. Full procedure and rollback
+notes are in [`docs/DOCKER_DEPLOYMENT.md`](docs/DOCKER_DEPLOYMENT.md) and
+[`docs/PRODUCTION_QUICK_START.md`](docs/PRODUCTION_QUICK_START.md).
 
 ## Project Structure
 
 ```
 big-flavor-band-agent/
-├── run_agent.py                 # Main entry point
+├── backend_api.py               # FastAPI app (entry point, mounted into Docker)
+├── docker-compose.yml           # Service definitions
+├── docker-compose.override.yml.example  # Host-dev override (copy to enable)
+├── deploy-production.sh / .ps1   # Production deploy
 ├── src/
-│   ├── agent/
-│   │   ├── __init__.py
-│   │   └── big_flavor_agent.py  # Claude AI agent
-│   ├── rag/
-│   │   ├── __init__.py
-│   │   └── big_flavor_rag.py    # RAG search system
-│   └── mcp/
-│       ├── __init__.py
-│       └── big_flavor_mcp.py    # Audio production MCP server
-├── database/
-│   ├── database.py              # Database manager
-│   ├── apply_schema.py          # Schema application
-│   ├── setup-database.ps1       # Setup script
-│   └── sql/                     # SQL schemas
-├── setup/
-│   ├── requirements.txt         # Python dependencies
-│   ├── config.json              # Configuration
-│   └── setup*.ps1               # Setup scripts
-├── audio_library/               # Audio files (indexed)
-├── docs/                        # Documentation
-└── tests/                       # Test files
+│   ├── agent/big_flavor_agent.py # Claude AI agent
+│   ├── rag/                      # RAG semantic search
+│   ├── mcp/                      # Audio production MCP server
+│   └── llm/llm_provider.py       # Anthropic / Ollama provider abstraction
+├── database/                     # DB manager + SQL schemas/migrations
+├── frontend/                     # Next.js web app
+├── streaming/                    # Icecast + Liquidsoap radio config
+├── scripts/                      # Helper & one-off scripts (see scripts/README.md)
+├── audio_library/                # Audio files (indexed)
+├── docs/                         # Documentation
+└── tests/                        # pytest suite
 ```
+
+See [`scripts/README.md`](scripts/README.md) for what each helper script does.
 
 ## Features
 
@@ -126,11 +154,15 @@ big-flavor-band-agent/
 
 ### Running Tests
 
-```powershell
-python tests/test_agent.py
-python tests/test_rag.py
-python tests/test_mcp.py
+The test suite lives under `tests/` and runs with `pytest`:
+
+```bash
+pytest                      # run the whole suite
+pytest tests/test_rag.py    # a single file
 ```
+
+Interactive agent runners (handy for manual debugging) live in `scripts/` —
+e.g. `python scripts/run_agent.py`. See [`scripts/README.md`](scripts/README.md).
 
 ### Adding New Search Methods
 

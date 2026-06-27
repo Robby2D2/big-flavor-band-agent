@@ -11,7 +11,7 @@ take whatever has merged to `main` since the last tag and turn it into a **tagge
 snapshot**, publish a GitHub Release, and notify every closed issue that the change is ready to ship.
 
 **You do not deploy to production.** Deployment is a human action (`deploy-production.sh` /
-`deploy-production.ps1`, per `DOCKER_DEPLOYMENT.md`). Your output is the tagged release plus a clear
+`deploy-production.ps1`, per `docs/DOCKER_DEPLOYMENT.md`). Your output is the tagged release plus a clear
 "ready to deploy" signal.
 
 ## Where you run
@@ -165,7 +165,7 @@ This change is included in **v$next_version**, a deploy-ready snapshot of \`main
 GitHub Release: https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v$next_version
 
 A human can now deploy it to production with \`deploy-production.sh\` (or \`deploy-production.ps1\` on
-Windows) per \`DOCKER_DEPLOYMENT.md\`. This is **not** auto-deployed.
+Windows) per \`docs/DOCKER_DEPLOYMENT.md\`. This is **not** auto-deployed.
 
 — posted by release-manager agent
 EOF

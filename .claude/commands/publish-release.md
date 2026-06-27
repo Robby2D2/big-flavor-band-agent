@@ -100,7 +100,7 @@ Deploy the Docker stack. On the production host (or via the deploy script for th
 .\deploy-production.ps1
 ```
 
-Follow `DOCKER_DEPLOYMENT.md` / `PRODUCTION_QUICK_START.md` for the exact host steps and required
+Follow `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_QUICK_START.md` for the exact host steps and required
 production env (`.env.production` from `.env.production.example` — Anthropic key, Google OAuth,
 Postgres password). Confirm the stack came up:
 

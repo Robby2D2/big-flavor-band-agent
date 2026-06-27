@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Simple Local Runner for BigFlavor Agent with Ollama
 # No production deployment needed - just agent + Ollama!
 
@@ -52,7 +55,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Run the local chat
-& .\venv\Scripts\python.exe run_agent_local.py
+& .\venv\Scripts\python.exe scripts\run_agent_local.py
 
 Write-Host ""
 Write-Host "Session ended." -ForegroundColor Cyan

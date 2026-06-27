@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Start Full BigFlavor Stack with Ollama
 # Runs: PostgreSQL + Ollama + Backend API + Frontend + Nginx
 

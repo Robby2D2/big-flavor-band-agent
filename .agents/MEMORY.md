@@ -122,7 +122,7 @@ Iterated on search relevance/behavior.
 
 ### 2025-11-19 → 11-20 — Production deployment support (`c633d34`, `00a73fa`)
 Added a production Docker environment and nginx SSL handling, making the stack deployable to a real
-host. See `DOCKER_DEPLOYMENT.md` / `PRODUCTION_QUICK_START.md`.
+host. See `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_QUICK_START.md`.
 
 ### 2025-11-15 — Auth: Google OAuth multi-URL (`6718150`)
 Auth0/Google OAuth updated to support multiple callback URLs so one config works in dev **and** prod.

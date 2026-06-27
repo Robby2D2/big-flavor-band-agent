@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Start BigFlavor Frontend
 Write-Host "Starting BigFlavor Frontend..." -ForegroundColor Green
 

@@ -1,0 +1,62 @@
+# docker-compose.override.yml.example
+#
+# To use this, copy it to docker-compose.override.yml (which is gitignored, so
+# your local tweaks stay out of version control):
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Compose auto-loads docker-compose.override.yml — there is nothing else to wire up.
+#
+# Local development override for running the WEB APP on the host (FastAPI backend
+# + Next.js frontend) while Docker provides only the backing services
+# (PostgreSQL + the Icecast/Liquidsoap radio stack). No local LLM required —
+# the host-run backend talks to Anthropic instead of Ollama.
+#
+# Compose auto-loads this file alongside docker-compose.yml.
+#
+# ── Host-app workflow (default) ───────────────────────────────────────────────
+#   docker-compose up -d            # starts ONLY: postgres, icecast, liquidsoap
+#
+#   Then run the app on the host (set env first — see .env.example):
+#     uvicorn backend_api:app --reload --port 8000     # backend
+#     cd frontend && npm run dev                       # frontend on :3000
+#
+# The in-container backend/frontend/nginx and ollama are gated behind the
+# "in-docker" profile so a plain `up` leaves the host's :8000 / :3000 free and
+# never starts a local LLM.
+#
+# Why backend/frontend/nginx are gated (not just ollama): backend `depends_on`
+# ollama in the base file, and an override can't delete that edge. With this
+# Compose, a depends_on target behind an INACTIVE profile makes the project
+# invalid — so the depender (backend) and its dependents (frontend, nginx) must
+# move into the same profile as ollama.
+#
+# ── Full-stack-in-Docker workflow (opt-in) ───────────────────────────────────
+#   docker-compose --profile in-docker up -d
+#
+#   Runs the whole stack in containers, using Anthropic instead of Ollama.
+#   NOTE: the `ollama` container still starts (backend's base depends_on pulls
+#   it in) but sits idle — no model is pulled and the backend uses Anthropic.
+#   To drop it entirely, remove the `ollama` edge from backend.depends_on in
+#   docker-compose.yml.
+
+services:
+  backend:
+    profiles: ["in-docker"]
+    environment:
+      # Use Anthropic instead of the local Ollama model.
+      - LLM_PROVIDER=anthropic
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Current default model; override in your env if needed.
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-opus-4-8}
+
+  frontend:
+    profiles: ["in-docker"]
+
+  nginx:
+    profiles: ["in-docker"]
+
+  ollama:
+    # Grouped with the in-docker stack only so backend's base depends_on stays
+    # satisfiable when that profile is active. Idle when running (no model).
+    profiles: ["in-docker"]

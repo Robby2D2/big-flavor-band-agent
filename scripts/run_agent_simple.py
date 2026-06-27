@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 # Add project paths
-project_root = Path(__file__).parent
+project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / "src" / "llm"))
 
 from llm_provider import get_llm_provider

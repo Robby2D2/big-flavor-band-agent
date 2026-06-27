@@ -13,7 +13,7 @@ There are **two ways** to run the BigFlavor Agent:
 # 1. Make sure Docker Desktop is running
 
 # 2. Run this simple script:
-.\run_local.ps1
+.\scripts/run_local.ps1
 ```
 
 That's it! This will:
@@ -36,7 +36,7 @@ docker exec bigflavor-ollama ollama pull qwen2.5:14b
 .\venv\Scripts\Activate.ps1
 
 # 4. Run the agent
-python run_agent_local.py
+python scripts/run_agent_local.py
 ```
 
 ---
@@ -107,7 +107,7 @@ This deploys the **full stack**:
 
 ### "Python not found"
 - Activate venv: `.\venv\Scripts\Activate.ps1`
-- Or use full path: `.\venv\Scripts\python.exe run_agent_local.py`
+- Or use full path: `.\venv\Scripts\python.exe scripts/run_agent_local.py`
 
 ---
 
@@ -125,7 +125,7 @@ After testing locally, you can:
    ```
 
 2. **Switch to Anthropic Claude:**
-   - Edit `run_agent_local.py`
+   - Edit `scripts/run_agent_local.py`
    - Change `provider="ollama"` to `provider="anthropic"`
    - Set your API key: `anthropic_api_key="sk-ant-..."`
 
@@ -160,8 +160,8 @@ After testing locally, you can:
 
 ## Files Created
 
-- `run_agent_local.py` - Simple Python chat script
-- `run_local.ps1` - PowerShell launcher script
+- `scripts/run_agent_local.py` - Simple Python chat script
+- `scripts/run_local.ps1` - PowerShell launcher script
 - This guide: `RUNNING_LOCALLY.md`
 
 Enjoy your local BigFlavor Agent! 🎵

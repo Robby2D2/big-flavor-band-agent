@@ -1,3 +1,6 @@
+# Always operate from the repo root (this script lives in scripts/).
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # Test script to compare all Faster Whisper models on tests/wagonwheel.mp3
 # Uses default settings: no VAD, no voice filter, no Demucs vocal separation
 # Usage: .\test_whisper_models.ps1

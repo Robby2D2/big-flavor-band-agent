@@ -186,12 +186,12 @@ tags it, and produces a deploy summary; a human runs the actual deploy.
 
 - **Production deploy:** `deploy-production.sh` (Linux/CI) or `deploy-production.ps1` (Windows),
   driven by `docker-compose` with the production env. Full procedure in
-  [`DOCKER_DEPLOYMENT.md`](DOCKER_DEPLOYMENT.md) and
-  [`PRODUCTION_QUICK_START.md`](PRODUCTION_QUICK_START.md).
+  [`docs/DOCKER_DEPLOYMENT.md`](docs/DOCKER_DEPLOYMENT.md) and
+  [`docs/PRODUCTION_QUICK_START.md`](docs/PRODUCTION_QUICK_START.md).
 - **Environment:** copy `.env.production.example` → production env; secrets (Anthropic key, Google
   OAuth, Postgres password) are injected via env vars, never committed.
-- **Local run:** `docker-compose up -d` (see [`RUNNING_LOCALLY.md`](RUNNING_LOCALLY.md) and
-  [`QUICK_START.md`](QUICK_START.md)).
+- **Local run:** `docker-compose up -d` (see [`docs/RUNNING_LOCALLY.md`](docs/RUNNING_LOCALLY.md) and
+  [`docs/QUICK_START.md`](docs/QUICK_START.md)).
 
 The repo does not yet use version tags. When the release-manager adopts them it uses a simple
 `vX.Y.Z` scheme on `main`; until then "release" is purely the deploy summary + GitHub Release notes.

@@ -160,9 +160,13 @@ def convert_ollama_tool_calls_to_anthropic(tool_calls: List[Dict[str, Any]]) -> 
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude provider"""
 
-    def __init__(self, api_key: str):
+    # Current default. Override per-deployment with the ANTHROPIC_MODEL env var
+    # (or the `model` argument) — keep this pointed at a current model ID.
+    DEFAULT_MODEL = "claude-opus-4-8"
+
+    def __init__(self, api_key: str, model: Optional[str] = None):
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
-        self.model = "claude-3-5-sonnet-20241022"
+        self.model = model or os.getenv("ANTHROPIC_MODEL") or self.DEFAULT_MODEL
 
     async def generate_response(
         self,
@@ -517,6 +521,7 @@ class OllamaProvider(LLMProvider):
 def get_llm_provider(
     provider: Optional[str] = None,
     anthropic_api_key: Optional[str] = None,
+    anthropic_model: Optional[str] = None,
     ollama_base_url: Optional[str] = None,
     ollama_model: Optional[str] = None
 ) -> LLMProvider:
@@ -526,6 +531,8 @@ def get_llm_provider(
     Args:
         provider: Either 'anthropic' or 'ollama'. If None, reads from LLM_PROVIDER env var
         anthropic_api_key: Anthropic API key. If None, reads from ANTHROPIC_API_KEY env var
+        anthropic_model: Anthropic model ID. If None, reads from ANTHROPIC_MODEL env var,
+            falling back to AnthropicProvider.DEFAULT_MODEL
         ollama_base_url: Ollama base URL. If None, reads from OLLAMA_BASE_URL env var
         ollama_model: Ollama model name. If None, reads from OLLAMA_MODEL env var
 
@@ -547,7 +554,7 @@ def get_llm_provider(
                 "Anthropic API key is required. Set ANTHROPIC_API_KEY environment variable "
                 "or pass anthropic_api_key parameter"
             )
-        return AnthropicProvider(api_key=api_key)
+        return AnthropicProvider(api_key=api_key, model=anthropic_model)
 
     elif provider == "ollama":
         # Get Ollama configuration from parameters or environment

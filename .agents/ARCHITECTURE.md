@@ -157,7 +157,7 @@ See `AGENTS.md` → "Radio Streaming Architecture" for the operational details.
 Google OAuth (Auth0-style) via NextAuth in the frontend (`app/api/auth/[...google]`), supporting
 **multiple callback URLs** so the same config works in dev and prod (commit `6718150`). User
 records + roles live in Postgres (migration `05`); admin role management is gated through
-`/api/admin/*`. Setup is documented in `GOOGLE_OAUTH_SETUP_GUIDE.md`.
+`/api/admin/*`. Setup is documented in `docs/GOOGLE_OAUTH_SETUP_GUIDE.md`.
 
 ---
 
@@ -165,7 +165,7 @@ records + roles live in Postgres (migration `05`); admin role management is gate
 
 Docker Compose, 7 services (see the table in `AGENTS.md`). Production support (`docker-compose`
 prod env, nginx SSL, `deploy-production.{sh,ps1}`) was added in commit `c633d34`; SSL handling
-refined in `00a73fa`. Details in `DOCKER_DEPLOYMENT.md` / `PRODUCTION_QUICK_START.md`.
+refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_QUICK_START.md`.
 
 ---
 
