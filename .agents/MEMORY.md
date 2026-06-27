@@ -9,6 +9,28 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-27 — Back-fill + derive null song metadata
+Eight `songs` columns were entirely null (`energy, mood, recording_date, audio_quality, rating,
+session, uploaded_on, recorded_on`). Root cause: `insert_song()` (`database/database.py`) only ever
+wrote a fixed column set and **omitted `session`/`recorded_on`**, so scraped values were dropped on
+load; and the audio-analysis scripts only wrote "basic fields" (`tempo_bpm, key, duration_seconds`),
+never `energy`/`mood`. The `audio_analysis` table is empty — librosa energy/valence were never
+populated.
+- **Back-fill:** new `scraper/backfill_session_recorded_on.py` reads the latest `scraped_songs_*.json`
+  and fills `session` (663) + `recorded_on` (661) by id. Dry-run by default; `COALESCE`-based so it
+  never clobbers existing values; parses scraped `M/D/YY` as 20YY. Runs from the host venv against
+  the exposed DB (`localhost:5432`) — the `scraper/` dir is **not** mounted into `bigflavor-backend`.
+- **Prevent recurrence:** `insert_song()` now persists `session`/`recorded_on` (new `_parse_recorded_on`
+  helper coerces `M/D/YY`/ISO/`date` → DATE), with `COALESCE(EXCLUDED.…, songs.…)` on conflict so a
+  re-scrape lacking a field won't wipe a back-filled value.
+- **Derive energy/mood:** new `src/rag/derive_energy_mood.py` classifies all 1341 songs via
+  `get_llm_provider()` (ran on Ollama `mistral-nemo`) from title/metadata/lyrics, constrained to a
+  controlled vocab (`energy` low/medium/high; ~14 `mood` labels). CLI mirrors `index_lyrics`
+  (`--status/--limit/--reindex/--dry-run`); **run inside `bigflavor-backend`** where LLM+DB env is
+  wired. A single corrective retry handles out-of-vocab replies → **1341/1341** set. Distribution:
+  energy mostly `medium` (703); mood dominated by `melancholic` (624). Work on branch
+  `fix/backfill-and-derive-song-metadata` (not yet merged).
+
 ### 2026-06-27 — Release `v0.9.0` (release-manager)
 Cut **`v0.9.0`** from `main` (HEAD `feee75c`), a **minor** bump from `v0.8.0` because the 6-commit
 range includes a `feat:` commit (`1dfd759`, save auto-clean output as a candidate version on
