@@ -129,6 +129,36 @@ def parse_classification(text: str) -> Optional[Tuple[str, str]]:
     return energy, mood
 
 
+async def classify(llm, song: Dict[str, Any], temperature: float) -> Optional[Tuple[str, str]]:
+    """Classify one song, with a single corrective retry on invalid output.
+
+    Some songs draw an out-of-vocabulary mood (e.g. 'dreamy', 'intense'); the
+    retry re-states the allowed lists and asks for the closest valid label.
+    """
+    messages = [{"role": "user", "content": build_user_prompt(song)}]
+    reply = await llm.generate_response(
+        messages=messages, system=SYSTEM_PROMPT, max_tokens=200, temperature=temperature
+    )
+    result = parse_classification(reply)
+    if result is not None:
+        return result
+
+    messages.append({"role": "assistant", "content": reply})
+    messages.append({
+        "role": "user",
+        "content": (
+            "That was not a valid choice. Respond with ONLY JSON "
+            f'{{"energy": <one of {ENERGY_LABELS}>, "mood": <one of {MOOD_LABELS}>}}. '
+            "Pick the single closest label from each list — do not invent new ones."
+        ),
+    })
+    retry = await llm.generate_response(
+        messages=messages, system=SYSTEM_PROMPT, max_tokens=200,
+        temperature=min(1.0, temperature + 0.5),
+    )
+    return parse_classification(retry)
+
+
 async def status(db: DatabaseManager) -> None:
     query = """
         SELECT COUNT(*) AS total,
@@ -172,13 +202,7 @@ async def derive(
         failed = 0
         for i, song in enumerate(songs, 1):
             try:
-                reply = await llm.generate_response(
-                    messages=[{"role": "user", "content": build_user_prompt(song)}],
-                    system=SYSTEM_PROMPT,
-                    max_tokens=200,
-                    temperature=temperature,
-                )
-                result = parse_classification(reply)
+                result = await classify(llm, song, temperature)
                 if result is None:
                     failed += 1
                     continue
