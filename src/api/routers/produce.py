@@ -47,6 +47,10 @@ class ProduceRequest(BaseModel):
     song_id: int
     aggressiveness: str = "moderate"
     steps_override: Optional[Dict[str, bool]] = None
+    # When set, the clean starts from this version's audio (not the catalog
+    # original), so an already-cleaned version can be re-cleaned with different
+    # options into a new version (issue #49). The version must belong to the song.
+    source_version_id: Optional[int] = None
 
 
 class CleanRequest(BaseModel):
@@ -86,6 +90,30 @@ def _resolve_source_path(song_id: int) -> Path:
             status_code=404, detail=f"Audio file for song {song_id} not found"
         )
     return audio_files[0]
+
+
+async def _resolve_clean_source_path(
+    song_id: int, source_version_id: Optional[int], db: DatabaseManager
+) -> Path:
+    """Resolve the audio file a clean run should start from.
+
+    With no ``source_version_id`` this is the catalog original (the existing
+    behaviour). With one, it is that version's audio file — so an already-cleaned
+    version can be re-cleaned with different options (issue #49). The version must
+    belong to the song and its file must exist, else 404.
+    """
+    if source_version_id is None:
+        return await run_in_threadpool(_resolve_source_path, song_id)
+
+    version = await db.get_song_version(source_version_id)
+    if version is None or version["song_id"] != song_id:
+        raise HTTPException(
+            status_code=404, detail="Source version not found for this song"
+        )
+    path = Path(version["audio_path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Source version audio file missing")
+    return path
 
 
 def _produced_dir() -> Path:
@@ -218,19 +246,49 @@ def _build_diff(
     }
 
 
+def _catalog_song_view(song: Dict[str, Any], cleaned_ids: set) -> Dict[str, Any]:
+    """Shape a catalog song row for the producer catalog table (issue #49).
+
+    Surfaces the columns the table sorts/filters on plus a ``cleaned`` flag
+    (whether the song has at least one non-original version).
+    """
+    return {
+        "id": song["id"],
+        "title": song.get("title", "Unknown"),
+        "genre": song.get("genre"),
+        "tempo_bpm": song.get("tempo_bpm"),
+        "duration_seconds": song.get("duration_seconds"),
+        "cleaned": song["id"] in cleaned_ids,
+    }
+
+
 @router.get("/api/produce/songs")
 async def list_catalog_songs(
     db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ):
-    """List catalog songs (id + title) for the producer song picker."""
+    """List catalog songs for the producer catalog table (issue #49).
+
+    Returns each song's sortable/filterable columns plus a ``cleaned`` indicator,
+    resolved with one bulk read of cleaned song ids (no N+1 per-song lookups).
+    """
     songs = await db.get_all_songs()
-    return {
-        "songs": [
-            {"id": song["id"], "title": song.get("title", "Unknown")}
-            for song in songs
-        ]
-    }
+    cleaned_ids = await db.get_song_ids_with_cleaned_versions()
+    return {"songs": [_catalog_song_view(song, cleaned_ids) for song in songs]}
+
+
+@router.get("/api/produce/songs/{song_id}")
+async def get_catalog_song(
+    song_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Return one catalog song for the per-song detail header (issue #49)."""
+    song = await db.get_song(song_id)
+    if song is None:
+        raise HTTPException(status_code=404, detail="Song not found")
+    cleaned_ids = await db.get_song_ids_with_cleaned_versions()
+    return {"song": _catalog_song_view(song, cleaned_ids)}
 
 
 # ---- issue #28: quick analyze + auto-clean ----
@@ -239,23 +297,34 @@ async def list_catalog_songs(
 async def analyze_song(
     request: ProduceRequest,
     agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ):
-    """Analyze a catalog song and return detected issues + recommended steps."""
-    source_path = await run_in_threadpool(_resolve_source_path, request.song_id)
+    """Analyze a catalog song and return detected issues + recommended steps.
+
+    Analyzes the catalog original by default, or a chosen version's audio when
+    ``source_version_id`` is set (issue #49).
+    """
+    source_path = await _resolve_clean_source_path(
+        request.song_id, request.source_version_id, db
+    )
     result = await agent.execute_tool(
         "analyze_and_recommend_processing", {"file_path": str(source_path)}
     )
     return {"result": result}
 
 
-def _autoclean_dedup_key(cleanup_result: Dict[str, Any]) -> str:
+def _autoclean_dedup_key(
+    cleanup_result: Dict[str, Any], source_version_id: Optional[int] = None
+) -> str:
     """A stable key identifying an auto-clean candidate by its inputs (issue #47).
 
-    Two auto-clean runs for the same song are "identical" when they applied the
-    same set of steps at the same intensity, so the key is the aggressiveness plus
-    the sorted set of applied step names. A re-run producing the same key replaces
-    the prior candidate instead of appending an indistinguishable duplicate.
+    Two auto-clean runs for the same song are "identical" when they cleaned the
+    same source with the same set of steps at the same intensity, so the key is the
+    source version (catalog original = none), the aggressiveness, and the sorted set
+    of applied step names. A re-run producing the same key replaces the prior
+    candidate instead of appending an indistinguishable duplicate; re-cleaning a
+    *different* version with the same steps gets a distinct key (issue #49).
     """
     steps = sorted(
         {
@@ -265,7 +334,8 @@ def _autoclean_dedup_key(cleanup_result: Dict[str, Any]) -> str:
         }
     )
     aggressiveness = cleanup_result.get("aggressiveness") or ""
-    return f"{aggressiveness}|{','.join(steps)}"
+    source = "original" if source_version_id is None else f"v{source_version_id}"
+    return f"{source}|{aggressiveness}|{','.join(steps)}"
 
 
 async def save_autoclean_candidate(
@@ -273,6 +343,7 @@ async def save_autoclean_candidate(
     output_path: str,
     cleanup_result: Dict[str, Any],
     db: DatabaseManager,
+    source_version_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Save a completed auto-clean run as a new candidate version (issue #47).
 
@@ -287,7 +358,7 @@ async def save_autoclean_candidate(
     await db.ensure_original_version(song_id, str(source_path))
 
     after = await run_in_threadpool(_measure_audio, output_path)
-    dedup_key = _autoclean_dedup_key(cleanup_result)
+    dedup_key = _autoclean_dedup_key(cleanup_result, source_version_id)
     metrics: Dict[str, Any] = {
         "steps_applied": cleanup_result.get("steps_applied", []),
         "aggressiveness": cleanup_result.get("aggressiveness"),
@@ -330,8 +401,14 @@ async def auto_clean_song(
     candidate version of the song (NOT promoted to default — the producer chooses
     that), and returns the tool payload. Publishing a candidate as the default is
     the versions list's job (set-default), consistent with the audition flow.
+
+    Cleans the catalog original by default, or re-cleans a chosen version's audio
+    when ``source_version_id`` is set, producing a new version either way — the
+    source version is never overwritten (issue #49).
     """
-    source_path = await run_in_threadpool(_resolve_source_path, request.song_id)
+    source_path = await _resolve_clean_source_path(
+        request.song_id, request.source_version_id, db
+    )
     output_path = _build_output_path(request.song_id)
 
     parameters: Dict[str, Any] = {
@@ -348,7 +425,7 @@ async def auto_clean_song(
     # the versions list and default untouched (issue #47).
     if result.get("status") == "success":
         version = await save_autoclean_candidate(
-            request.song_id, str(output_path), result, db
+            request.song_id, str(output_path), result, db, request.source_version_id
         )
         return {"result": result, "version": version}
 
