@@ -9,6 +9,15 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-28 — Release `v0.11.1` (release-manager)
+Cut **`v0.11.1`** from `main` (HEAD `bcc5121`), a **patch** bump from `v0.11.0` — the single commit in
+the range is `bcc5121` (`chore: record v0.11.0 release in agent memory`), the release-manager's own
+memory chore from the v0.11.0 cut. No `feat:`/`fix:`/`enhancement` and no linked PR/issue, so no
+product change and no issues to notify. Published GitHub Release with auto-generated notes anchored to
+`v0.11.0`: https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.11.1. Sanity gate: Docker
+daemon down locally (infra, not a `main` error) so backend-boot check skipped; frontend `npm run build`
+**passed** (confirms `main` healthy; the chore doesn't touch the frontend). Proceeded per Step 4.5.
+
 ### 2026-06-27 — Release `v0.11.0` (release-manager)
 Cut **`v0.11.0`** from `main` (HEAD `912dd0a`), a **minor** bump from `v0.10.0` because the 3-commit
 range adds a clear feature: a `feat:` commit (`963b4dd`, back-fill null catalog metadata — genre,
