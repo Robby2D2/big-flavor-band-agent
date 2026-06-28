@@ -9,6 +9,16 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-06-27 — Release `v0.11.0` (release-manager)
+Cut **`v0.11.0`** from `main` (HEAD `912dd0a`), a **minor** bump from `v0.10.0` because the 3-commit
+range adds a clear feature: a `feat:` commit (`963b4dd`, back-fill null catalog metadata — genre,
+duration, tempo) merged via PR #54. Range also includes the v0.10.0 release-memory chore (`6364589`)
+and the merge commit. Published GitHub Release with auto-generated notes anchored to `v0.10.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.11.0. Notified linked closed issue
+#52. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check skipped;
+frontend `npm run build` **passed**. The feature is a backfill script + DB work (not exercised by the
+frontend build), so it relies on the per-PR QA gate. Proceeded per Step 4.5.
+
 ### 2026-06-27 — Release `v0.10.0` (release-manager)
 Cut **`v0.10.0`** from `main` (HEAD `21a3abf`), a **minor** bump from `v0.9.1` because the 9-commit
 range adds clear features: a `feat:` commit (`059df70`, add a recorded-on Date column to the Produce
