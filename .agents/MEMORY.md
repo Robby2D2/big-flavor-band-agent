@@ -9,6 +9,24 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-12 — Pipeline concurrency standards ported from soccer-assistant-coach + GitHub Actions sweep
+Copied the sibling repo's updated agent standards. **AGENTS.md** gained a **Concurrency** section
+(4 rules: re-check before write; lost races are benign skips, not errors; writers claim / readers
+re-check; never touch a dirty human working tree) and now documents **two run environments** —
+local Windows and headless GitHub Actions (`$GITHUB_ACTIONS` = `true`; no Docker stack in CI, so
+agents run targeted pytest + frontend lint/build and honestly report what wasn't verified).
+Agent-file changes: **developer** got a Step 3.5 `dev-agent:claim` protocol (claim comment →
+sleep 5 → oldest active claim < 60 min wins), a dirty-tree/branch-exists guard before branching,
+and a pre-push PR re-check (rejected feature-branch push = benign race); **cpo/pm/qa** re-fetch
+markers immediately before posting; **release-manager** got a dirty-tree guard, a last-moment tag
+idempotency re-check, and benign handling for tag-push races. Orchestrator gained a
+**DEV-CLAIMED** triage bucket. New **`.github/workflows/fix-issue.yml`** runs the whole sweep via
+`anthropics/claude-code-action@v1.0.140` on issue-opened/reopened + human (non-`-agent:`-marker)
+comments + manual dispatch, replicating the local non-LLM gate; needs `BOT_TOKEN` and
+`CLAUDE_CODE_OAUTH_TOKEN` secrets. Deliberately NOT ported: soccer's `pr-reviewer` split and
+`COMPONENTS.md` (they exist there because its QA gate is an expensive cloud emulator run; QA here
+is cheap/local).
+
 ### 2026-06-28 — Release `v0.11.1` (release-manager)
 Cut **`v0.11.1`** from `main` (HEAD `bcc5121`), a **patch** bump from `v0.11.0` — the single commit in
 the range is `bcc5121` (`chore: record v0.11.0 release in agent memory`), the release-manager's own

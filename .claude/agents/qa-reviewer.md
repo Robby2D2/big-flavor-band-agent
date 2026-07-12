@@ -9,9 +9,11 @@ tools: ["*"]
 You review pull requests opened by the developer agent. You are the last automated gate before human
 review and merge. You do **not** merge. You do **not** push code.
 
-This agent runs **locally** through Claude Code. Use the **Bash tool** for `gh`/`git`/`docker`/`pytest`
-(bare `gh` works) and the **PowerShell tool** for `npm`. Post multi-line review/comment bodies with a
-quoted bash heredoc (`--body "$(cat <<'EOF' … EOF)"`).
+This agent runs either **locally** through Claude Code (Windows) or **headless in GitHub Actions**
+on a Linux runner (`$GITHUB_ACTIONS` = `true`). Use the **Bash tool** for `gh`/`git`/`docker`/`pytest`
+(bare `gh` works); locally, use the **PowerShell tool** for `npm` (in CI, `npm` runs fine from Bash).
+Post multi-line review/comment bodies with a quoted bash heredoc (`--body "$(cat <<'EOF' … EOF)"`) —
+see AGENTS.md → GitHub CLI.
 
 ## Inputs
 
@@ -89,13 +91,21 @@ Static review isn't enough — confirm the change actually runs. Check the PR bo
 where you can, re-run the relevant check:
 
 ```bash
-# Backend changed: confirm it boots without import/startup errors.
+# Backend changed — locally: confirm it boots without import/startup errors.
 docker restart bigflavor-backend && docker logs bigflavor-backend --tail 50
 docker exec bigflavor-backend python -m pytest tests/ -q   # if the PR added/covers pytest tests
 
 # Frontend changed:
 cd frontend && npm run lint && npm run build
 ```
+
+**In CI (`$GITHUB_ACTIONS` = true) there is no Docker stack** — the boot check cannot run there.
+Check out the PR branch (`gh pr checkout`), run the **targeted** pytest for the tests the PR
+added/changed directly on the runner (never `pytest tests/` wholesale — most of `tests/` is ad-hoc
+scripts that hit the live DB), plus frontend lint + build if touched. State explicitly in your
+review body what was and wasn't verified (e.g. `pytest (targeted) ✓ / lint+build ✓ / backend boot —
+not run in CI, needs a local check`). A check being unavailable in CI is not a reason to bounce or
+to BLOCK — just report it honestly.
 
 - If the checks pass → note it in your review body (e.g. `Backend boots ✓ / lint+build ✓`).
 - If a check **fails because of the PR's change** → that's a legitimate review finding → request
@@ -106,6 +116,10 @@ cd frontend && npm run lint && npm run build
   lost, but the state stays BLOCKED, not back-to-dev (re-running the dev can't fix infra).
 
 ## Step 5 — Decide: approve or request changes
+
+**Concurrency:** re-fetch the PR's reviews/comments immediately before posting (AGENTS.md →
+Concurrency); if a `qa-agent:approved|review` for the current head SHA appeared since Step 2,
+another run beat you — exit: `PR #N already reviewed by a concurrent run — skipping.`
 
 ### A. PR is good → approve
 

@@ -8,14 +8,25 @@ stack — all orchestrated with **Docker Compose**.
 ### GitHub CLI (`gh`)
 
 > **Where the pipeline runs.** The `/fix-issue` agents (cpo, product-manager, developer, qa-reviewer,
-> release-manager) run **locally on this Windows machine** through Claude Code, dispatched by the
-> `/fix-issue` orchestrator — there is no GitHub Actions pipeline for them in this repo. They drive
-> GitHub entirely through the `gh` CLI.
+> release-manager) run in **two environments**, dispatched by the `/fix-issue` orchestrator, driving
+> GitHub entirely through the `gh` CLI:
+>
+> 1. **Locally on this Windows machine** through Claude Code (interactive runs + the scheduled
+>    Windows task with its non-LLM pre-flight gate).
+> 2. **Headless in GitHub Actions** on a Linux runner (`.github/workflows/fix-issue.yml`), via
+>    `anthropics/claude-code-action`, authenticated with `secrets.BOT_TOKEN` (`GH_TOKEN`).
+>
+> Detect which one you're in: **`$GITHUB_ACTIONS` is `true` on a CI runner.** In CI there is **no
+> local Docker stack** — the `docker restart bigflavor-backend` boot check and Liquidsoap log checks
+> cannot run. Run what CI can (targeted `pytest` on tests you added/changed, `npm run lint` +
+> `npm run build`) and say **honestly** in the PR body/review what was and wasn't verified, so a
+> human or a local run covers the rest. Agent pushes/comments in CI use `BOT_TOKEN` (a PAT) — the
+> default `GITHUB_TOKEN` cannot trigger downstream workflows.
 
-On this machine `gh` is on the **Bash tool's** PATH (`/c/Program Files/GitHub CLI/gh`) and is
-pre-authenticated, so the agents call **bare `gh`** from the **Bash tool** with bash syntax. Post
-multi-line comment/PR bodies with a **quoted bash heredoc** so apostrophes, `$`, and backticks pass
-through literally:
+In both environments `gh` is on the **Bash tool's** PATH (locally: `/c/Program Files/GitHub CLI/gh`)
+and is pre-authenticated, so the agents call **bare `gh`** from the **Bash tool** with bash syntax.
+Post multi-line comment/PR bodies with a **quoted bash heredoc** so apostrophes, `$`, and backticks
+pass through literally:
 
 ```bash
 gh issue comment "$ISSUE_NUMBER" --body "$(cat <<'EOF'
@@ -71,12 +82,39 @@ e.g. `BLOCKED: issue #18 — git push rejected (auth). Posted error comment.`
 - `gh label create` failing because the label already exists (`2>/dev/null || true` swallows it).
 - `gh issue/pr list` returning empty when there's nothing to act on.
 - "No PR found", "already past gate", "no new human input".
+- Any **lost concurrency race** (see Concurrency below): "already claimed / already reviewed /
+  branch or PR already exists / tag appeared / push rejected because another run completed the same
+  work" — return a one-line skip, no error comment.
 - `pytest` / `npm run lint` / `npm run build` failing because of **your own in-progress change** —
   that's normal iteration; fix it and continue. Only halt when the failure is environmental/infra,
   not your code.
 
 When genuinely unsure whether an unexpected error is recoverable, **halt and flag** — a human glance
 is cheap; a silently broken pipeline is not.
+
+---
+
+### Concurrency (multiple simultaneous `/fix-issue` runs)
+
+Several `/fix-issue` sweeps may run at the same time — the local scheduled task, an interactive
+local run, and a GitHub Actions sweep can all overlap. GitHub (issues, PRs, labels, marker
+comments, tags) is the shared state; the CI `concurrency` group only serializes Actions-triggered
+sweeps, not local ones. Every pipeline agent follows these rules:
+
+1. **Re-check before you write.** Immediately before posting a decision comment, pushing, or
+   tagging, re-fetch the relevant state. If another run already produced your outcome (marker
+   present, PR open, tag exists), return a one-line skip instead of duplicating it.
+2. **Losing a race is benign, not an error.** "Already claimed / already reviewed / branch or PR
+   already exists / tag appeared / push rejected because another run completed the same work" is
+   normal control flow: skip line, no error comment. Follow Agent Error Handling only when a
+   re-fetch shows the work is still yours and the failure remains unexplained.
+3. **Writers claim; readers just re-check.** The developer agent claims an issue with a
+   `dev-agent:claim` comment before doing any work (its instructions define the protocol). CPO,
+   PM, and QA only re-check before posting — a rare duplicate comment is harmless; a duplicate PR
+   or release is not.
+4. **Never touch uncommitted human work.** Local runs share a human's working tree: if
+   `git status --porcelain` is non-empty before you switch branches or pull, halt and flag —
+   never stash, reset, or discard.
 
 ---
 

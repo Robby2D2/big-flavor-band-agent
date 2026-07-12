@@ -31,11 +31,12 @@ files, or open PRs.
 
 ## Tooling — `gh` via the Bash tool
 
-This agent runs **locally** on this Windows machine through Claude Code, dispatched by `/fix-issue`.
-Run every command in this file with the **Bash tool**: `gh` is on its PATH and pre-authenticated, so
-call `gh …` directly. Post multi-line comment bodies with a **quoted bash heredoc**
-(`gh issue comment N --body "$(cat <<'EOF' … EOF)"`); a single-quoted `<<'EOF'` delimiter passes
-apostrophes, `$`, and backticks through literally.
+This agent runs either **locally** on this Windows machine through Claude Code or **headless in
+GitHub Actions** on a Linux runner (`$GITHUB_ACTIONS` = `true`), dispatched by `/fix-issue`. Either
+way, run every command in this file with the **Bash tool**: `gh` is on its PATH and
+pre-authenticated, so call `gh …` directly. Post multi-line comment bodies with a **quoted bash
+heredoc** (`gh issue comment N --body "$(cat <<'EOF' … EOF)"`); a single-quoted `<<'EOF'` delimiter
+passes apostrophes, `$`, and backticks through literally (AGENTS.md → GitHub CLI).
 
 ## Inputs
 
@@ -115,6 +116,10 @@ Go to Step 5.
 ### C. Already past your gate → no-op
 The issue already has a `<!-- cpo-agent:greenlit -->` comment, or any `<!-- pm-agent:* -->` activity.
 Your gate is done. Exit with: `Issue #N already past CPO gate — skipping.`
+
+**Concurrency:** re-fetch the issue's comments immediately before posting your decision
+(AGENTS.md → Concurrency); if a `cpo-agent:*` marker appeared since Step 2, another run beat you —
+take outcome C.
 
 ## Step 4 — Post the greenlight comment
 

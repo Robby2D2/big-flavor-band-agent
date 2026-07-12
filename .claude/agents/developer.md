@@ -18,9 +18,11 @@ request and let the qa-reviewer agent take over.
 
 ## Tooling
 
-You run **locally** through Claude Code. Use the **Bash tool** for `gh`, `git`, `docker`, and
-`pytest` (bare `gh` works — it's on PATH); use the **PowerShell tool** for `.ps1` scripts and `npm`.
-Post multi-line comment/PR bodies with a quoted bash heredoc (`--body "$(cat <<'EOF' … EOF)"`).
+You run either **locally** through Claude Code (Windows) or **headless in GitHub Actions** on a
+Linux runner (`$GITHUB_ACTIONS` = `true`). Use the **Bash tool** for `gh`, `git`, `docker`, and
+`pytest` (bare `gh` works — it's on PATH); locally, use the **PowerShell tool** for `.ps1` scripts
+and `npm` (in CI, `npm` runs fine from Bash). Post multi-line comment/PR bodies with a quoted bash
+heredoc (`--body "$(cat <<'EOF' … EOF)"`). See AGENTS.md → GitHub CLI for the environment details.
 
 ## Step 1 — Load engineering context
 
@@ -77,6 +79,24 @@ Return and stop.
 If `gh pr list --search "closes #N"` already shows an open PR, do not create another. Return:
 `PR already open for issue #N — skipping.`
 
+## Step 3.5 — Claim the issue (concurrency guard)
+
+Another `/fix-issue` run (local or CI) may be working this issue right now (AGENTS.md →
+Concurrency). Claim it before doing any work:
+
+```bash
+CLAIM_ID="dev-$(date +%s)-$RANDOM"
+gh issue comment "$ISSUE_NUMBER" --body "<!-- dev-agent:claim $CLAIM_ID -->"
+sleep 5
+gh issue view "$ISSUE_NUMBER" --json comments
+```
+
+**Active claims** = `dev-agent:claim` comments newer than the event that made the issue dev-ready
+(latest `pm-agent:spec` or QA bounce), less than **60 minutes** old, with no `dev-agent:done`
+after them. If the **oldest** active claim is not yours, exit:
+`Issue #N claimed by another developer run — skipping.` Older abandoned claims (>60 min, no PR)
+are stale — ignore them. Re-verify no PR appeared while you were claiming (Step 3C).
+
 ## Step 4 — Post your development plan
 
 Before touching code, post one comment with the plan (use Glob/Grep to identify *real* files):
@@ -113,9 +133,13 @@ comment rather than silently diverging.
 Derive a slug from the issue title (lowercase, hyphens, max 40 chars).
 
 ```bash
+[ -z "$(git status --porcelain)" ] || { echo "Working tree dirty — refusing to touch human work"; exit 1; }   # halt + flag (AGENTS.md → Concurrency #4)
+git fetch origin
+BRANCH="fix/<slug>-$ISSUE_NUMBER"
+git ls-remote --heads origin "$BRANCH" | grep -q . && exit 0   # branch already on origin → another run is ahead; exit: `Branch for issue #N already exists on origin — skipping.`
 git checkout main
 git pull --ff-only
-git checkout -b "fix/<slug>-$ISSUE_NUMBER"
+git checkout -b "$BRANCH"
 ```
 
 Use `feat/` prefix instead of `fix/` if the issue has the `enhancement` label.
@@ -143,13 +167,19 @@ Run what your change touches (see `.agents/TESTING.md` — this project has no f
 honest about what you actually ran):
 
 ```bash
-# Backend touched — confirm it boots cleanly, then run pytest if real tests exist/were added:
+# Backend touched — locally: confirm it boots cleanly, then run pytest if real tests exist/were added:
 docker restart bigflavor-backend && docker logs bigflavor-backend --tail 50
 docker exec bigflavor-backend python -m pytest tests/ -q   # if applicable
 
 # Frontend touched:
 cd frontend && npm run lint && npm run build
 ```
+
+**In CI (`$GITHUB_ACTIONS` = true) there is no Docker stack** — skip the boot check, run the
+**targeted** pytest for the tests you added/changed directly on the runner
+(`pip install` only what they need; never `pytest tests/` wholesale — most of `tests/` is ad-hoc
+scripts that hit the live DB), plus frontend lint + build. Mark the boot check unchecked in the PR
+test plan and say it needs a local/human run.
 
 **Add a real (assert-based) pytest test for new backend logic** where feasible — inject a fake
 `LLMProvider` rather than calling a live model, and use a disposable DB rather than the live
@@ -173,6 +203,10 @@ Use `feat:` for enhancement-labeled issues. End with the Co-Authored-By trailer 
 requires it.
 
 ## Step 9 — Push and open the PR
+
+Re-check first: `gh pr list --search "closes #N"` — if a PR appeared while you worked, exit:
+`PR already open for issue #N — discarding local branch.` A rejected push of your feature branch
+means the same thing (someone pushed it first) — re-check and exit benignly, don't force-push.
 
 ```bash
 git push -u origin HEAD
@@ -233,10 +267,12 @@ Return: `PR opened for issue #N at <url>.`
 
 ## On unexpected failure
 
-If something fails that isn't your own code (`git push` rejected, `gh` auth/network failure, a broken
-Docker/toolchain or other infrastructure error, an unexpected non-zero exit), **stop and flag it for a
-human** per **Agent Error Handling** in `AGENTS.md`: post one `<!-- dev-agent:error -->` comment on the
-issue (heredoc form) naming what you were doing, what failed, and the error, then return a `BLOCKED: …`
-line instead of opening a PR or claiming success. **Note the distinction:** `pytest`/`lint`/`build`
-failing because of *your own in-progress change* is normal iteration — fix it and continue. Only halt
-when the failure is environmental/infra, not your code.
+If something fails that isn't your own code (`gh` auth/network failure, a broken Docker/toolchain or
+other infrastructure error, an unexpected non-zero exit), **stop and flag it for a human** per
+**Agent Error Handling** in `AGENTS.md`: post one `<!-- dev-agent:error -->` comment on the issue
+(heredoc form) naming what you were doing, what failed, and the error, then return a `BLOCKED: …`
+line instead of opening a PR or claiming success. **Two distinctions:** `pytest`/`lint`/`build`
+failing because of *your own in-progress change* is normal iteration — fix it and continue. And a
+**lost concurrency race** (claim lost, branch/PR already exists, feature-branch push rejected
+because another run pushed it first) is benign — skip line, no error comment (AGENTS.md →
+Concurrency). Only halt when the failure is environmental/infra and still yours after a re-fetch.

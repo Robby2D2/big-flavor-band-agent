@@ -16,9 +16,14 @@ you classify work and hand each piece to the right specialist subagent (defined 
 [.claude/agents/](../agents/)). Each subagent communicates with humans through GitHub issue/PR
 comments. You report a triage summary back to the user.
 
-This pipeline runs **locally** on this machine through Claude Code. `gh` is on the Bash tool's PATH
-and pre-authenticated, so the agents drive GitHub directly. There is no GitHub Actions workflow for
-this pipeline.
+This pipeline runs in **two environments**: locally on this machine through Claude Code (interactive
++ the scheduled task), and **headless in GitHub Actions** (`.github/workflows/fix-issue.yml`, via
+`anthropics/claude-code-action`). In both, `gh` is on the Bash tool's PATH and pre-authenticated, so
+the agents drive GitHub directly. **Concurrent sweeps are expected** (AGENTS.md → Concurrency): your
+triage is a snapshot — agents re-verify state themselves and return benign skip lines when another
+run beat them ("claimed by another run", "already reviewed", "release race lost"). Report those as
+skips, never as failures, and never re-dispatch to "fix" them. Cross-invocation safety comes from
+the agents' claim/re-check protocol, not from you.
 
 The five specialists:
 - **cpo** — the first gate on a brand-new issue. Evaluates it against the product OKRs in
@@ -77,6 +82,7 @@ match wins:
 |---|---|---|
 | **DONE** | Closed (incl. `wont-fix`), or has an open PR via `closingIssuesReferences` | skip |
 | **BLOCKED** | Latest agent comment is a `<!-- *-agent:error -->` marker with no newer non-bot human comment | skip — **needs a human** (surface prominently) |
+| **DEV-CLAIMED** | A `<!-- dev-agent:claim -->` comment < 60 min old with no `dev-agent:done` or PR after it | skip — another run is implementing |
 | **DEV** | Has `dev_ready` label | → developer |
 | **CPO (new)** | No `<!-- cpo-agent:* -->` marker AND no `<!-- pm-agent:spec -->` or `<!-- pm-agent:question -->` marker | → cpo |
 | **PM (new)** | Has a `<!-- cpo-agent:greenlit -->` comment but no `<!-- pm-agent:spec -->` or `<!-- pm-agent:question -->` marker | → product-manager |
@@ -269,7 +275,8 @@ If release-manager runs successfully, include its result line in the final repor
 - The orchestrator never edits code, posts GitHub comments, or modifies labels itself (except the
   one-time label creation in Step 2). Everything else is the subagents' job.
 - Agent comment markers (`<!-- cpo-agent:greenlit -->`, `<!-- cpo-agent:declined -->`,
-  `<!-- pm-agent:spec -->`, `<!-- pm-agent:question -->`, `<!-- dev-agent:plan -->`,
+  `<!-- pm-agent:spec -->`, `<!-- pm-agent:question -->`, `<!-- dev-agent:claim -->`,
+  `<!-- dev-agent:plan -->`,
   `<!-- dev-agent:question -->`, `<!-- dev-agent:done -->`, `<!-- qa-agent:approved -->`,
   `<!-- qa-agent:review -->`, `<!-- qa-agent:bounce -->`, `<!-- release-agent:shipped -->`,
   `<!-- release-agent:partial -->`, and the `*-agent:error` markers) are the state machine — keep them

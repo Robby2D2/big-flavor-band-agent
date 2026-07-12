@@ -1,0 +1,84 @@
+name: Fix issues (agent sweep)
+
+# Runs the /fix-issue orchestrator (cpo → product-manager → developer → qa-reviewer →
+# release-manager) headless on a GitHub-hosted Linux runner. This complements the local Windows
+# scheduled task — both environments follow AGENTS.md → Concurrency, so overlapping sweeps are
+# safe (claim protocol + re-check-before-write).
+#
+# The agents drive everything through `gh` against this repo and a state machine made of
+# HTML-marker comments on issues/PRs. There is no Docker stack on this runner: agents run
+# targeted pytest + frontend lint/build and honestly report what couldn't be verified
+# (backend boot check) for a local/human follow-up.
+#
+# Triggers mirror the local non-LLM pre-flight gate: a sweep starts only on new HUMAN activity
+# (issue opened/reopened, or a comment WITHOUT an `<!-- *-agent:* -->` marker). Agent comments
+# are posted with BOT_TOKEN (a PAT, so they DO emit events) — the marker filter below is what
+# stops the pipeline's own comments from re-triggering it forever.
+
+on:
+  workflow_dispatch:
+    inputs:
+      args:
+        description: 'Arguments to /fix-issue (blank = full sweep; "<n>" one issue; "pr <n>"; "release")'
+        required: false
+        default: ''
+  issues:
+    types: [opened, reopened]
+  issue_comment:
+    types: [created]
+
+# Never let two Actions sweeps run at once — the developer agent creates branches and the
+# release-manager pushes tags; overlapping runs would collide. (Local sweeps are serialized
+# against these by the agents' claim/re-check protocol, not by this group.)
+concurrency:
+  group: fix-issue-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    # Skip agent-posted comments (they all carry an `<!-- <role>-agent:… -->` marker). The gh
+    # auth user posts BOTH human and agent comments, so the marker — not the author — is the
+    # bot-vs-human discriminator.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'issues' ||
+      (github.event_name == 'issue_comment' && !contains(github.event.comment.body, '-agent:'))
+    runs-on: ubuntu-latest
+    # A full sweep can dispatch several agents, run builds, and cut a release.
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Use the bot token so commits/tags/PRs the agents push can trigger downstream
+          # workflows. The default GITHUB_TOKEN cannot cascade.
+          token: ${{ secrets.BOT_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run /fix-issue
+        # Pinned to an immutable release tag rather than the floating @v1, which silently moves
+        # to new builds. Bump this deliberately after verifying a newer release is stable.
+        uses: anthropics/claude-code-action@v1.0.140
+        with:
+          # Subscription seat auth (generated with `claude setup-token`). Swap to
+          # `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` for pay-per-use billing.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Pass the bot token so the agents' `gh` calls and `git push` cascade to other workflows.
+          github_token: ${{ secrets.BOT_TOKEN }}
+          prompt: '/fix-issue ${{ github.event.inputs.args }}'
+          claude_args: '--dangerously-skip-permissions'
+        env:
+          # Make the bot token visible to the agents' bare `gh` / `git` invocations too.
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}

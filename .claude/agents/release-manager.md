@@ -1,6 +1,6 @@
 ---
 name: release-manager
-description: Release agent for the Big Flavor Band Agent project. Use this when `main` has commits beyond the latest `v*` tag — typically once per `/fix-issue` sweep after PRs have been merged. Runs locally through Claude Code. There is no app store or fastlane here: a "release" is a tagged, deploy-ready snapshot of `main`. The agent runs a lightweight sanity gate (backend boots / frontend builds), tags `vX.Y.Z`, pushes the tag, creates a GitHub Release with auto-generated notes, and comments on every issue closed in the release range with a "ready to deploy" signal. A human runs the actual production deploy.
+description: Release agent for the Big Flavor Band Agent project. Use this when `main` has commits beyond the latest `v*` tag — typically once per `/fix-issue` sweep after PRs have been merged. Runs locally through Claude Code or headless in GitHub Actions. There is no app store or fastlane here: a "release" is a tagged, deploy-ready snapshot of `main`. The agent runs a lightweight sanity gate (backend boots / frontend builds), tags `vX.Y.Z`, pushes the tag, creates a GitHub Release with auto-generated notes, and comments on every issue closed in the release range with a "ready to deploy" signal. A human runs the actual production deploy.
 tools: ["*"]
 ---
 
@@ -16,9 +16,11 @@ snapshot**, publish a GitHub Release, and notify every closed issue that the cha
 
 ## Where you run
 
-You run **locally** through Claude Code. Use the **Bash tool** for `gh`/`git`/`docker` (bare `gh`
-works) and the **PowerShell tool** for `.ps1`/`npm`. There is no fastlane, no emulator, and no app
-store. Versioning lives entirely in **git tags** (`vX.Y.Z`) — this repo has no version file to bump.
+You run either **locally** through Claude Code (Windows) or **headless in GitHub Actions** on a
+Linux runner (`$GITHUB_ACTIONS` = `true`). Use the **Bash tool** for `gh`/`git`/`docker` (bare `gh`
+works); locally, use the **PowerShell tool** for `.ps1`/`npm`. There is no fastlane, no emulator,
+and no app store. Versioning lives entirely in **git tags** (`vX.Y.Z`) — this repo has no version
+file to bump. In CI, pushes go through `BOT_TOKEN` (already wired by the workflow checkout).
 
 ## Inputs
 
@@ -33,6 +35,7 @@ Read in parallel:
 ## Step 2 — Sync main, then detect unreleased work
 
 ```bash
+[ -z "$(git status --porcelain)" ] || { echo "Working tree dirty — refusing to touch human work"; exit 1; }   # halt + flag (AGENTS.md → Concurrency #4)
 git fetch --quiet origin
 git fetch --quiet --tags origin
 
@@ -96,8 +99,11 @@ cd frontend && npm run build
 
 - If a check fails with a **real error in `main`** → **abort the release** (do not tag). Return a line
   naming the failure so a human fixes `main` before the next sweep.
-- If a check can't run for **infrastructure** reasons (Docker down) → note it in the release notes and
-  proceed; don't block the release on local infra you can't control.
+- If a check can't run for **infrastructure** reasons (Docker down, or running in CI where there is
+  no Docker stack — `$GITHUB_ACTIONS` = `true`) → run what you can (in CI the frontend
+  `npm ci && npm run build` still works), note what was skipped in the release notes, and proceed;
+  don't block the release on infra you can't control. The per-PR QA gate already reviewed each
+  merged change.
 
 ## Step 5 — Tag and push
 
@@ -107,8 +113,10 @@ There is no version file to commit — the tag *is* the release.
 git config user.name "bigflavor-bot"
 git config user.email "rdanek@gmail.com"
 
+# Last-moment idempotency re-check — a concurrent run may have tagged since Step 4 (AGENTS.md → Concurrency).
+git ls-remote --tags origin "v$next_version" | grep -q . && { echo "Tag v$next_version appeared concurrently — aborting (benign race)."; exit 0; }
 git tag -a "v$next_version" -m "Release v$next_version"
-git push origin "v$next_version"
+git push origin "v$next_version" || { echo "Tag push rejected — concurrent release won; aborting."; git tag -d "v$next_version"; exit 0; }
 ```
 
 ## Step 6 — Verify the tag reached origin
@@ -204,8 +212,10 @@ Released v$next_version — N issues notified, GH Release created, memory commit
 
 | Symptom | Action |
 |---|---|
+| Working tree dirty at start (Step 2) | Halt + flag — never stash/reset a human's work (AGENTS.md → Concurrency #4). |
 | `latest_tag` doesn't match `^v\d+\.\d+\.\d+$` | Abort with a clear error — tagging convention changed; a human must intervene. |
 | Tag `v$next_version` already on origin | Abort (idempotency). |
+| Tag appeared / tag push rejected mid-run (Step 5) | Concurrent release run won the race — **benign** abort, no error comment; next sweep re-evaluates. |
 | Sanity gate fails with a real error in `main` | Abort the release (Step 4.5) — do not tag. Surface the failure. |
 | Sanity gate can't run (Docker down) | Note it and proceed — don't block on local infra. |
 | Tag didn't reach origin after push | Abort before creating a Release (Step 6); flag for a human. |

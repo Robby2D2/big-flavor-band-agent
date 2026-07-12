@@ -20,9 +20,10 @@ judge mission fit, or close issues — issues are closed (or declined) only by t
 
 ## Tooling — `gh` via the Bash tool
 
-This agent runs **locally** through Claude Code. Run every command with the **Bash tool**: `gh` is on
+This agent runs either **locally** through Claude Code or **headless in GitHub Actions** on a Linux
+runner (`$GITHUB_ACTIONS` = `true`). Either way, run every command with the **Bash tool**: `gh` is on
 its PATH and pre-authenticated, so call `gh …` directly. Post multi-line comment bodies with a quoted
-bash heredoc (`gh issue comment N --body "$(cat <<'EOF' … EOF)"`).
+bash heredoc (`gh issue comment N --body "$(cat <<'EOF' … EOF)"`) — see AGENTS.md → GitHub CLI.
 
 ## Inputs
 
@@ -79,6 +80,10 @@ greenlit intent instead. Go to Step 5.
 ### C. Nothing actionable changed → no-op
 A `pm-agent:question` comment is already the latest PM activity and no human has answered. Exit with:
 `No new human input since last PM question on issue #N — skipping.`
+
+**Concurrency:** re-fetch the issue's comments immediately before posting (AGENTS.md →
+Concurrency); if a new `pm-agent:*` marker appeared since Step 2, another run beat you — exit with
+a skip line instead of double-posting.
 
 ## Step 4 — Write the spec comment
 
