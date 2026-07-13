@@ -31,6 +31,12 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("big-flavor-mcp")
 
+# Mains-hum detection/removal (issue #57)
+MAINS_FUNDAMENTALS_HZ = (50.0, 60.0)
+HUM_MAX_FREQ_HZ = 500.0      # harmonics above this rarely carry audible hum
+HUM_PROMINENCE_DB = 10.0     # narrow peak must stand this far above the local baseline
+HUM_NOTCH_Q = 30.0           # notch bandwidth = freq / Q (~2 Hz at 60 Hz)
+
 
 def _load_audio(file_path: str, sr: Optional[int] = None) -> tuple:
     """Load audio preserving the input's channel count.
@@ -285,6 +291,28 @@ class BigFlavorMCPServer:
                     }
                 ),
                 Tool(
+                    name="remove_hum",
+                    description="Detect and remove mains electrical hum (50 or 60 Hz fundamental and its harmonics) using narrow high-Q notch filters that leave nearby musical content intact",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the audio file to de-hum"
+                            },
+                            "output_path": {
+                                "type": "string",
+                                "description": "Output path for the de-hummed file"
+                            },
+                            "fundamental_hz": {
+                                "type": "number",
+                                "description": "Mains fundamental to notch (50 or 60). Auto-detected when omitted."
+                            }
+                        },
+                        "required": ["file_path", "output_path"]
+                    }
+                ),
+                Tool(
                     name="correct_pitch",
                     description="Apply pitch correction to fix wrong notes or tuning issues",
                     inputSchema={
@@ -444,6 +472,12 @@ class BigFlavorMCPServer:
                         arguments.get("reduction_strength", 0.7),
                         arguments["output_path"],
                         arguments.get("highpass_hz")
+                    )
+                elif name == "remove_hum":
+                    result = await self.remove_hum(
+                        arguments["file_path"],
+                        arguments["output_path"],
+                        arguments.get("fundamental_hz")
                     )
                 elif name == "correct_pitch":
                     result = await self.correct_pitch(
@@ -1090,7 +1124,10 @@ class BigFlavorMCPServer:
             else:
                 noise_level_db = -60.0
                 recommended_noise_reduction = 0.5
-            
+
+            # ===== 2b. DETECT MAINS HUM (issue #57) =====
+            hum = self._detect_hum(y, sr)
+
             # ===== 3. ANALYZE FREQUENCY BALANCE =====
             # Get average spectrum
             D = np.abs(librosa.stft(y))
@@ -1211,6 +1248,17 @@ class BigFlavorMCPServer:
                     "recommended_profile_duration": 1.0,
                     "reason": f"Background noise at {noise_level_db:.1f} dB"
                 },
+                "hum": {
+                    "recommended": hum["detected"],
+                    "fundamental_hz": hum["fundamental_hz"],
+                    "harmonics_affected": hum["harmonics_affected"],
+                    "prominence_db": hum["prominence_db"],
+                    "reason": (
+                        f"Mains hum detected at {hum['fundamental_hz']:.0f} Hz "
+                        f"({len(hum['harmonics_affected'])} affected frequencies)"
+                        if hum["detected"] else "No mains hum detected"
+                    )
+                },
                 "eq": {
                     "recommended": len(eq_recommendations) > 0,
                     "adjustments": eq_recommendations,
@@ -1263,10 +1311,11 @@ class BigFlavorMCPServer:
                 "recommendations": recommendations,
                 "processing_order": [
                     "1. Trim non-musical content" if recommendations["trim"]["recommended"] else None,
-                    "2. Reduce noise" if recommendations["noise_reduction"]["recommended"] else None,
-                    "3. Apply EQ corrections" if recommendations["eq"]["recommended"] else None,
-                    "4. Normalize with compression",
-                    "5. Apply mastering"
+                    "2. Remove mains hum" if recommendations["hum"]["recommended"] else None,
+                    "3. Reduce noise" if recommendations["noise_reduction"]["recommended"] else None,
+                    "4. Apply EQ corrections" if recommendations["eq"]["recommended"] else None,
+                    "5. Normalize with compression",
+                    "6. Apply mastering"
                 ],
                 "summary": self._generate_analysis_summary(recommendations)
             }
@@ -1291,6 +1340,13 @@ class BigFlavorMCPServer:
         if recommendations["noise_reduction"]["recommended"]:
             noise_db = recommendations["noise_reduction"]["noise_level_db"]
             issues.append(f"Background noise at {noise_db:.1f} dB")
+
+        if recommendations["hum"]["recommended"]:
+            fundamental = recommendations["hum"]["fundamental_hz"]
+            harmonic_count = len(recommendations["hum"]["harmonics_affected"])
+            issues.append(
+                f"Mains hum at {fundamental:.0f} Hz ({harmonic_count} affected frequencies)"
+            )
         
         if recommendations["eq"]["recommended"]:
             issues.append(f"{len(recommendations['eq']['adjustments'])} frequency imbalances detected")
@@ -1345,10 +1401,11 @@ class BigFlavorMCPServer:
             recommendations = analysis["recommendations"]
 
             # Apply caller step toggles on top of the recommendations. trim /
-            # noise_reduction / eq are gated by their "recommended" flag below,
-            # so flip that flag; normalize / master always run unless turned off.
+            # hum / noise_reduction / eq are gated by their "recommended" flag
+            # below, so flip that flag; normalize / master always run unless
+            # turned off.
             overrides = steps_override or {}
-            for _step in ("trim", "noise_reduction", "eq"):
+            for _step in ("trim", "hum", "noise_reduction", "eq"):
                 if _step in overrides:
                     recommendations[_step]["recommended"] = bool(overrides[_step])
             do_normalize = bool(overrides.get("normalize", True))
@@ -1407,7 +1464,33 @@ class BigFlavorMCPServer:
                     "trimmed_end_seconds": round((y.shape[-1] - trim_end) / sr, 2),
                     "output": str(trim_output) if keep_intermediates else "temp"
                 })
-            
+
+            # Step 2b: Mains-hum removal — before broadband noise reduction so
+            # the narrow notches handle hum the spectral gate can't (issue #57).
+            if recommendations["hum"]["recommended"]:
+                logger.info("Step 1b: Hum removal...")
+
+                if keep_intermediates:
+                    hum_output = intermediate_dir / "01b_dehummed.wav"
+                else:
+                    import tempfile
+                    hum_output = Path(tempfile.mktemp(suffix=".wav"))
+
+                result = await self.remove_hum(
+                    current_file,
+                    str(hum_output),
+                    fundamental_hz=recommendations["hum"]["fundamental_hz"]
+                )
+
+                if result.get("status") == "success" and result.get("hum_detected"):
+                    current_file = str(hum_output)
+                    steps_taken.append({
+                        "step": "hum_removal",
+                        "fundamental_hz": result.get("fundamental_hz"),
+                        "harmonics_notched": result.get("harmonics_notched"),
+                        "output": str(hum_output) if keep_intermediates else "temp"
+                    })
+
             # Step 3: Noise reduction
             if recommendations["noise_reduction"]["recommended"]:
                 logger.info("Step 2: Noise reduction...")
@@ -1565,6 +1648,7 @@ class BigFlavorMCPServer:
                 "total_steps": len(steps_taken),
                 "recommendations_followed": {
                     "trim": any(s["step"] == "trim" for s in steps_taken),
+                    "hum_removal": any(s["step"] == "hum_removal" for s in steps_taken),
                     "noise_reduction": any(s["step"] == "noise_reduction" for s in steps_taken),
                     "eq": any(s["step"] == "eq" for s in steps_taken),
                     "normalize": any(s["step"] == "normalize" for s in steps_taken),
@@ -1765,7 +1849,157 @@ class BigFlavorMCPServer:
                 "error": str(e),
                 "input_file": file_path
             }
-    
+
+    def _detect_hum(self, y, sr) -> dict:
+        """
+        Detect mains hum: persistent narrow spectral peaks at a 50 or 60 Hz
+        fundamental and its harmonics (issue #57).
+
+        Uses the median magnitude spectrum over time so persistent components
+        (hum) survive while transient musical content is suppressed. A
+        fundamental counts as detected when its own peak is prominent or at
+        least two of its harmonics are (hum sometimes has a weak fundamental
+        but strong harmonics).
+
+        Returns:
+            {"detected": bool, "fundamental_hz": float | None,
+             "harmonics_affected": [float], "prominence_db": {freq: dB}}
+        """
+        import librosa
+        import numpy as np
+
+        n_fft = 16384
+        while n_fft > len(y) and n_fft > 2048:
+            n_fft //= 2
+        spectrum = np.median(np.abs(librosa.stft(y, n_fft=n_fft)), axis=1)
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+
+        def peak_prominence_db(freq: float) -> float:
+            offset = np.abs(freqs - freq)
+            band = offset <= 3.0
+            baseline_band = (offset > 6.0) & (offset <= 30.0)
+            if not band.any() or not baseline_band.any():
+                return 0.0
+            peak = spectrum[band].max()
+            baseline = np.median(spectrum[baseline_band])
+            return float(20 * np.log10((peak + 1e-10) / (baseline + 1e-10)))
+
+        best = {
+            "detected": False,
+            "fundamental_hz": None,
+            "harmonics_affected": [],
+            "prominence_db": {}
+        }
+        best_score = 0.0
+        for f0 in MAINS_FUNDAMENTALS_HZ:
+            affected = []
+            prominences = {}
+            harmonic = f0
+            while harmonic <= min(HUM_MAX_FREQ_HZ, sr / 2 - 30.0):
+                prominence = peak_prominence_db(harmonic)
+                if prominence >= HUM_PROMINENCE_DB:
+                    affected.append(harmonic)
+                    prominences[harmonic] = round(prominence, 1)
+                harmonic += f0
+            detected = f0 in affected or len(affected) >= 2
+            score = sum(prominences.values())
+            if detected and score > best_score:
+                best = {
+                    "detected": True,
+                    "fundamental_hz": f0,
+                    "harmonics_affected": affected,
+                    "prominence_db": prominences
+                }
+                best_score = score
+        return best
+
+    async def remove_hum(
+        self,
+        file_path: str,
+        output_path: str,
+        fundamental_hz: Optional[float] = None
+    ) -> dict:
+        """
+        Remove mains hum with narrow high-Q notch filters at the fundamental
+        and its affected harmonics, leaving nearby content intact (issue #57).
+
+        Args:
+            file_path: Path to input audio file
+            output_path: Path for output file
+            fundamental_hz: Mains fundamental to notch (50 or 60).
+                Auto-detected when omitted; when no hum is found the audio is
+                copied unchanged.
+
+        Returns:
+            Operation result
+        """
+        try:
+            import shutil
+
+            import librosa
+            import numpy as np
+            import soundfile as sf
+            from scipy import signal
+
+            y, sr = librosa.load(file_path, sr=None)
+            detection = self._detect_hum(y, sr)
+
+            if fundamental_hz is not None:
+                fundamental_hz = float(fundamental_hz)
+                if detection["detected"] and detection["fundamental_hz"] == fundamental_hz:
+                    notch_freqs = detection["harmonics_affected"]
+                else:
+                    # Forced fundamental without a matching detection: notch
+                    # the fundamental and its first few harmonics.
+                    notch_freqs = [fundamental_hz * k for k in range(1, 5)]
+            elif detection["detected"]:
+                fundamental_hz = detection["fundamental_hz"]
+                notch_freqs = detection["harmonics_affected"]
+            else:
+                shutil.copyfile(file_path, output_path)
+                logger.info(f"No mains hum detected in {file_path}; copied unchanged")
+                return {
+                    "status": "success",
+                    "hum_detected": False,
+                    "input_file": file_path,
+                    "output_file": output_path,
+                    "message": "No mains hum detected; audio copied unchanged"
+                }
+
+            notch_freqs = [float(f) for f in notch_freqs if f < sr / 2 * 0.9]
+            y_filtered = y
+            for freq in notch_freqs:
+                b, a = signal.iirnotch(freq, HUM_NOTCH_Q, fs=sr)
+                # Zero-phase filtering: no phase distortion, double attenuation
+                y_filtered = signal.filtfilt(b, a, y_filtered)
+
+            sf.write(output_path, y_filtered.astype(np.float32), sr)
+
+            residual = self._detect_hum(y_filtered, sr)
+            logger.info(
+                f"Hum removal: notched {len(notch_freqs)} frequencies "
+                f"(fundamental {fundamental_hz:.0f} Hz)"
+            )
+
+            return {
+                "status": "success",
+                "hum_detected": True,
+                "fundamental_hz": fundamental_hz,
+                "harmonics_notched": notch_freqs,
+                "prominence_db": detection["prominence_db"],
+                "residual_hum_detected": residual["detected"],
+                "input_file": file_path,
+                "output_file": output_path
+            }
+
+        except Exception as e:
+            logger.error(f"Error removing hum: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "input_file": file_path
+            }
+
     async def correct_pitch(
         self,
         file_path: str,
