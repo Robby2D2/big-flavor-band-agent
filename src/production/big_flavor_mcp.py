@@ -32,6 +32,47 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("big-flavor-mcp")
 
 
+def _load_audio(file_path: str, sr: Optional[int] = None) -> tuple:
+    """Load audio preserving the input's channel count.
+
+    Returns (y, sample_rate) where y is 1-D for mono input or
+    (channels, samples) for multi-channel input (librosa layout).
+    """
+    import librosa
+
+    return librosa.load(file_path, sr=sr, mono=False)
+
+
+def _to_mono(y):
+    """Mono reference mix for analysis (beat/pitch/RMS detection)."""
+    import librosa
+
+    return librosa.to_mono(y) if y.ndim > 1 else y
+
+
+def _apply_per_channel(y, process):
+    """Apply a 1-D signal-processing function to each channel.
+
+    Mono passes straight through. Multi-channel results are trimmed to the
+    shortest channel because STFT round-trips can differ by a few samples.
+    """
+    import numpy as np
+
+    if y.ndim == 1:
+        return process(y)
+    processed = [process(channel) for channel in y]
+    min_len = min(p.shape[-1] for p in processed)
+    return np.vstack([p[..., :min_len] for p in processed])
+
+
+def _write_audio(output_path: str, y, sr: int) -> None:
+    """Write audio, converting librosa's (channels, samples) layout to
+    soundfile's (samples, channels)."""
+    import soundfile as sf
+
+    sf.write(output_path, y.T if y.ndim > 1 else y, sr)
+
+
 class BigFlavorMCPServer:
     """MCP Server for Big Flavor audio production and analysis operations."""
     
@@ -617,21 +658,23 @@ class BigFlavorMCPServer:
             import librosa
             import soundfile as sf
             
-            # Load audio
-            y, sr = librosa.load(file_path)
-            
+            # Load audio (channel count preserved; analysis uses a mono mix)
+            y, sr = _load_audio(file_path, sr=22050)
+
             # Detect current tempo
-            tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+            tempo, _ = librosa.beat.beat_track(y=_to_mono(y), sr=sr)
             current_bpm = tempo if isinstance(tempo, float) else tempo[0]
-            
+
             # Calculate stretch ratio
             stretch_ratio = target_bpm / current_bpm
-            
+
             # Time-stretch audio
-            y_stretched = librosa.effects.time_stretch(y, rate=stretch_ratio)
-            
+            y_stretched = _apply_per_channel(
+                y, lambda ch: librosa.effects.time_stretch(ch, rate=stretch_ratio)
+            )
+
             # Save output
-            sf.write(output_path, y_stretched, sr)
+            _write_audio(output_path, y_stretched, sr)
             
             logger.info(f"Tempo matched: {current_bpm:.1f} BPM → {target_bpm:.1f} BPM")
             
@@ -676,51 +719,61 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             
-            # Load both songs
-            y1, sr1 = librosa.load(song1_path)
-            y2, sr2 = librosa.load(song2_path)
-            
+            # Load both songs (channel counts preserved)
+            y1, sr1 = _load_audio(song1_path, sr=22050)
+            y2, sr2 = _load_audio(song2_path, sr=22050)
+
+            # Match channel counts: duplicate a mono song so a stereo partner
+            # keeps its stereo image.
+            if y1.ndim != y2.ndim:
+                if y1.ndim == 1:
+                    y1 = np.tile(y1, (y2.shape[0], 1))
+                else:
+                    y2 = np.tile(y2, (y1.shape[0], 1))
+
             # Resample if sample rates differ
             if sr1 != sr2:
                 y2 = librosa.resample(y2, orig_sr=sr2, target_sr=sr1)
                 sr = sr1
             else:
                 sr = sr1
-            
+
             # Detect tempos
-            tempo1, beats1 = librosa.beat.beat_track(y=y1, sr=sr)
-            tempo2, beats2 = librosa.beat.beat_track(y=y2, sr=sr)
-            
+            tempo1, beats1 = librosa.beat.beat_track(y=_to_mono(y1), sr=sr)
+            tempo2, beats2 = librosa.beat.beat_track(y=_to_mono(y2), sr=sr)
+
             bpm1 = tempo1 if isinstance(tempo1, float) else tempo1[0]
             bpm2 = tempo2 if isinstance(tempo2, float) else tempo2[0]
-            
+
             # Time-stretch song2 to match song1's tempo
             if abs(bpm1 - bpm2) > 1:
                 stretch_ratio = bpm1 / bpm2
-                y2 = librosa.effects.time_stretch(y2, rate=stretch_ratio)
-            
+                y2 = _apply_per_channel(
+                    y2, lambda ch: librosa.effects.time_stretch(ch, rate=stretch_ratio)
+                )
+
             # Calculate transition length in samples
             transition_samples = int(transition_duration * sr)
-            
+
             # Get ending of song1 and beginning of song2
-            song1_end = y1[-transition_samples:]
-            song2_start = y2[:transition_samples]
-            
+            song1_end = y1[..., -transition_samples:]
+            song2_start = y2[..., :transition_samples]
+
             # Create crossfade
             fade_out = np.linspace(1, 0, transition_samples)
             fade_in = np.linspace(0, 1, transition_samples)
-            
+
             transition = song1_end * fade_out + song2_start * fade_in
-            
+
             # Concatenate: song1 (minus transition) + transition + song2 (minus transition)
             output = np.concatenate([
-                y1[:-transition_samples],
+                y1[..., :-transition_samples],
                 transition,
-                y2[transition_samples:]
-            ])
-            
+                y2[..., transition_samples:]
+            ], axis=-1)
+
             # Save output
-            sf.write(output_path, output, sr)
+            _write_audio(output_path, output, sr)
             
             logger.info(f"Created transition: {Path(song1_path).name} → {Path(song2_path).name}")
             
@@ -765,22 +818,26 @@ class BigFlavorMCPServer:
             import numpy as np
             from scipy import signal
             
-            # Load audio
-            y, sr = librosa.load(file_path, sr=None)
-            
-            # Apply high-pass filter to remove rumble
+            # Load audio (channel count preserved)
+            y, sr = _load_audio(file_path)
+
+            # Apply high-pass filter to remove rumble (sosfilt runs along the
+            # last axis, so this handles mono and stereo alike)
             sos = signal.butter(4, 30, 'hp', fs=sr, output='sos')
             y_filtered = signal.sosfilt(sos, y)
-            
-            # Apply smooth RMS-based mastering compression
+            n_samples = y_filtered.shape[-1]
+
+            # Apply smooth RMS-based mastering compression. The gain envelope
+            # is computed from the mono mix and applied to all channels
+            # (linked stereo) so the stereo balance is preserved.
             frame_length = int(sr * 0.05)  # 50ms window
             hop_length = int(sr * 0.01)    # 10ms hop
-            
-            rms = librosa.feature.rms(y=y_filtered, frame_length=frame_length, hop_length=hop_length)[0]
-            
+
+            rms = librosa.feature.rms(y=_to_mono(y_filtered), frame_length=frame_length, hop_length=hop_length)[0]
+
             # Upsample RMS to match audio length
             rms_full = np.interp(
-                np.arange(len(y_filtered)),
+                np.arange(n_samples),
                 np.arange(len(rms)) * hop_length,
                 rms
             )
@@ -849,14 +906,16 @@ class BigFlavorMCPServer:
             lookahead_ms = 5
             lookahead_samples = int(sr * lookahead_ms / 1000)
             
-            # Create envelope of absolute values with lookahead
-            abs_signal = np.abs(y_gained)
+            # Create envelope of absolute values with lookahead. For stereo the
+            # envelope tracks the loudest channel so one shared limiter gain
+            # preserves the balance.
+            abs_signal = np.max(np.abs(y_gained), axis=0) if y_gained.ndim > 1 else np.abs(y_gained)
             # Pad for lookahead
             abs_padded = np.pad(abs_signal, (0, lookahead_samples), mode='edge')
-            
+
             # Find maximum in lookahead window
             from scipy.ndimage import maximum_filter
-            envelope = maximum_filter(abs_padded, size=lookahead_samples)[:len(y_gained)]
+            envelope = maximum_filter(abs_padded, size=lookahead_samples)[:n_samples]
             
             # Calculate limiting gain (only reduce, never boost)
             limit_threshold = 0.95  # -0.5dB headroom
@@ -876,9 +935,9 @@ class BigFlavorMCPServer:
             
             # Apply limiter
             y_mastered = y_gained * smoothed_limit_gain
-            
+
             # Save output
-            sf.write(output_path, y_mastered, sr)
+            _write_audio(output_path, y_mastered, sr)
             
             # Calculate final RMS
             final_rms = np.sqrt(np.mean(y_mastered**2))
@@ -1311,36 +1370,36 @@ class BigFlavorMCPServer:
             if recommendations["trim"]["recommended"]:
                 logger.info("Step 1: Intelligent trimming...")
                 
-                # Load audio
-                y, sr = librosa.load(current_file, sr=None)
-                
+                # Load audio (channel count preserved)
+                y, sr = _load_audio(current_file)
+
                 # Calculate trim points from analysis
                 trim_start_samples = int(recommendations["trim"]["detected_music_start"] * sr)
                 detected_end = recommendations["trim"]["detected_music_end"]
                 trim_end_samples = int(detected_end * sr)
-                
+
                 # Add small buffer
                 buffer_samples = int(0.1 * sr)
                 trim_start = max(0, trim_start_samples - buffer_samples)
-                trim_end = min(len(y), trim_end_samples + buffer_samples)
-                
+                trim_end = min(y.shape[-1], trim_end_samples + buffer_samples)
+
                 # Trim
-                y_trimmed = y[trim_start:trim_end]
-                
+                y_trimmed = y[..., trim_start:trim_end]
+
                 # Save
                 if keep_intermediates:
                     trim_output = intermediate_dir / "01_trimmed.wav"
                 else:
                     import tempfile
                     trim_output = Path(tempfile.mktemp(suffix=".wav"))
-                
-                sf.write(str(trim_output), y_trimmed, sr)
+
+                _write_audio(str(trim_output), y_trimmed, sr)
                 current_file = str(trim_output)
-                
+
                 steps_taken.append({
                     "step": "trim",
                     "trimmed_start_seconds": round(trim_start / sr, 2),
-                    "trimmed_end_seconds": round((len(y) - trim_end) / sr, 2),
+                    "trimmed_end_seconds": round((y.shape[-1] - trim_end) / sr, 2),
                     "output": str(trim_output) if keep_intermediates else "temp"
                 })
             
@@ -1541,33 +1600,34 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             
-            # Load audio
-            y, sr = librosa.load(file_path, sr=None)
-            original_duration = len(y) / sr
-            
+            # Load audio (channel count preserved)
+            y, sr = _load_audio(file_path)
+            original_duration = y.shape[-1] / sr
+
             # Convert threshold from dB to amplitude
             threshold_amplitude = librosa.db_to_amplitude(threshold_db)
-            
-            # Find non-silent intervals
-            non_silent = librosa.effects.split(y, top_db=-threshold_db)
-            
+
+            # Find non-silent intervals on the mono mix so both channels share
+            # the same trim points
+            non_silent = librosa.effects.split(_to_mono(y), top_db=-threshold_db)
+
             if len(non_silent) == 0:
                 return {
                     "status": "error",
                     "error": "No non-silent audio found",
                     "input_file": file_path
                 }
-            
+
             # Get the first and last non-silent intervals
             start_sample = non_silent[0][0]
             end_sample = non_silent[-1][1]
-            
+
             # Trim audio
-            y_trimmed = y[start_sample:end_sample]
-            trimmed_duration = len(y_trimmed) / sr
-            
+            y_trimmed = y[..., start_sample:end_sample]
+            trimmed_duration = y_trimmed.shape[-1] / sr
+
             # Save output
-            sf.write(output_path, y_trimmed, sr)
+            _write_audio(output_path, y_trimmed, sr)
             
             logger.info(f"Trimmed silence: {original_duration:.2f}s → {trimmed_duration:.2f}s")
             
@@ -1615,52 +1675,59 @@ class BigFlavorMCPServer:
             import numpy as np
             from scipy import signal
             
-            # Load audio
-            y, sr = librosa.load(file_path, sr=None)
-            
-            # Get noise profile from beginning
+            # Load audio (channel count preserved; each channel is denoised
+            # independently with its own noise profile)
+            y, sr = _load_audio(file_path)
+            n_samples = y.shape[-1]
+
             noise_samples = int(noise_profile_duration * sr)
-            noise_profile = y[:noise_samples]
-            
-            # Compute STFT
-            D = librosa.stft(y)
-            D_noise = librosa.stft(noise_profile)
-            
-            # Estimate noise spectrum (average magnitude)
-            noise_mag = np.abs(D_noise).mean(axis=1, keepdims=True)
-            
-            # Get magnitude and phase
-            mag = np.abs(D)
-            phase = np.angle(D)
-            
-            # Spectral gating: reduce magnitude where it's close to noise level
-            # Scale noise threshold by reduction strength
-            noise_threshold = noise_mag * (2 - reduction_strength)
-            
-            # Apply soft gating
-            mask = np.maximum(0, 1 - (noise_threshold / (mag + 1e-10)))
-            mag_reduced = mag * mask
-            
-            # Reconstruct signal
-            D_reduced = mag_reduced * np.exp(1j * phase)
-            y_denoised = librosa.istft(D_reduced)
-            
-            # Apply high-pass filter to remove low-frequency rumble
             sos = signal.butter(4, 60, 'hp', fs=sr, output='sos')
-            y_filtered = signal.sosfilt(sos, y_denoised)
-            
-            # Trim to original length if needed
-            if len(y_filtered) > len(y):
-                y_filtered = y_filtered[:len(y)]
-            elif len(y_filtered) < len(y):
-                y_filtered = np.pad(y_filtered, (0, len(y) - len(y_filtered)))
-            
+
+            def denoise_channel(ch: np.ndarray) -> np.ndarray:
+                # Get noise profile from beginning
+                noise_profile = ch[:noise_samples]
+
+                # Compute STFT
+                D = librosa.stft(ch)
+                D_noise = librosa.stft(noise_profile)
+
+                # Estimate noise spectrum (average magnitude)
+                noise_mag = np.abs(D_noise).mean(axis=1, keepdims=True)
+
+                # Get magnitude and phase
+                mag = np.abs(D)
+                phase = np.angle(D)
+
+                # Spectral gating: reduce magnitude where it's close to noise level
+                # Scale noise threshold by reduction strength
+                noise_threshold = noise_mag * (2 - reduction_strength)
+
+                # Apply soft gating
+                mask = np.maximum(0, 1 - (noise_threshold / (mag + 1e-10)))
+                mag_reduced = mag * mask
+
+                # Reconstruct signal
+                D_reduced = mag_reduced * np.exp(1j * phase)
+                ch_denoised = librosa.istft(D_reduced)
+
+                # Apply high-pass filter to remove low-frequency rumble
+                ch_filtered = signal.sosfilt(sos, ch_denoised)
+
+                # Trim to original length if needed
+                if ch_filtered.shape[-1] > n_samples:
+                    ch_filtered = ch_filtered[:n_samples]
+                elif ch_filtered.shape[-1] < n_samples:
+                    ch_filtered = np.pad(ch_filtered, (0, n_samples - ch_filtered.shape[-1]))
+                return ch_filtered
+
+            y_filtered = _apply_per_channel(y, denoise_channel)
+
             # Save output
-            sf.write(output_path, y_filtered, sr)
-            
+            _write_audio(output_path, y_filtered, sr)
+
             # Calculate noise reduction amount
-            original_noise = np.std(y[:noise_samples])
-            reduced_noise = np.std(y_filtered[:noise_samples])
+            original_noise = np.std(y[..., :noise_samples])
+            reduced_noise = np.std(y_filtered[..., :noise_samples])
             noise_reduction_db = 20 * np.log10(original_noise / (reduced_noise + 1e-10))
             
             logger.info(f"Noise reduction applied: {noise_reduction_db:.1f} dB reduction")
@@ -1706,12 +1773,12 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             
-            # Load audio
-            y, sr = librosa.load(file_path, sr=None)
-            
+            # Load audio (channel count preserved; pitch detection on mono mix)
+            y, sr = _load_audio(file_path)
+
             if auto_tune:
                 # Extract pitch using piptrack
-                pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+                pitches, magnitudes = librosa.piptrack(y=_to_mono(y), sr=sr)
                 
                 # Get dominant pitch over time
                 pitch_track = []
@@ -1744,17 +1811,16 @@ class BigFlavorMCPServer:
             
             # Apply pitch shift
             if abs(correction_semitones) > 0.01:
-                y_corrected = librosa.effects.pitch_shift(
-                    y, 
-                    sr=sr, 
-                    n_steps=correction_semitones
+                y_corrected = _apply_per_channel(
+                    y,
+                    lambda ch: librosa.effects.pitch_shift(ch, sr=sr, n_steps=correction_semitones)
                 )
             else:
                 y_corrected = y
                 logger.info("No pitch correction needed")
-            
+
             # Save output
-            sf.write(output_path, y_corrected, sr)
+            _write_audio(output_path, y_corrected, sr)
             
             return {
                 "status": "success",
@@ -1796,26 +1862,29 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             
-            # Load audio
-            y, sr = librosa.load(file_path, sr=None)
-            
+            # Load audio (channel count preserved)
+            y, sr = _load_audio(file_path)
+            n_samples = y.shape[-1]
+
             # Calculate current peak level
             current_peak = np.max(np.abs(y))
             current_peak_db = 20 * np.log10(current_peak) if current_peak > 0 else -np.inf
-            
+
             if apply_compression:
-                # Apply smooth RMS-based compression to avoid clicks
+                # Apply smooth RMS-based compression to avoid clicks. The gain
+                # envelope comes from the mono mix and is shared by all
+                # channels (linked stereo) so the balance is preserved.
                 from scipy import signal
-                
+
                 # Calculate RMS envelope with longer window for smoother compression
                 frame_length = int(sr * 0.05)  # 50ms window
                 hop_length = int(sr * 0.01)    # 10ms hop
-                
-                rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
-                
+
+                rms = librosa.feature.rms(y=_to_mono(y), frame_length=frame_length, hop_length=hop_length)[0]
+
                 # Upsample RMS to match audio length
                 rms_full = np.interp(
-                    np.arange(len(y)),
+                    np.arange(n_samples),
                     np.arange(len(rms)) * hop_length,
                     rms
                 )
@@ -1882,9 +1951,9 @@ class BigFlavorMCPServer:
             
             if np.max(np.abs(y_normalized)) > 0.99:
                 y_normalized = soft_clip(y_normalized)
-            
+
             # Save output
-            sf.write(output_path, y_normalized, sr)
+            _write_audio(output_path, y_normalized, sr)
             
             final_peak_db = 20 * np.log10(np.max(np.abs(y_normalized)))
             gain_applied_db = final_peak_db - current_peak_db
@@ -1939,10 +2008,11 @@ class BigFlavorMCPServer:
             import numpy as np
             from scipy import signal
             
-            # Load audio
-            y, sr = librosa.load(file_path, sr=None)
+            # Load audio (channel count preserved; sosfilt runs along the last
+            # axis, so every filter below handles mono and stereo alike)
+            y, sr = _load_audio(file_path)
             y_filtered = y.copy()
-            
+
             filters_applied = []
             
             # Apply high-pass filter (remove low rumble)
@@ -1978,9 +2048,9 @@ class BigFlavorMCPServer:
             peak = np.max(np.abs(y_filtered))
             if peak > 0.95:
                 y_filtered = y_filtered * (0.95 / peak)
-            
+
             # Save output
-            sf.write(output_path, y_filtered, sr)
+            _write_audio(output_path, y_filtered, sr)
             
             logger.info(f"EQ applied: {', '.join(filters_applied)}")
             
@@ -2026,63 +2096,72 @@ class BigFlavorMCPServer:
             import numpy as np
             from scipy import signal
             
-            # Load audio
-            y, sr = librosa.load(file_path, sr=None)
-            
-            # Calculate first derivative to detect rapid changes
-            derivative = np.diff(y, prepend=y[0])
-            
-            # Calculate threshold based on sensitivity
-            threshold = np.percentile(np.abs(derivative), 100 - (sensitivity * 20))
-            
-            # Detect artifacts (rapid changes exceeding threshold)
-            artifact_mask = np.abs(derivative) > threshold
-            
-            # Expand mask slightly to catch artifact tails
+            # Load audio (channel count preserved; each channel is cleaned
+            # independently)
+            y, sr = _load_audio(file_path)
+
             kernel_size = int(sr * 0.001)  # 1ms kernel
             kernel = np.ones(kernel_size)
-            artifact_mask_expanded = signal.convolve(
-                artifact_mask.astype(float), 
-                kernel, 
-                mode='same'
-            ) > 0
-            
-            # Count artifacts
-            artifact_count = np.sum(np.diff(artifact_mask_expanded.astype(int)) > 0)
-            
-            # Interpolate over artifacts
-            y_cleaned = y.copy()
-            artifact_indices = np.where(artifact_mask_expanded)[0]
-            
-            if len(artifact_indices) > 0:
-                # Group consecutive indices into regions
-                regions = []
-                start = artifact_indices[0]
-                for i in range(1, len(artifact_indices)):
-                    if artifact_indices[i] != artifact_indices[i-1] + 1:
-                        regions.append((start, artifact_indices[i-1]))
-                        start = artifact_indices[i]
-                regions.append((start, artifact_indices[-1]))
-                
-                # Interpolate each region
-                for start, end in regions:
-                    if start > 0 and end < len(y_cleaned) - 1:
-                        # Linear interpolation
-                        y_cleaned[start:end+1] = np.linspace(
-                            y_cleaned[start-1],
-                            y_cleaned[end+1],
-                            end - start + 1
-                        )
-            
-            # Apply gentle smoothing
             window_size = int(sr * 0.0005)  # 0.5ms smoothing
             if window_size % 2 == 0:
                 window_size += 1
-            y_cleaned = signal.savgol_filter(y_cleaned, window_size, 3)
-            
+
+            artifact_count = 0
+
+            def clean_channel(ch: np.ndarray) -> np.ndarray:
+                nonlocal artifact_count
+
+                # Calculate first derivative to detect rapid changes
+                derivative = np.diff(ch, prepend=ch[0])
+
+                # Calculate threshold based on sensitivity
+                threshold = np.percentile(np.abs(derivative), 100 - (sensitivity * 20))
+
+                # Detect artifacts (rapid changes exceeding threshold)
+                artifact_mask = np.abs(derivative) > threshold
+
+                # Expand mask slightly to catch artifact tails
+                artifact_mask_expanded = signal.convolve(
+                    artifact_mask.astype(float),
+                    kernel,
+                    mode='same'
+                ) > 0
+
+                # Count artifacts
+                artifact_count += int(np.sum(np.diff(artifact_mask_expanded.astype(int)) > 0))
+
+                # Interpolate over artifacts
+                ch_cleaned = ch.copy()
+                artifact_indices = np.where(artifact_mask_expanded)[0]
+
+                if len(artifact_indices) > 0:
+                    # Group consecutive indices into regions
+                    regions = []
+                    start = artifact_indices[0]
+                    for i in range(1, len(artifact_indices)):
+                        if artifact_indices[i] != artifact_indices[i-1] + 1:
+                            regions.append((start, artifact_indices[i-1]))
+                            start = artifact_indices[i]
+                    regions.append((start, artifact_indices[-1]))
+
+                    # Interpolate each region
+                    for start, end in regions:
+                        if start > 0 and end < len(ch_cleaned) - 1:
+                            # Linear interpolation
+                            ch_cleaned[start:end+1] = np.linspace(
+                                ch_cleaned[start-1],
+                                ch_cleaned[end+1],
+                                end - start + 1
+                            )
+
+                # Apply gentle smoothing
+                return signal.savgol_filter(ch_cleaned, window_size, 3)
+
+            y_cleaned = _apply_per_channel(y, clean_channel)
+
             # Save output
-            sf.write(output_path, y_cleaned, sr)
-            
+            _write_audio(output_path, y_cleaned, sr)
+
             logger.info(f"Removed {artifact_count} artifacts")
             
             return {
