@@ -9,6 +9,24 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-13 — Release `v0.13.0` (release-manager)
+Cut **`v0.13.0`** from `main` (HEAD `0a5c9fb`), a **minor** bump from `v0.12.0` — the 12-commit range
+(5 merged feature PRs, #60–#64) is a run of production-pipeline `feat:` commits: preserve stereo
+channels through all production tools, source noise profile from quietest frames + smooth the gate +
+make high-pass opt-in, detect and remove mains hum (50/60 Hz + harmonics), preserve float precision
+through the auto-clean chain and master at 24-bit, and apply all recommended EQ bands with true
+peaking filters and measured LUFS mastering — plus the v0.12.0 memory chore and a `.gitignore` fix for
+`.serena/` that had tripped the release-manager's dirty-tree guard on the prior run. Published GitHub
+Release with auto-generated notes anchored to `v0.12.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.13.0. Notified linked closed issues
+#55–#59. Sanity gate: backend restart **failed** again with the same pre-existing
+`asyncpg.exceptions.DatatypeMismatchError` in `ensure_song_versions_table()` (local Postgres
+`songs.id` is `character varying` vs. the integer FK the code expects) — confirmed via `git diff
+v0.12.0..HEAD --stat` that this range touches only `src/agent/big_flavor_agent.py`,
+`src/production/big_flavor_mcp.py`, tests, and non-code files, not `database/database.py` or
+`backend_api.py`, so this is the same local DB-state drift noted in the v0.12.0/v0.7.0 entries, not a
+regression. Frontend `npm run build` **passed**. Proceeded per Step 4.5.
+
 ### 2026-07-13 — Release `v0.12.0` (release-manager)
 Cut **`v0.12.0`** from `main` (HEAD `d225259`), a **minor** bump from `v0.11.1` — the 3-commit range
 includes a `feat:` commit (`bdd5aa2`, port concurrency standards from soccer-assistant-coach + run the
