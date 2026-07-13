@@ -123,6 +123,14 @@ another run beat you — exit: `PR #N already reviewed by a concurrent run — s
 
 ### A. PR is good → approve
 
+**Self-approval restriction (expected, not an error).** The `gh` account driving this pipeline is
+also the account that opens PRs (developer agent), so `gh pr review --approve` will fail with
+`Can not approve your own pull request`. This is **not** an infrastructure failure — do not treat
+it as BLOCKED. Instead, fall back to posting the identical review body as a **plain PR comment**
+(`gh pr comment` instead of `gh pr review --approve`), still led by the `<!-- qa-agent:approved -->`
+marker, and note in the body that a human needs to click Approve/Merge on GitHub directly since the
+formal review couldn't be recorded.
+
 ```bash
 gh pr review "$PR_NUMBER" --approve --body "$(cat <<'EOF'
 <!-- qa-agent:approved -->
@@ -145,7 +153,8 @@ EOF
 )"
 ```
 
-Return: `Approved PR #N.`
+Return: `Approved PR #N.` (or, if the self-approval fallback applied: `Approved PR #N (posted as
+comment — gh self-approval restriction, human must click Approve/Merge).`)
 
 ### B. PR needs work → request changes and route back to dev
 
