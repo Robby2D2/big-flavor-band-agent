@@ -266,11 +266,15 @@ class BigFlavorMCPServer:
                             },
                             "noise_profile_duration": {
                                 "type": "number",
-                                "description": "Duration in seconds to sample for noise profile (default: 1.0)"
+                                "description": "Amount of the quietest audio (in seconds) used to estimate the noise profile (default: 1.0)"
                             },
                             "reduction_strength": {
                                 "type": "number",
                                 "description": "Noise reduction strength 0-1 (default: 0.7)"
+                            },
+                            "highpass_hz": {
+                                "type": "number",
+                                "description": "Optional high-pass cutoff in Hz to remove low-frequency rumble (default: off; use the EQ tool for rumble control)"
                             },
                             "output_path": {
                                 "type": "string",
@@ -438,7 +442,8 @@ class BigFlavorMCPServer:
                         arguments["file_path"],
                         arguments.get("noise_profile_duration", 1.0),
                         arguments.get("reduction_strength", 0.7),
-                        arguments["output_path"]
+                        arguments["output_path"],
+                        arguments.get("highpass_hz")
                     )
                 elif name == "correct_pitch":
                     result = await self.correct_pitch(
@@ -1654,18 +1659,22 @@ class BigFlavorMCPServer:
         file_path: str,
         noise_profile_duration: float,
         reduction_strength: float,
-        output_path: str
+        output_path: str,
+        highpass_hz: Optional[float] = None
     ) -> dict:
         """
         Remove background noise, hum, hiss, and feedback.
-        Uses spectral gating technique.
-        
+        Uses spectral gating with a smoothed time-frequency mask.
+
         Args:
             file_path: Path to input audio file
-            noise_profile_duration: Duration in seconds to sample noise (default: 1.0)
+            noise_profile_duration: Amount of the quietest audio (in seconds)
+                used to estimate the noise profile (default: 1.0)
             reduction_strength: Reduction strength 0-1 (default: 0.7)
             output_path: Path for output file
-            
+            highpass_hz: Optional high-pass cutoff in Hz for rumble removal.
+                Off by default — rumble control belongs to the EQ step.
+
         Returns:
             Operation result
         """
@@ -1674,71 +1683,79 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             from scipy import signal
-            
+            from scipy.ndimage import median_filter
+
             # Load audio (channel count preserved; each channel is denoised
             # independently with its own noise profile)
             y, sr = _load_audio(file_path)
-            n_samples = y.shape[-1]
-
-            noise_samples = int(noise_profile_duration * sr)
-            sos = signal.butter(4, 60, 'hp', fs=sr, output='sos')
+            hop_length = 512  # librosa.stft default
+            channel_stats = []  # (original_noise, reduced_noise) per channel
 
             def denoise_channel(ch: np.ndarray) -> np.ndarray:
-                # Get noise profile from beginning
-                noise_profile = ch[:noise_samples]
+                n_samples = ch.shape[-1]
 
                 # Compute STFT
                 D = librosa.stft(ch)
-                D_noise = librosa.stft(noise_profile)
-
-                # Estimate noise spectrum (average magnitude)
-                noise_mag = np.abs(D_noise).mean(axis=1, keepdims=True)
-
-                # Get magnitude and phase
                 mag = np.abs(D)
                 phase = np.angle(D)
+
+                # Estimate the noise spectrum from the quietest frames of the
+                # whole channel rather than its opening seconds: in the
+                # auto-clean chain the input is already trimmed to music
+                # start, so "the beginning" is music, not noise (issue #56).
+                frame_rms = np.sqrt((mag ** 2).mean(axis=0))
+                n_noise_frames = int(round(noise_profile_duration * sr / hop_length))
+                n_noise_frames = max(1, min(n_noise_frames, mag.shape[1]))
+                quietest_frames = np.argsort(frame_rms)[:n_noise_frames]
+                noise_mag = mag[:, quietest_frames].mean(axis=1, keepdims=True)
 
                 # Spectral gating: reduce magnitude where it's close to noise level
                 # Scale noise threshold by reduction strength
                 noise_threshold = noise_mag * (2 - reduction_strength)
 
-                # Apply soft gating
+                # Apply soft gating, then smooth the mask across frequency and
+                # time so isolated bins don't flip open/closed frame-to-frame
+                # (the source of watery "musical noise" artifacts).
                 mask = np.maximum(0, 1 - (noise_threshold / (mag + 1e-10)))
+                mask = median_filter(mask, size=(3, 5))
                 mag_reduced = mag * mask
 
-                # Reconstruct signal
+                # Reconstruct signal at the original channel length
                 D_reduced = mag_reduced * np.exp(1j * phase)
-                ch_denoised = librosa.istft(D_reduced)
+                ch_denoised = librosa.istft(D_reduced, length=n_samples)
 
-                # Apply high-pass filter to remove low-frequency rumble
-                ch_filtered = signal.sosfilt(sos, ch_denoised)
+                if highpass_hz:
+                    sos = signal.butter(4, highpass_hz, 'hp', fs=sr, output='sos')
+                    ch_denoised = signal.sosfilt(sos, ch_denoised)
 
-                # Trim to original length if needed
-                if ch_filtered.shape[-1] > n_samples:
-                    ch_filtered = ch_filtered[:n_samples]
-                elif ch_filtered.shape[-1] < n_samples:
-                    ch_filtered = np.pad(ch_filtered, (0, n_samples - ch_filtered.shape[-1]))
-                return ch_filtered
+                # Noise floor before vs after, measured on the quietest frames
+                rms_after = np.sqrt((np.abs(librosa.stft(ch_denoised)) ** 2).mean(axis=0))
+                channel_stats.append((
+                    float(frame_rms[quietest_frames].mean()),
+                    float(rms_after[quietest_frames].mean())
+                ))
+
+                return ch_denoised
 
             y_filtered = _apply_per_channel(y, denoise_channel)
 
             # Save output
             _write_audio(output_path, y_filtered, sr)
 
-            # Calculate noise reduction amount
-            original_noise = np.std(y[..., :noise_samples])
-            reduced_noise = np.std(y_filtered[..., :noise_samples])
+            original_noise = float(np.mean([s[0] for s in channel_stats]))
+            reduced_noise = float(np.mean([s[1] for s in channel_stats]))
             noise_reduction_db = 20 * np.log10(original_noise / (reduced_noise + 1e-10))
-            
+
             logger.info(f"Noise reduction applied: {noise_reduction_db:.1f} dB reduction")
-            
+
             return {
                 "status": "success",
                 "input_file": file_path,
                 "output_file": output_path,
                 "reduction_strength": reduction_strength,
                 "noise_reduction_db": round(float(noise_reduction_db), 1),
-                "noise_profile_duration": noise_profile_duration
+                "noise_profile_duration": noise_profile_duration,
+                "highpass_hz": highpass_hz
             }
             
         except Exception as e:

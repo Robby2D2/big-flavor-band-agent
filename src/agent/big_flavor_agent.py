@@ -386,11 +386,15 @@ class BigFlavorAgent:
                         },
                         "noise_profile_duration": {
                             "type": "number",
-                            "description": "Duration in seconds to sample for noise profile (default: 1.0)"
+                            "description": "Amount of the quietest audio (in seconds) used to estimate the noise profile (default: 1.0)"
                         },
                         "reduction_strength": {
                             "type": "number",
                             "description": "Noise reduction strength 0-1 (default: 0.7)"
+                        },
+                        "highpass_hz": {
+                            "type": "number",
+                            "description": "Optional high-pass cutoff in Hz to remove low-frequency rumble (default: off; use apply_eq for rumble control)"
                         },
                         "output_path": {
                             "type": "string",
@@ -782,7 +786,8 @@ class BigFlavorAgent:
                         tool_input["file_path"],
                         tool_input.get("noise_profile_duration", 1.0),
                         tool_input.get("reduction_strength", 0.7),
-                        tool_input["output_path"]
+                        tool_input["output_path"],
+                        tool_input.get("highpass_hz")
                     )
                 elif tool_name == "correct_pitch":
                     result = await self.production_server.correct_pitch(
