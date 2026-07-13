@@ -34,6 +34,7 @@ from src.rag.big_flavor_rag import SongRAGSystem
 from src.auth import require_role
 from src.api.dependencies import get_agent, get_db, get_rag
 from src.api import radio_service
+from src.production import stem_separation
 from database import DatabaseManager
 
 router = APIRouter()
@@ -70,6 +71,29 @@ class DiscardRequest(BaseModel):
 
 class RenameVersionRequest(BaseModel):
     name: str
+
+
+class StemSeparateRequest(BaseModel):
+    """Start a stem-separation job for a catalog song or one of its versions (issue #67)."""
+    song_id: int
+    # When set, separate this version's audio instead of the catalog original. The
+    # version must belong to the song.
+    source_version_id: Optional[int] = None
+
+
+class StemAdjustment(BaseModel):
+    """Per-stem mix control for a remix render (issue #67)."""
+    gain: float = 1.0
+    mute: bool = False
+
+
+class StemRenderRequest(BaseModel):
+    """Remix a stem set back down to a candidate audio file (issue #67).
+
+    ``adjustments`` maps a stem name (vocals/drums/bass/guitar/other/...) to its
+    gain/mute; unlisted stems play at unity gain, unmuted.
+    """
+    adjustments: Dict[str, StemAdjustment] = {}
 
 
 class BatchStartRequest(BaseModel):
@@ -783,3 +807,151 @@ async def batch_clean_status(
     if status is None:
         return {"status": "idle"}
     return status
+
+
+# ---- issue #67: stem separation (separate / list / stream / remix) ----
+
+STEMS_SUBDIR = "stems"
+
+
+def _stem_set_output_dir(song_id: int, stem_set_id: int) -> Path:
+    """Non-destructive output dir for one stem set: produced/{song_id}/stems/{set_id}/.
+
+    Never overlaps a catalog original or a cleaned candidate — stems live in their
+    own per-song/per-set subtree under produced/.
+    """
+    return _produced_dir() / str(song_id) / STEMS_SUBDIR / str(stem_set_id)
+
+
+def _stem_set_view(stem_set: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a song_stem_sets row for the API (job status + provenance)."""
+    created_at = stem_set.get("created_at")
+    return {
+        "id": stem_set["id"],
+        "song_id": stem_set["song_id"],
+        "source_version_id": stem_set["source_version_id"],
+        "model": stem_set["model"],
+        "status": stem_set["status"],
+        "error": stem_set["error"],
+        "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
+@router.post("/api/produce/stems/separate")
+async def separate_song_stems(
+    request: StemSeparateRequest,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Start a background stem-separation job for a song or one of its versions.
+
+    Resolves the source (catalog original by default, or a specific version's
+    audio when ``source_version_id`` is set), creates a queued stem set, and kicks
+    off Demucs separation in the background. Returns immediately; the producer
+    polls ``GET /api/produce/songs/{id}/stems`` for status. The original/version
+    audio is only read — stems are written under produced/.
+    """
+    from src.api import stem_jobs
+
+    source_path = await _resolve_clean_source_path(
+        request.song_id, request.source_version_id, db
+    )
+    stem_set = await db.create_stem_set(
+        request.song_id, stem_separation.DEFAULT_MODEL, request.source_version_id
+    )
+    output_dir = _stem_set_output_dir(request.song_id, stem_set["id"])
+    stem_jobs.manager.start(
+        stem_set["id"],
+        str(source_path),
+        str(output_dir),
+        stem_separation.DEFAULT_MODEL,
+        db,
+    )
+    return {"stem_set": _stem_set_view(stem_set)}
+
+
+@router.get("/api/produce/songs/{song_id}/stems")
+async def list_song_stems(
+    song_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """List a song's stem sets (with job status) and each set's stems.
+
+    A producer polls this to watch a separation job (queued/running/complete/
+    failed) and, once complete, to fetch the per-stem ids for streaming/remix.
+    """
+    stem_sets = await db.list_stem_sets(song_id)
+    views = []
+    for stem_set in stem_sets:
+        stems = await db.list_stems(stem_set["id"])
+        view = _stem_set_view(stem_set)
+        view["stems"] = [
+            {"id": s["id"], "name": s["name"]} for s in stems
+        ]
+        views.append(view)
+    return {"song_id": song_id, "stem_sets": views}
+
+
+@router.get("/api/produce/stems/{stem_id}/audio")
+async def stream_stem_audio(
+    stem_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Stream a single stem's audio so each part can be auditioned independently."""
+    stem = await db.get_stem(stem_id)
+    if stem is None:
+        raise HTTPException(status_code=404, detail="Stem not found")
+    path = Path(stem["path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Stem audio file missing")
+    return FileResponse(path, headers={"Content-Disposition": "inline"})
+
+
+@router.post("/api/produce/stems/{set_id}/render")
+async def render_stem_remix(
+    set_id: int,
+    request: StemRenderRequest,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Remix a completed stem set (per-stem gain/mute) into a produced candidate.
+
+    Downmixes the set's stems into a fresh file under produced/, then returns its
+    path as a candidate — the same shape the auto-clean/audition flow returns, so
+    it enters the existing audition -> approve (``/api/produce/approve``) ->
+    version flow unchanged. Nothing here touches the stems, originals, or versions.
+    """
+    stem_set = await db.get_stem_set(set_id)
+    if stem_set is None:
+        raise HTTPException(status_code=404, detail="Stem set not found")
+    if stem_set["status"] != "complete":
+        raise HTTPException(
+            status_code=409, detail="Stem set separation is not complete"
+        )
+
+    stems = await db.list_stems(set_id)
+    if not stems:
+        raise HTTPException(status_code=404, detail="Stem set has no stems")
+
+    output_path = _produced_dir() / f"{stem_set['song_id']}_remix_{int(time.time())}.wav"
+    adjustments = {
+        name: {"gain": adj.gain, "mute": adj.mute}
+        for name, adj in request.adjustments.items()
+    }
+    try:
+        await run_in_threadpool(
+            stem_separation.remix_stems,
+            [{"name": s["name"], "path": s["path"]} for s in stems],
+            str(output_path),
+            adjustments,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "song_id": stem_set["song_id"],
+        "stem_set_id": set_id,
+        "candidate_path": str(output_path),
+    }

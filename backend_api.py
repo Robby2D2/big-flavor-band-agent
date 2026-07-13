@@ -113,6 +113,10 @@ async def lifespan(app: FastAPI):
     set_published_version_paths(await deps.db_manager.get_published_audio_paths())
     logger.info("Startup: song_versions ensured, published-version overrides loaded")
 
+    # Ensure the stem-separation tables exist (issue #67).
+    await deps.db_manager.ensure_song_stems_tables()
+    logger.info("Startup: song_stem_sets / song_stems ensured")
+
     deps.rag = SongRAGSystem(deps.db_manager, use_clap=True)
     logger.info("Startup: SongRAGSystem ready")
 

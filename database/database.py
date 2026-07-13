@@ -576,6 +576,112 @@ class DatabaseManager:
             row = await conn.fetchrow(query, version_id)
         return dict(row) if row else None
 
+    # Stem separation operations (issue #67 — Demucs stem separation)
+    async def ensure_song_stems_tables(self) -> None:
+        """Create the song_stem_sets / song_stems tables if missing. Idempotent.
+
+        Mirrors ensure_song_versions_table: the canonical schema lives in
+        database/sql/migrations/09-create-song-stems-tables.sql, and this method
+        applies the same idempotent DDL so the tables exist without a manual
+        migration step.
+        """
+        ddl = """
+            CREATE TABLE IF NOT EXISTS song_stem_sets (
+                id SERIAL PRIMARY KEY,
+                song_id INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+                source_version_id INTEGER REFERENCES song_versions(id) ON DELETE SET NULL,
+                model VARCHAR(64) NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'queued',
+                error TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_song_stem_sets_song_id
+                ON song_stem_sets (song_id);
+            CREATE TABLE IF NOT EXISTS song_stems (
+                id SERIAL PRIMARY KEY,
+                stem_set_id INTEGER NOT NULL REFERENCES song_stem_sets(id) ON DELETE CASCADE,
+                name VARCHAR(32) NOT NULL,
+                path TEXT NOT NULL,
+                UNIQUE (stem_set_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_song_stems_stem_set_id
+                ON song_stems (stem_set_id);
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+        logger.info("song_stem_sets / song_stems tables ensured")
+
+    async def create_stem_set(
+        self, song_id: int, model: str, source_version_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Insert a new stem set in the 'queued' state. Returns the inserted row."""
+        query = """
+            INSERT INTO song_stem_sets (song_id, source_version_id, model, status)
+            VALUES ($1, $2, $3, 'queued')
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id, source_version_id, model)
+        return dict(row)
+
+    async def set_stem_set_status(
+        self, stem_set_id: int, status: str, error: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Update a stem set's job status (and failure reason). Returns the row."""
+        query = """
+            UPDATE song_stem_sets SET status = $2, error = $3
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, stem_set_id, status, error)
+        return dict(row) if row else None
+
+    async def get_stem_set(self, stem_set_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single stem set by id, or None."""
+        query = "SELECT * FROM song_stem_sets WHERE id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, stem_set_id)
+        return dict(row) if row else None
+
+    async def list_stem_sets(self, song_id: int) -> List[Dict[str, Any]]:
+        """Return all stem sets for a song, newest first."""
+        query = """
+            SELECT * FROM song_stem_sets
+            WHERE song_id = $1
+            ORDER BY created_at DESC
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, song_id)
+        return [dict(row) for row in rows]
+
+    async def add_stem(
+        self, stem_set_id: int, name: str, path: str
+    ) -> Dict[str, Any]:
+        """Record one separated stem file for a stem set. Returns the inserted row."""
+        query = """
+            INSERT INTO song_stems (stem_set_id, name, path)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (stem_set_id, name) DO UPDATE SET path = EXCLUDED.path
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, stem_set_id, name, path)
+        return dict(row)
+
+    async def list_stems(self, stem_set_id: int) -> List[Dict[str, Any]]:
+        """Return all stems for a stem set, ordered by name."""
+        query = "SELECT * FROM song_stems WHERE stem_set_id = $1 ORDER BY name"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, stem_set_id)
+        return [dict(row) for row in rows]
+
+    async def get_stem(self, stem_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single stem by id, or None."""
+        query = "SELECT * FROM song_stems WHERE id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, stem_id)
+        return dict(row) if row else None
+
     # Audio analysis operations
     async def insert_audio_analysis(self, analysis: Dict[str, Any]) -> int:
         """Insert or update audio analysis."""
