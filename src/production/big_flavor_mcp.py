@@ -37,6 +37,14 @@ HUM_MAX_FREQ_HZ = 500.0      # harmonics above this rarely carry audible hum
 HUM_PROMINENCE_DB = 10.0     # narrow peak must stand this far above the local baseline
 HUM_NOTCH_Q = 30.0           # notch bandwidth = freq / Q (~2 Hz at 60 Hz)
 
+# Auto-clean chain precision (issue #58): the processing is float end-to-end,
+# so intermediate step files are written as 32-bit float WAV — re-quantizing to
+# soundfile's 16-bit default between steps adds noise at the very floor the
+# chain is cleaning. Only the final output is quantized, once, to 24-bit PCM
+# (the deliberate master bit depth).
+INTERMEDIATE_WAV_SUBTYPE = "FLOAT"
+FINAL_WAV_SUBTYPE = "PCM_24"
+
 
 def _load_audio(file_path: str, sr: Optional[int] = None) -> tuple:
     """Load audio preserving the input's channel count.
@@ -71,12 +79,14 @@ def _apply_per_channel(y, process):
     return np.vstack([p[..., :min_len] for p in processed])
 
 
-def _write_audio(output_path: str, y, sr: int) -> None:
+def _write_audio(output_path: str, y, sr: int, subtype: Optional[str] = None) -> None:
     """Write audio, converting librosa's (channels, samples) layout to
-    soundfile's (samples, channels)."""
+    soundfile's (samples, channels). `subtype` defaults to soundfile's own
+    default (PCM_16) when not given; pass INTERMEDIATE_WAV_SUBTYPE /
+    FINAL_WAV_SUBTYPE explicitly where precision matters (issue #58)."""
     import soundfile as sf
 
-    sf.write(output_path, y.T if y.ndim > 1 else y, sr)
+    sf.write(output_path, y.T if y.ndim > 1 else y, sr, subtype=subtype)
 
 
 class BigFlavorMCPServer:
@@ -842,12 +852,16 @@ class BigFlavorMCPServer:
     ) -> dict:
         """
         Apply professional mastering to make audio louder and more polished.
-        
+
+        WAV output is written as 24-bit PCM (``FINAL_WAV_SUBTYPE``) — a master
+        is a final deliverable, so its bit depth is a deliberate choice rather
+        than soundfile's 16-bit default.
+
         Args:
             file_path: Path to input audio file
             target_loudness: Target LUFS loudness (default: -14.0)
             output_path: Path for output file
-            
+
         Returns:
             Operation result
         """
@@ -975,9 +989,11 @@ class BigFlavorMCPServer:
             # Apply limiter
             y_mastered = y_gained * smoothed_limit_gain
 
-            # Save output
-            _write_audio(output_path, y_mastered, sr)
-            
+            # Save output at the deliberate master bit depth (WAV only —
+            # other containers keep their format default subtype)
+            master_subtype = FINAL_WAV_SUBTYPE if output_path.lower().endswith(".wav") else None
+            _write_audio(output_path, y_mastered, sr, subtype=master_subtype)
+
             # Calculate final RMS
             final_rms = np.sqrt(np.mean(y_mastered**2))
             final_lufs = 20 * np.log10(final_rms) - 15
@@ -990,7 +1006,8 @@ class BigFlavorMCPServer:
                 "output_file": output_path,
                 "target_loudness_lufs": float(target_loudness),
                 "actual_loudness_lufs": round(float(final_lufs), 1),
-                "gain_applied_db": round(float(20 * np.log10(gain)), 1) if gain > 0 else 0
+                "gain_applied_db": round(float(20 * np.log10(gain)), 1) if gain > 0 else 0,
+                "output_bit_depth": "24-bit PCM" if master_subtype else "format default"
             }
             
         except Exception as e:
@@ -1370,6 +1387,10 @@ class BigFlavorMCPServer:
         """
         Automatically analyze and clean a raw recording with intelligent settings.
 
+        Precision: intermediate step files are 32-bit float WAV (no
+        re-quantization between steps); the final output is written once at
+        24-bit PCM, reported as ``output_bit_depth`` in the result.
+
         Args:
             file_path: Path to raw recording
             output_path: Path for final cleaned output
@@ -1455,7 +1476,7 @@ class BigFlavorMCPServer:
                     import tempfile
                     trim_output = Path(tempfile.mktemp(suffix=".wav"))
 
-                _write_audio(str(trim_output), y_trimmed, sr)
+                _write_audio(str(trim_output), y_trimmed, sr, subtype=INTERMEDIATE_WAV_SUBTYPE)
                 current_file = str(trim_output)
 
                 steps_taken.append({
@@ -1508,7 +1529,8 @@ class BigFlavorMCPServer:
                     current_file,
                     recommendations["noise_reduction"]["recommended_profile_duration"],
                     strength,
-                    str(noise_output)
+                    str(noise_output),
+                    subtype=INTERMEDIATE_WAV_SUBTYPE
                 )
                 
                 if result.get("status") == "success":
@@ -1557,7 +1579,8 @@ class BigFlavorMCPServer:
                     low_pass_freq,
                     boost_freq,
                     boost_db or 0,
-                    str(eq_output)
+                    str(eq_output),
+                    subtype=INTERMEDIATE_WAV_SUBTYPE
                 )
                 
                 if result.get("status") == "success":
@@ -1588,7 +1611,8 @@ class BigFlavorMCPServer:
                     current_file,
                     -3.0,
                     True,
-                    str(norm_output)
+                    str(norm_output),
+                    subtype=INTERMEDIATE_WAV_SUBTYPE
                 )
 
                 if result.get("status") == "success":
@@ -1623,8 +1647,12 @@ class BigFlavorMCPServer:
                         "output": output_path
                     })
             else:
-                import shutil
-                shutil.copyfile(current_file, output_path)
+                # No mastering: still write the final once at the deliberate
+                # bit depth (the last intermediate is float WAV, not a
+                # deliverable format). Channel count preserved (issue #55).
+                y_final, sr_final = _load_audio(current_file)
+                final_subtype = FINAL_WAV_SUBTYPE if output_path.lower().endswith(".wav") else None
+                _write_audio(output_path, y_final, sr_final, subtype=final_subtype)
 
             # Clean up temp files if not keeping intermediates
             if not keep_intermediates:
@@ -1645,6 +1673,7 @@ class BigFlavorMCPServer:
                 "analysis_summary": analysis.get("summary"),
                 "steps_applied": steps_taken,
                 "intermediate_files": str(intermediate_dir) if keep_intermediates else None,
+                "output_bit_depth": "24-bit PCM" if output_path.lower().endswith(".wav") else "format default",
                 "total_steps": len(steps_taken),
                 "recommendations_followed": {
                     "trim": any(s["step"] == "trim" for s in steps_taken),
@@ -1744,7 +1773,8 @@ class BigFlavorMCPServer:
         noise_profile_duration: float,
         reduction_strength: float,
         output_path: str,
-        highpass_hz: Optional[float] = None
+        highpass_hz: Optional[float] = None,
+        subtype: Optional[str] = None
     ) -> dict:
         """
         Remove background noise, hum, hiss, and feedback.
@@ -1758,6 +1788,8 @@ class BigFlavorMCPServer:
             output_path: Path for output file
             highpass_hz: Optional high-pass cutoff in Hz for rumble removal.
                 Off by default — rumble control belongs to the EQ step.
+            subtype: Optional soundfile subtype for the output (e.g. 'FLOAT'
+                for lossless chain intermediates); None keeps the format default
 
         Returns:
             Operation result
@@ -1824,7 +1856,7 @@ class BigFlavorMCPServer:
             y_filtered = _apply_per_channel(y, denoise_channel)
 
             # Save output
-            _write_audio(output_path, y_filtered, sr)
+            _write_audio(output_path, y_filtered, sr, subtype=subtype)
 
             original_noise = float(np.mean([s[0] for s in channel_stats]))
             reduced_noise = float(np.mean([s[1] for s in channel_stats]))
@@ -2094,17 +2126,20 @@ class BigFlavorMCPServer:
         file_path: str,
         target_level_db: float,
         apply_compression: bool,
-        output_path: str
+        output_path: str,
+        subtype: Optional[str] = None
     ) -> dict:
         """
         Normalize audio levels and optionally apply compression.
-        
+
         Args:
             file_path: Path to input audio file
             target_level_db: Target peak level in dB (default: -3)
             apply_compression: Apply dynamic range compression
             output_path: Path for output file
-            
+            subtype: Optional soundfile subtype for the output (e.g. 'FLOAT'
+                for lossless chain intermediates); None keeps the format default
+
         Returns:
             Operation result
         """
@@ -2204,8 +2239,8 @@ class BigFlavorMCPServer:
                 y_normalized = soft_clip(y_normalized)
 
             # Save output
-            _write_audio(output_path, y_normalized, sr)
-            
+            _write_audio(output_path, y_normalized, sr, subtype=subtype)
+
             final_peak_db = 20 * np.log10(np.max(np.abs(y_normalized)))
             gain_applied_db = final_peak_db - current_peak_db
             
@@ -2237,11 +2272,12 @@ class BigFlavorMCPServer:
         low_pass_freq: Optional[float],
         boost_freq: Optional[float],
         boost_db: float,
-        output_path: str
+        output_path: str,
+        subtype: Optional[str] = None
     ) -> dict:
         """
         Apply equalizer filters to shape the sound.
-        
+
         Args:
             file_path: Path to input audio file
             high_pass_freq: High-pass filter frequency in Hz
@@ -2249,7 +2285,9 @@ class BigFlavorMCPServer:
             boost_freq: Optional frequency to boost
             boost_db: Boost amount in dB
             output_path: Path for output file
-            
+            subtype: Optional soundfile subtype for the output (e.g. 'FLOAT'
+                for lossless chain intermediates); None keeps the format default
+
         Returns:
             Operation result
         """
@@ -2301,8 +2339,8 @@ class BigFlavorMCPServer:
                 y_filtered = y_filtered * (0.95 / peak)
 
             # Save output
-            _write_audio(output_path, y_filtered, sr)
-            
+            _write_audio(output_path, y_filtered, sr, subtype=subtype)
+
             logger.info(f"EQ applied: {', '.join(filters_applied)}")
             
             return {
