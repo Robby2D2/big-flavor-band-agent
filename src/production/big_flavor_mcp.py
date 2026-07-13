@@ -19,6 +19,15 @@ from mcp.types import Tool, TextContent
 # Import from database package
 from database import DatabaseManager
 
+# Region + strength helpers (issue #65): let every cleanup tool limit its effect
+# to a time range and blend between untouched and full effect. Imported to work
+# whether the package is loaded as ``src.production`` or with this directory on
+# sys.path (how the agent loads it).
+try:
+    from .region import apply_to_region, blend_strength, resolve_region
+except ImportError:  # pragma: no cover - fallback for flat sys.path loading
+    from region import apply_to_region, blend_strength, resolve_region
+
 # Import librosa for audio analysis
 try:
     import librosa
@@ -193,6 +202,14 @@ class BigFlavorMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": "Output path for the mastered file"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional start of the time range (seconds) to master; omit to master the whole file"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional end of the time range (seconds) to master; omit to master through the end"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -265,6 +282,14 @@ class BigFlavorMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": "Output path for trimmed file"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional start of the time range (seconds) to trim within; omit to trim the whole file's leading/trailing silence"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional end of the time range (seconds) to trim within; omit to trim through the end"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -295,6 +320,18 @@ class BigFlavorMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": "Output path for cleaned file"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional start of the time range (seconds) to denoise; omit to process the whole file"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional end of the time range (seconds) to denoise; omit to process through the end"
+                            },
+                            "strength": {
+                                "type": "number",
+                                "description": "Wet/dry blend 0-1 (default: 1.0 = full effect); 0 leaves the region unchanged, values between blend the denoised signal against the original"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -317,6 +354,18 @@ class BigFlavorMCPServer:
                             "fundamental_hz": {
                                 "type": "number",
                                 "description": "Mains fundamental to notch (50 or 60). Auto-detected when omitted."
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional start of the time range (seconds) to de-hum; omit to process the whole file"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional end of the time range (seconds) to de-hum; omit to process through the end"
+                            },
+                            "strength": {
+                                "type": "number",
+                                "description": "Wet/dry blend 0-1 (default: 1.0 = full effect); 0 leaves the region unchanged, values between blend the de-hummed signal against the original"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -343,6 +392,14 @@ class BigFlavorMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": "Output path for corrected file"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional start of the time range (seconds) to pitch-correct (e.g. one bad note); omit to process the whole file"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional end of the time range (seconds) to pitch-correct; omit to process through the end"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -415,6 +472,18 @@ class BigFlavorMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": "Output path for EQ'd file"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional start of the time range (seconds) to EQ; omit to process the whole file"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional end of the time range (seconds) to EQ; omit to process through the end"
+                            },
+                            "strength": {
+                                "type": "number",
+                                "description": "Wet/dry blend 0-1 (default: 1.0 = full effect); 0 leaves the region unchanged, values between blend the EQ'd signal against the original"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -437,6 +506,18 @@ class BigFlavorMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": "Output path for cleaned file"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional start of the time range (seconds) to clean; omit to process the whole file"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional end of the time range (seconds) to clean; omit to process through the end"
+                            },
+                            "strength": {
+                                "type": "number",
+                                "description": "Wet/dry blend 0-1 (default: 1.0 = full effect); 0 leaves the region unchanged, values between blend the cleaned signal against the original"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -476,7 +557,9 @@ class BigFlavorMCPServer:
                     result = await self.apply_mastering(
                         arguments["file_path"],
                         arguments.get("target_loudness", -14.0),
-                        arguments["output_path"]
+                        arguments["output_path"],
+                        start_s=arguments.get("start_s"),
+                        end_s=arguments.get("end_s")
                     )
                 elif name == "get_audio_cache_stats":
                     result = await self.get_audio_cache_stats()
@@ -485,7 +568,9 @@ class BigFlavorMCPServer:
                     result = await self.trim_silence(
                         arguments["file_path"],
                         arguments.get("threshold_db", -40),
-                        arguments["output_path"]
+                        arguments["output_path"],
+                        start_s=arguments.get("start_s"),
+                        end_s=arguments.get("end_s")
                     )
                 elif name == "reduce_noise":
                     result = await self.reduce_noise(
@@ -493,20 +578,28 @@ class BigFlavorMCPServer:
                         arguments.get("noise_profile_duration", 1.0),
                         arguments.get("reduction_strength", 0.7),
                         arguments["output_path"],
-                        arguments.get("highpass_hz")
+                        arguments.get("highpass_hz"),
+                        start_s=arguments.get("start_s"),
+                        end_s=arguments.get("end_s"),
+                        strength=arguments.get("strength", 1.0)
                     )
                 elif name == "remove_hum":
                     result = await self.remove_hum(
                         arguments["file_path"],
                         arguments["output_path"],
-                        arguments.get("fundamental_hz")
+                        arguments.get("fundamental_hz"),
+                        start_s=arguments.get("start_s"),
+                        end_s=arguments.get("end_s"),
+                        strength=arguments.get("strength", 1.0)
                     )
                 elif name == "correct_pitch":
                     result = await self.correct_pitch(
                         arguments["file_path"],
                         arguments.get("semitones", 0),
                         arguments.get("auto_tune", False),
-                        arguments["output_path"]
+                        arguments["output_path"],
+                        start_s=arguments.get("start_s"),
+                        end_s=arguments.get("end_s")
                     )
                 elif name == "normalize_audio":
                     result = await self.normalize_audio(
@@ -523,13 +616,19 @@ class BigFlavorMCPServer:
                         arguments.get("boost_freq"),
                         arguments.get("boost_db", 3),
                         arguments["output_path"],
-                        eq_bands=arguments.get("eq_bands")
+                        eq_bands=arguments.get("eq_bands"),
+                        start_s=arguments.get("start_s"),
+                        end_s=arguments.get("end_s"),
+                        strength=arguments.get("strength", 1.0)
                     )
                 elif name == "remove_artifacts":
                     result = await self.remove_artifacts(
                         arguments["file_path"],
                         arguments.get("sensitivity", 0.5),
-                        arguments["output_path"]
+                        arguments["output_path"],
+                        start_s=arguments.get("start_s"),
+                        end_s=arguments.get("end_s"),
+                        strength=arguments.get("strength", 1.0)
                     )
                 else:
                     result = {"error": f"Unknown tool: {name}"}
@@ -858,10 +957,12 @@ class BigFlavorMCPServer:
             }
     
     async def apply_mastering(
-        self, 
-        file_path: str, 
+        self,
+        file_path: str,
         target_loudness: float,
-        output_path: str
+        output_path: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None
     ) -> dict:
         """
         Apply professional mastering to make audio louder and more polished.
@@ -874,6 +975,10 @@ class BigFlavorMCPServer:
             file_path: Path to input audio file
             target_loudness: Target LUFS loudness (default: -14.0)
             output_path: Path for output file
+            start_s / end_s: Optional time range (seconds) to limit mastering
+                to; when omitted the whole file is mastered exactly as before.
+                Mastering has no wet/dry ``strength`` — its level target is its
+                own amount control, out of scope for this issue (issue #65).
 
         Returns:
             Operation result
@@ -883,7 +988,7 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             from scipy import signal
-            
+
             # Load audio (channel count preserved)
             y, sr = _load_audio(file_path)
 
@@ -893,121 +998,133 @@ class BigFlavorMCPServer:
             # (channels, samples) layout).
             input_lufs = self._measure_integrated_lufs(_to_mono(y), sr)
 
-            # Apply high-pass filter to remove rumble (sosfilt runs along the
-            # last axis, so this handles mono and stereo alike)
-            sos = signal.butter(4, 30, 'hp', fs=sr, output='sos')
-            y_filtered = signal.sosfilt(sos, y)
-            n_samples = y_filtered.shape[-1]
+            # Gain applied at the target-loudness stage, captured out of the
+            # region processor for the result payload.
+            applied_gain = {"value": 1.0}
 
-            # Apply smooth RMS-based mastering compression. The gain envelope
-            # is computed from the mono mix and applied to all channels
-            # (linked stereo) so the stereo balance is preserved.
-            frame_length = int(sr * 0.05)  # 50ms window
-            hop_length = int(sr * 0.01)    # 10ms hop
+            def master_process(segment: np.ndarray) -> np.ndarray:
+                # Apply high-pass filter to remove rumble (sosfilt runs along the
+                # last axis, so this handles mono and stereo alike)
+                sos = signal.butter(4, 30, 'hp', fs=sr, output='sos')
+                y_filtered = signal.sosfilt(sos, segment)
+                n_samples = y_filtered.shape[-1]
 
-            rms = librosa.feature.rms(y=_to_mono(y_filtered), frame_length=frame_length, hop_length=hop_length)[0]
+                # Apply smooth RMS-based mastering compression. The gain envelope
+                # is computed from the mono mix and applied to all channels
+                # (linked stereo) so the stereo balance is preserved.
+                frame_length = int(sr * 0.05)  # 50ms window
+                hop_length = int(sr * 0.01)    # 10ms hop
 
-            # Upsample RMS to match audio length
-            rms_full = np.interp(
-                np.arange(n_samples),
-                np.arange(len(rms)) * hop_length,
-                rms
-            )
-            
-            # Mastering compression parameters (more aggressive than mixing)
-            threshold_db = -24.0
-            ratio = 3.5
-            knee_width = 6.0
-            
-            # Convert to dB
-            rms_db = 20 * np.log10(rms_full + 1e-10)
-            
-            # Soft-knee compression curve
-            def compress_db(level_db):
-                if level_db < (threshold_db - knee_width / 2):
-                    return level_db
-                elif level_db > (threshold_db + knee_width / 2):
-                    return threshold_db + (level_db - threshold_db) / ratio
+                rms = librosa.feature.rms(y=_to_mono(y_filtered), frame_length=frame_length, hop_length=hop_length)[0]
+
+                # Upsample RMS to match audio length
+                rms_full = np.interp(
+                    np.arange(n_samples),
+                    np.arange(len(rms)) * hop_length,
+                    rms
+                )
+
+                # Mastering compression parameters (more aggressive than mixing)
+                threshold_db = -24.0
+                ratio = 3.5
+                knee_width = 6.0
+
+                # Convert to dB
+                rms_db = 20 * np.log10(rms_full + 1e-10)
+
+                # Soft-knee compression curve
+                def compress_db(level_db):
+                    if level_db < (threshold_db - knee_width / 2):
+                        return level_db
+                    elif level_db > (threshold_db + knee_width / 2):
+                        return threshold_db + (level_db - threshold_db) / ratio
+                    else:
+                        # Smooth transition in knee region
+                        x = level_db - threshold_db + knee_width / 2
+                        return level_db + ((1 / ratio - 1) * (x ** 2)) / (2 * knee_width)
+
+                compressed_db = np.array([compress_db(db) for db in rms_db])
+
+                # Calculate gain reduction
+                gain_reduction = librosa.db_to_amplitude(compressed_db - rms_db)
+
+                # Apply attack/release smoothing
+                attack_samples = int(sr * 0.003)   # 3ms attack (fast for mastering)
+                release_samples = int(sr * 0.1)    # 100ms release (slow for smooth)
+
+                smoothed_gain = np.copy(gain_reduction)
+                for i in range(1, len(smoothed_gain)):
+                    if gain_reduction[i] < smoothed_gain[i - 1]:
+                        # Attack (gaining down)
+                        alpha = 1.0 - np.exp(-1.0 / attack_samples)
+                    else:
+                        # Release (gaining up)
+                        alpha = 1.0 - np.exp(-1.0 / release_samples)
+                    smoothed_gain[i] = alpha * gain_reduction[i] + (1 - alpha) * smoothed_gain[i - 1]
+
+                # Apply compression
+                y_compressed = y_filtered * smoothed_gain
+
+                # Gain needed to hit target_loudness, from the *measured*
+                # BS.1770 loudness of the compressed signal — replaces the old
+                # fixed RMS->LUFS conversion formula (target_rms = 10**((lufs+15)/20)),
+                # which only ever chased a guessed loudness.
+                compressed_lufs = self._measure_integrated_lufs(_to_mono(y_compressed), sr)
+                gain_db = target_loudness - compressed_lufs
+                gain = librosa.db_to_amplitude(gain_db)
+
+                # Apply gain to reach target with safety margin
+                peak_compressed = np.max(np.abs(y_compressed))
+                if peak_compressed > 0:
+                    # Add safety headroom to prevent clipping
+                    max_gain = 0.9 / (peak_compressed + 1e-10)
+                    gain = min(gain, max_gain)
+                    y_gained = y_compressed * gain
                 else:
-                    # Smooth transition in knee region
-                    x = level_db - threshold_db + knee_width / 2
-                    return level_db + ((1 / ratio - 1) * (x ** 2)) / (2 * knee_width)
-            
-            compressed_db = np.array([compress_db(db) for db in rms_db])
-            
-            # Calculate gain reduction
-            gain_reduction = librosa.db_to_amplitude(compressed_db - rms_db)
-            
-            # Apply attack/release smoothing
-            attack_samples = int(sr * 0.003)   # 3ms attack (fast for mastering)
-            release_samples = int(sr * 0.1)    # 100ms release (slow for smooth)
-            
-            smoothed_gain = np.copy(gain_reduction)
-            for i in range(1, len(smoothed_gain)):
-                if gain_reduction[i] < smoothed_gain[i - 1]:
-                    # Attack (gaining down)
-                    alpha = 1.0 - np.exp(-1.0 / attack_samples)
-                else:
-                    # Release (gaining up)
-                    alpha = 1.0 - np.exp(-1.0 / release_samples)
-                smoothed_gain[i] = alpha * gain_reduction[i] + (1 - alpha) * smoothed_gain[i - 1]
-            
-            # Apply compression
-            y_compressed = y_filtered * smoothed_gain
+                    y_gained = y_compressed
+                    gain = 1.0
 
-            # Gain needed to hit target_loudness, from the *measured*
-            # BS.1770 loudness of the compressed signal — replaces the old
-            # fixed RMS->LUFS conversion formula (target_rms = 10**((lufs+15)/20)),
-            # which only ever chased a guessed loudness.
-            compressed_lufs = self._measure_integrated_lufs(_to_mono(y_compressed), sr)
-            gain_db = target_loudness - compressed_lufs
-            gain = librosa.db_to_amplitude(gain_db)
+                applied_gain["value"] = gain
 
-            # Apply gain to reach target with safety margin
-            peak_compressed = np.max(np.abs(y_compressed))
-            if peak_compressed > 0:
-                # Add safety headroom to prevent clipping
-                max_gain = 0.9 / (peak_compressed + 1e-10)
-                gain = min(gain, max_gain)
-                y_gained = y_compressed * gain
-            else:
-                y_gained = y_compressed
-                gain = 1.0
-            
-            # Apply smooth brick-wall limiter (prevents clipping completely)
-            # Use lookahead for transparent limiting
-            lookahead_ms = 5
-            lookahead_samples = int(sr * lookahead_ms / 1000)
-            
-            # Create envelope of absolute values with lookahead. For stereo the
-            # envelope tracks the loudest channel so one shared limiter gain
-            # preserves the balance.
-            abs_signal = np.max(np.abs(y_gained), axis=0) if y_gained.ndim > 1 else np.abs(y_gained)
-            # Pad for lookahead
-            abs_padded = np.pad(abs_signal, (0, lookahead_samples), mode='edge')
+                # Apply smooth brick-wall limiter (prevents clipping completely)
+                # Use lookahead for transparent limiting
+                lookahead_ms = 5
+                lookahead_samples = int(sr * lookahead_ms / 1000)
 
-            # Find maximum in lookahead window
-            from scipy.ndimage import maximum_filter
-            envelope = maximum_filter(abs_padded, size=lookahead_samples)[:n_samples]
-            
-            # Calculate limiting gain (only reduce, never boost)
-            limit_threshold = 0.95  # -0.5dB headroom
-            limit_gain = np.where(envelope > limit_threshold, limit_threshold / (envelope + 1e-10), 1.0)
-            
-            # Smooth the gain reduction to avoid artifacts
-            release_samples_limiter = int(sr * 0.05)  # 50ms release
-            smoothed_limit_gain = np.copy(limit_gain)
-            for i in range(1, len(smoothed_limit_gain)):
-                if limit_gain[i] < smoothed_limit_gain[i - 1]:
-                    # Instant attack for limiting
-                    smoothed_limit_gain[i] = limit_gain[i]
-                else:
-                    # Smooth release
-                    alpha = 1.0 - np.exp(-1.0 / release_samples_limiter)
-                    smoothed_limit_gain[i] = alpha * limit_gain[i] + (1 - alpha) * smoothed_limit_gain[i - 1]
-            
-            # Apply limiter
-            y_mastered = y_gained * smoothed_limit_gain
+                # Create envelope of absolute values with lookahead. For stereo the
+                # envelope tracks the loudest channel so one shared limiter gain
+                # preserves the balance.
+                abs_signal = np.max(np.abs(y_gained), axis=0) if y_gained.ndim > 1 else np.abs(y_gained)
+                # Pad for lookahead
+                abs_padded = np.pad(abs_signal, (0, lookahead_samples), mode='edge')
+
+                # Find maximum in lookahead window
+                from scipy.ndimage import maximum_filter
+                envelope = maximum_filter(abs_padded, size=lookahead_samples)[:n_samples]
+
+                # Calculate limiting gain (only reduce, never boost)
+                limit_threshold = 0.95  # -0.5dB headroom
+                limit_gain = np.where(envelope > limit_threshold, limit_threshold / (envelope + 1e-10), 1.0)
+
+                # Smooth the gain reduction to avoid artifacts
+                release_samples_limiter = int(sr * 0.05)  # 50ms release
+                smoothed_limit_gain = np.copy(limit_gain)
+                for i in range(1, len(smoothed_limit_gain)):
+                    if limit_gain[i] < smoothed_limit_gain[i - 1]:
+                        # Instant attack for limiting
+                        smoothed_limit_gain[i] = limit_gain[i]
+                    else:
+                        # Smooth release
+                        alpha = 1.0 - np.exp(-1.0 / release_samples_limiter)
+                        smoothed_limit_gain[i] = alpha * limit_gain[i] + (1 - alpha) * smoothed_limit_gain[i - 1]
+
+                # Apply limiter
+                return y_gained * smoothed_limit_gain
+
+            # Master the region (or the whole file when no region is given, a
+            # byte-identical path) and splice it back with crossfaded seams.
+            y_mastered, _ = apply_to_region(y, sr, start_s, end_s, master_process)
+            gain = applied_gain["value"]
 
             # Save output at the deliberate master bit depth (WAV only —
             # other containers keep their format default subtype)
@@ -1028,7 +1145,8 @@ class BigFlavorMCPServer:
                 "input_loudness_lufs": round(float(input_lufs), 1),
                 "actual_loudness_lufs": round(float(final_lufs), 1),
                 "gain_applied_db": round(float(20 * np.log10(gain)), 1) if gain > 0 else 0,
-                "output_bit_depth": "24-bit PCM" if master_subtype else "format default"
+                "output_bit_depth": "24-bit PCM" if master_subtype else "format default",
+                "region": {"start_s": start_s, "end_s": end_s}
             }
             
         except Exception as e:
@@ -1724,16 +1842,24 @@ class BigFlavorMCPServer:
         self,
         file_path: str,
         threshold_db: float,
-        output_path: str
+        output_path: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None
     ) -> dict:
         """
         Remove silence from beginning and end of audio.
-        
+
         Args:
             file_path: Path to input audio file
             threshold_db: Silence threshold in dB (default: -40)
             output_path: Path for output file
-            
+            start_s / end_s: Optional time range (seconds) to limit trimming to;
+                when given, only silence within that span is removed and audio
+                outside it is kept intact. Omitting both trims the whole file's
+                leading/trailing silence exactly as before. Trimming has no
+                wet/dry ``strength`` — it removes samples rather than blending
+                (issue #65).
+
         Returns:
             Operation result with trimming statistics
         """
@@ -1741,38 +1867,39 @@ class BigFlavorMCPServer:
             import librosa
             import soundfile as sf
             import numpy as np
-            
+
             # Load audio (channel count preserved)
             y, sr = _load_audio(file_path)
             original_duration = y.shape[-1] / sr
 
-            # Convert threshold from dB to amplitude
-            threshold_amplitude = librosa.db_to_amplitude(threshold_db)
+            def trim_process(segment: np.ndarray) -> np.ndarray:
+                # Find non-silent intervals on the mono mix so both channels
+                # share the same trim points
+                non_silent = librosa.effects.split(_to_mono(segment), top_db=-threshold_db)
+                if len(non_silent) == 0:
+                    raise ValueError("No non-silent audio found")
+                start_sample = non_silent[0][0]
+                end_sample = non_silent[-1][1]
+                return segment[..., start_sample:end_sample]
 
-            # Find non-silent intervals on the mono mix so both channels share
-            # the same trim points
-            non_silent = librosa.effects.split(_to_mono(y), top_db=-threshold_db)
-
-            if len(non_silent) == 0:
+            # Trim within the region (or the whole file when no region is
+            # given), keeping any audio outside the region intact.
+            try:
+                y_trimmed, _ = apply_to_region(y, sr, start_s, end_s, trim_process)
+            except ValueError as exc:
                 return {
                     "status": "error",
-                    "error": "No non-silent audio found",
+                    "error": str(exc),
                     "input_file": file_path
                 }
 
-            # Get the first and last non-silent intervals
-            start_sample = non_silent[0][0]
-            end_sample = non_silent[-1][1]
-
-            # Trim audio
-            y_trimmed = y[..., start_sample:end_sample]
             trimmed_duration = y_trimmed.shape[-1] / sr
 
             # Save output
             _write_audio(output_path, y_trimmed, sr)
-            
+
             logger.info(f"Trimmed silence: {original_duration:.2f}s → {trimmed_duration:.2f}s")
-            
+
             return {
                 "status": "success",
                 "input_file": file_path,
@@ -1780,7 +1907,8 @@ class BigFlavorMCPServer:
                 "original_duration_seconds": round(original_duration, 2),
                 "trimmed_duration_seconds": round(trimmed_duration, 2),
                 "removed_seconds": round(original_duration - trimmed_duration, 2),
-                "threshold_db": threshold_db
+                "threshold_db": threshold_db,
+                "region": {"start_s": start_s, "end_s": end_s}
             }
             
         except Exception as e:
@@ -1798,7 +1926,10 @@ class BigFlavorMCPServer:
         reduction_strength: float,
         output_path: str,
         highpass_hz: Optional[float] = None,
-        subtype: Optional[str] = None
+        subtype: Optional[str] = None,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        strength: float = 1.0
     ) -> dict:
         """
         Remove background noise, hum, hiss, and feedback.
@@ -1814,6 +1945,14 @@ class BigFlavorMCPServer:
                 Off by default — rumble control belongs to the EQ step.
             subtype: Optional soundfile subtype for the output (e.g. 'FLOAT'
                 for lossless chain intermediates); None keeps the format default
+            start_s / end_s: Optional time range (seconds) to limit noise
+                reduction to; when omitted the whole file is processed exactly
+                as before, and the noise profile is estimated from within the
+                region when one is given (issue #65).
+            strength: Wet/dry blend 0-1 (default 1.0 = today's full effect);
+                blends the denoised signal against the untouched input within
+                the region so 0 is a no-op (issue #65). Distinct from
+                ``reduction_strength``, which scales the spectral gate itself.
 
         Returns:
             Operation result
@@ -1877,7 +2016,13 @@ class BigFlavorMCPServer:
 
                 return ch_denoised
 
-            y_filtered = _apply_per_channel(y, denoise_channel)
+            # Denoise the region (or the whole file when no region is given, a
+            # byte-identical path) and wet/dry-blend it back per strength.
+            def denoise_process(segment: np.ndarray) -> np.ndarray:
+                denoised = _apply_per_channel(segment, denoise_channel)
+                return blend_strength(segment, denoised, strength)
+
+            y_filtered, _ = apply_to_region(y, sr, start_s, end_s, denoise_process)
 
             # Save output
             _write_audio(output_path, y_filtered, sr, subtype=subtype)
@@ -1895,7 +2040,9 @@ class BigFlavorMCPServer:
                 "reduction_strength": reduction_strength,
                 "noise_reduction_db": round(float(noise_reduction_db), 1),
                 "noise_profile_duration": noise_profile_duration,
-                "highpass_hz": highpass_hz
+                "highpass_hz": highpass_hz,
+                "region": {"start_s": start_s, "end_s": end_s},
+                "strength": strength
             }
             
         except Exception as e:
@@ -1973,7 +2120,10 @@ class BigFlavorMCPServer:
         self,
         file_path: str,
         output_path: str,
-        fundamental_hz: Optional[float] = None
+        fundamental_hz: Optional[float] = None,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        strength: float = 1.0
     ) -> dict:
         """
         Remove mains hum with narrow high-Q notch filters at the fundamental
@@ -1985,6 +2135,12 @@ class BigFlavorMCPServer:
             fundamental_hz: Mains fundamental to notch (50 or 60).
                 Auto-detected when omitted; when no hum is found the audio is
                 copied unchanged.
+            start_s / end_s: Optional time range (seconds) to limit de-humming
+                to; when omitted the whole file is processed exactly as before
+                (issue #65).
+            strength: Wet/dry blend 0-1 (default 1.0 = today's full effect);
+                blends the de-hummed signal against the untouched input within
+                the region so 0 is a no-op (issue #65).
 
         Returns:
             Operation result
@@ -2023,11 +2179,18 @@ class BigFlavorMCPServer:
                 }
 
             notch_freqs = [float(f) for f in notch_freqs if f < sr / 2 * 0.9]
-            y_filtered = y
-            for freq in notch_freqs:
-                b, a = signal.iirnotch(freq, HUM_NOTCH_Q, fs=sr)
-                # Zero-phase filtering: no phase distortion, double attenuation
-                y_filtered = signal.filtfilt(b, a, y_filtered)
+
+            def dehum_process(segment: np.ndarray) -> np.ndarray:
+                out = segment
+                for freq in notch_freqs:
+                    b, a = signal.iirnotch(freq, HUM_NOTCH_Q, fs=sr)
+                    # Zero-phase filtering: no phase distortion, double attenuation
+                    out = signal.filtfilt(b, a, out)
+                return blend_strength(segment, out, strength)
+
+            # De-hum the region (or the whole file when no region is given, a
+            # byte-identical path).
+            y_filtered, _ = apply_to_region(y, sr, start_s, end_s, dehum_process)
 
             sf.write(output_path, y_filtered.astype(np.float32), sr)
 
@@ -2045,7 +2208,9 @@ class BigFlavorMCPServer:
                 "prominence_db": detection["prominence_db"],
                 "residual_hum_detected": residual["detected"],
                 "input_file": file_path,
-                "output_file": output_path
+                "output_file": output_path,
+                "region": {"start_s": start_s, "end_s": end_s},
+                "strength": strength
             }
 
         except Exception as e:
@@ -2061,17 +2226,24 @@ class BigFlavorMCPServer:
         file_path: str,
         semitones: float,
         auto_tune: bool,
-        output_path: str
+        output_path: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None
     ) -> dict:
         """
         Apply pitch correction to fix tuning or wrong notes.
-        
+
         Args:
             file_path: Path to input audio file
             semitones: Semitones to shift (0 for auto-tune only)
             auto_tune: Enable automatic pitch correction
             output_path: Path for output file
-            
+            start_s / end_s: Optional time range (seconds) to limit pitch
+                correction to (e.g. fix one bad note); when omitted the whole
+                file is processed exactly as before. Pitch detection for
+                auto-tune runs on the selected region so the target note is the
+                region's, not the whole song's (issue #65).
+
         Returns:
             Operation result
         """
@@ -2079,9 +2251,12 @@ class BigFlavorMCPServer:
             import librosa
             import soundfile as sf
             import numpy as np
-            
-            # Load audio (channel count preserved; pitch detection on mono mix)
-            y, sr = _load_audio(file_path)
+
+            # Load audio (channel count preserved; pitch detection on mono mix).
+            # When a region is given, detect/shift only that span.
+            y_full, sr = _load_audio(file_path)
+            region_start, region_end = resolve_region(y_full, sr, start_s, end_s)
+            y = y_full[..., region_start:region_end]
 
             if auto_tune:
                 # Extract pitch using piptrack
@@ -2116,25 +2291,32 @@ class BigFlavorMCPServer:
             else:
                 correction_semitones = semitones
             
-            # Apply pitch shift
-            if abs(correction_semitones) > 0.01:
-                y_corrected = _apply_per_channel(
-                    y,
+            # Apply pitch shift (length-preserving) to the region, then splice
+            # it back into the full signal with crossfaded boundaries. With no
+            # region this runs over the whole file — a byte-identical path.
+            def shift_process(segment: np.ndarray) -> np.ndarray:
+                if abs(correction_semitones) <= 0.01:
+                    return segment
+                return _apply_per_channel(
+                    segment,
                     lambda ch: librosa.effects.pitch_shift(ch, sr=sr, n_steps=correction_semitones)
                 )
-            else:
-                y_corrected = y
+
+            if abs(correction_semitones) <= 0.01:
                 logger.info("No pitch correction needed")
+
+            y_corrected, _ = apply_to_region(y_full, sr, start_s, end_s, shift_process)
 
             # Save output
             _write_audio(output_path, y_corrected, sr)
-            
+
             return {
                 "status": "success",
                 "input_file": file_path,
                 "output_file": output_path,
                 "semitones_shift": round(float(correction_semitones), 2),
-                "auto_tune_enabled": auto_tune
+                "auto_tune_enabled": auto_tune,
+                "region": {"start_s": start_s, "end_s": end_s}
             }
             
         except Exception as e:
@@ -2355,7 +2537,10 @@ class BigFlavorMCPServer:
         boost_db: float,
         output_path: str,
         eq_bands: Optional[List[dict]] = None,
-        subtype: Optional[str] = None
+        subtype: Optional[str] = None,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        strength: float = 1.0
     ) -> dict:
         """
         Apply equalizer filters to shape the sound.
@@ -2380,6 +2565,11 @@ class BigFlavorMCPServer:
                 applied in a single call instead of only the last one.
             subtype: Optional soundfile subtype for the output (e.g. 'FLOAT'
                 for lossless chain intermediates); None keeps the format default
+            start_s / end_s: Optional time range (seconds) to limit EQ to; when
+                omitted the whole file is EQ'd exactly as before (issue #65).
+            strength: Wet/dry blend 0-1 (default 1.0 = today's full effect);
+                blends the EQ'd signal against the untouched input within the
+                region so 0 is a no-op (issue #65).
 
         Returns:
             Operation result
@@ -2389,39 +2579,50 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             from scipy import signal
-            
+
             # Load audio (channel count preserved; sosfilt runs along the last
             # axis, so every filter below handles mono and stereo alike)
             y, sr = _load_audio(file_path)
-            y_filtered = y.copy()
 
-            filters_applied = []
-            
-            # Apply high-pass filter (remove low rumble)
-            if high_pass_freq and high_pass_freq > 0:
-                sos = signal.butter(4, high_pass_freq, 'hp', fs=sr, output='sos')
-                y_filtered = signal.sosfiltfilt(sos, y_filtered)
-                filters_applied.append(f"High-pass @ {high_pass_freq}Hz")
-
-            # Apply low-pass filter (remove high noise)
-            if low_pass_freq and low_pass_freq > 0:
-                sos = signal.butter(4, low_pass_freq, 'lp', fs=sr, output='sos')
-                y_filtered = signal.sosfiltfilt(sos, y_filtered)
-                filters_applied.append(f"Low-pass @ {low_pass_freq}Hz")
-
-            # Peaking/notch bands: every recommended boost/cut is applied in
-            # this one pass, not just the last one.
+            # Peaking/notch bands: every recommended boost/cut is applied in one
+            # pass, not just the last one.
             bands = eq_bands if eq_bands else (
                 [{"frequency": boost_freq, "gain_db": boost_db}] if boost_freq else []
             )
-            for band in bands:
-                freq = band.get("frequency")
-                gain_db = band.get("gain_db", 0)
-                if not freq or freq <= 0 or freq >= sr / 2 or gain_db == 0:
-                    continue
-                sos = self._peaking_eq_sos(freq, gain_db, sr)
-                y_filtered = signal.sosfiltfilt(sos, y_filtered)
-                filters_applied.append(f"{'Boost' if gain_db > 0 else 'Cut'} {gain_db:+.1f}dB @ {freq}Hz")
+            filters_applied = []
+
+            # Build the EQ filter chain once, then run it over the region (or
+            # the whole file when no region is given — a byte-identical path).
+            def eq_process(segment: np.ndarray) -> np.ndarray:
+                out = segment.copy()
+
+                # Apply high-pass filter (remove low rumble)
+                if high_pass_freq and high_pass_freq > 0:
+                    sos = signal.butter(4, high_pass_freq, 'hp', fs=sr, output='sos')
+                    out = signal.sosfiltfilt(sos, out)
+                    filters_applied.append(f"High-pass @ {high_pass_freq}Hz")
+
+                # Apply low-pass filter (remove high noise)
+                if low_pass_freq and low_pass_freq > 0:
+                    sos = signal.butter(4, low_pass_freq, 'lp', fs=sr, output='sos')
+                    out = signal.sosfiltfilt(sos, out)
+                    filters_applied.append(f"Low-pass @ {low_pass_freq}Hz")
+
+                for band in bands:
+                    freq = band.get("frequency")
+                    gain_db = band.get("gain_db", 0)
+                    if not freq or freq <= 0 or freq >= sr / 2 or gain_db == 0:
+                        continue
+                    sos = self._peaking_eq_sos(freq, gain_db, sr)
+                    out = signal.sosfiltfilt(sos, out)
+                    filters_applied.append(
+                        f"{'Boost' if gain_db > 0 else 'Cut'} {gain_db:+.1f}dB @ {freq}Hz"
+                    )
+
+                # Wet/dry blend so strength dials between untouched and full EQ.
+                return blend_strength(segment, out, strength)
+
+            y_filtered, _ = apply_to_region(y, sr, start_s, end_s, eq_process)
 
             # Normalize to prevent clipping
             peak = np.max(np.abs(y_filtered))
@@ -2442,7 +2643,9 @@ class BigFlavorMCPServer:
                 "low_pass_freq": low_pass_freq,
                 "eq_bands": bands,
                 "boost_freq": boost_freq,
-                "boost_db": boost_db if boost_freq else 0
+                "boost_db": boost_db if boost_freq else 0,
+                "region": {"start_s": start_s, "end_s": end_s},
+                "strength": strength
             }
 
         except Exception as e:
@@ -2457,16 +2660,25 @@ class BigFlavorMCPServer:
         self,
         file_path: str,
         sensitivity: float,
-        output_path: str
+        output_path: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        strength: float = 1.0
     ) -> dict:
         """
         Detect and remove clicks, pops, and digital glitches.
-        
+
         Args:
             file_path: Path to input audio file
             sensitivity: Detection sensitivity 0-1 (default: 0.5)
             output_path: Path for output file
-            
+            start_s / end_s: Optional time range (seconds) to limit artifact
+                removal to; when omitted the whole file is cleaned exactly as
+                before (issue #65).
+            strength: Wet/dry blend 0-1 (default 1.0 = today's full effect);
+                blends the cleaned signal against the untouched input within the
+                region so 0 is a no-op (issue #65).
+
         Returns:
             Operation result
         """
@@ -2475,7 +2687,7 @@ class BigFlavorMCPServer:
             import soundfile as sf
             import numpy as np
             from scipy import signal
-            
+
             # Load audio (channel count preserved; each channel is cleaned
             # independently)
             y, sr = _load_audio(file_path)
@@ -2537,19 +2749,27 @@ class BigFlavorMCPServer:
                 # Apply gentle smoothing
                 return signal.savgol_filter(ch_cleaned, window_size, 3)
 
-            y_cleaned = _apply_per_channel(y, clean_channel)
+            # Clean the region (or the whole file when no region is given, a
+            # byte-identical path) and wet/dry-blend it back per strength.
+            def clean_process(segment: np.ndarray) -> np.ndarray:
+                cleaned = _apply_per_channel(segment, clean_channel)
+                return blend_strength(segment, cleaned, strength)
+
+            y_cleaned, _ = apply_to_region(y, sr, start_s, end_s, clean_process)
 
             # Save output
             _write_audio(output_path, y_cleaned, sr)
 
             logger.info(f"Removed {artifact_count} artifacts")
-            
+
             return {
                 "status": "success",
                 "input_file": file_path,
                 "output_file": output_path,
                 "artifacts_removed": int(artifact_count),
-                "sensitivity": sensitivity
+                "sensitivity": sensitivity,
+                "region": {"start_s": start_s, "end_s": end_s},
+                "strength": strength
             }
             
         except Exception as e:
