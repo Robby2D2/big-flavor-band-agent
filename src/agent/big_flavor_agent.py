@@ -405,6 +405,28 @@ class BigFlavorAgent:
                 }
             },
             {
+                "name": "remove_hum",
+                "description": "Detect and remove mains electrical hum (50 or 60 Hz fundamental and its harmonics) from a recording using narrow high-Q notch filters that leave nearby musical content intact. Use this when a recording has electrical/ground-loop hum.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to the audio file to de-hum"
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Output path for the de-hummed file"
+                        },
+                        "fundamental_hz": {
+                            "type": "number",
+                            "description": "Mains fundamental to notch (50 or 60). Auto-detected when omitted."
+                        }
+                    },
+                    "required": ["file_path", "output_path"]
+                }
+            },
+            {
                 "name": "correct_pitch",
                 "description": "Apply pitch correction to fix wrong notes or tuning issues. Can auto-tune to nearest notes or shift by specific semitones.",
                 "input_schema": {
@@ -646,6 +668,7 @@ class BigFlavorAgent:
             "apply_mastering",
             "trim_silence",
             "reduce_noise",
+            "remove_hum",
             "correct_pitch",
             "normalize_audio",
             "apply_eq",
@@ -788,6 +811,12 @@ class BigFlavorAgent:
                         tool_input.get("reduction_strength", 0.7),
                         tool_input["output_path"],
                         tool_input.get("highpass_hz")
+                    )
+                elif tool_name == "remove_hum":
+                    result = await self.production_server.remove_hum(
+                        tool_input["file_path"],
+                        tool_input["output_path"],
+                        tool_input.get("fundamental_hz")
                     )
                 elif tool_name == "correct_pitch":
                     result = await self.production_server.correct_pitch(
