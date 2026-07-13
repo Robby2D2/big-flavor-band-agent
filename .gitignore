@@ -90,3 +90,8 @@ streaming/playlist/radio.m3u
 # Local Compose override (machine-specific dev setup).
 # Tracked template lives at docker-compose.override.yml.example — copy it to use.
 docker-compose.override.yml
+
+# Serena MCP local tool state (machine-specific; its own nested .gitignore
+# doesn't cover memories/ or project.yml, which was tripping the
+# release-manager's dirty-working-tree guard)
+.serena/
