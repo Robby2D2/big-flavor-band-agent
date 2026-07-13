@@ -394,11 +394,23 @@ class BigFlavorMCPServer:
                             },
                             "boost_freq": {
                                 "type": "number",
-                                "description": "Frequency in Hz to boost (optional)"
+                                "description": "Frequency in Hz to boost (optional; ignored if eq_bands is given)"
                             },
                             "boost_db": {
                                 "type": "number",
-                                "description": "Boost amount in dB (default: 3)"
+                                "description": "Boost amount in dB (default: 3; ignored if eq_bands is given)"
+                            },
+                            "eq_bands": {
+                                "type": "array",
+                                "description": "Optional list of peaking EQ adjustments to apply together in one pass, each {frequency (Hz), gain_db}. Positive gain_db boosts, negative cuts. Takes precedence over boost_freq/boost_db.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "frequency": {"type": "number"},
+                                        "gain_db": {"type": "number"}
+                                    },
+                                    "required": ["frequency", "gain_db"]
+                                }
                             },
                             "output_path": {
                                 "type": "string",
@@ -510,7 +522,8 @@ class BigFlavorMCPServer:
                         arguments.get("low_pass_freq"),
                         arguments.get("boost_freq"),
                         arguments.get("boost_db", 3),
-                        arguments["output_path"]
+                        arguments["output_path"],
+                        eq_bands=arguments.get("eq_bands")
                     )
                 elif name == "remove_artifacts":
                     result = await self.remove_artifacts(
@@ -874,6 +887,12 @@ class BigFlavorMCPServer:
             # Load audio (channel count preserved)
             y, sr = _load_audio(file_path)
 
+            # Measured ITU-R BS.1770 integrated loudness before any processing
+            # (measured on the mono reference mix — pyloudnorm expects
+            # (samples,) or (samples, channels), not librosa's
+            # (channels, samples) layout).
+            input_lufs = self._measure_integrated_lufs(_to_mono(y), sr)
+
             # Apply high-pass filter to remove rumble (sosfilt runs along the
             # last axis, so this handles mono and stereo alike)
             sos = signal.butter(4, 30, 'hp', fs=sr, output='sos')
@@ -935,19 +954,20 @@ class BigFlavorMCPServer:
             
             # Apply compression
             y_compressed = y_filtered * smoothed_gain
-            
-            # Calculate current RMS level
-            rms_current = np.sqrt(np.mean(y_compressed**2))
-            
-            # Target RMS based on LUFS (simplified conversion)
-            # LUFS -14 ≈ RMS 0.25, LUFS -16 ≈ RMS 0.2
-            target_rms = 10 ** ((target_loudness + 15) / 20)
-            
+
+            # Gain needed to hit target_loudness, from the *measured*
+            # BS.1770 loudness of the compressed signal — replaces the old
+            # fixed RMS->LUFS conversion formula (target_rms = 10**((lufs+15)/20)),
+            # which only ever chased a guessed loudness.
+            compressed_lufs = self._measure_integrated_lufs(_to_mono(y_compressed), sr)
+            gain_db = target_loudness - compressed_lufs
+            gain = librosa.db_to_amplitude(gain_db)
+
             # Apply gain to reach target with safety margin
-            if rms_current > 0:
-                gain = target_rms / rms_current
+            peak_compressed = np.max(np.abs(y_compressed))
+            if peak_compressed > 0:
                 # Add safety headroom to prevent clipping
-                max_gain = 0.9 / (np.max(np.abs(y_compressed)) + 1e-10)
+                max_gain = 0.9 / (peak_compressed + 1e-10)
                 gain = min(gain, max_gain)
                 y_gained = y_compressed * gain
             else:
@@ -994,17 +1014,18 @@ class BigFlavorMCPServer:
             master_subtype = FINAL_WAV_SUBTYPE if output_path.lower().endswith(".wav") else None
             _write_audio(output_path, y_mastered, sr, subtype=master_subtype)
 
-            # Calculate final RMS
-            final_rms = np.sqrt(np.mean(y_mastered**2))
-            final_lufs = 20 * np.log10(final_rms) - 15
-            
+            # Measured ITU-R BS.1770 integrated loudness of the final output
+            # (mono reference mix — see input_lufs above).
+            final_lufs = self._measure_integrated_lufs(_to_mono(y_mastered), sr)
+
             logger.info(f"Mastering complete: {file_path} → {output_path}")
-            
+
             return {
                 "status": "success",
                 "input_file": file_path,
                 "output_file": output_path,
                 "target_loudness_lufs": float(target_loudness),
+                "input_loudness_lufs": round(float(input_lufs), 1),
                 "actual_loudness_lufs": round(float(final_lufs), 1),
                 "gain_applied_db": round(float(20 * np.log10(gain)), 1) if gain > 0 else 0,
                 "output_bit_depth": "24-bit PCM" if master_subtype else "format default"
@@ -1233,10 +1254,11 @@ class BigFlavorMCPServer:
             # ===== 5. ANALYZE LOUDNESS =====
             peak_db = 20 * np.log10(peak) if peak > 0 else -np.inf
             rms_db = 20 * np.log10(rms_overall) if rms_overall > 0 else -np.inf
-            
-            # Estimate LUFS (simplified)
-            estimated_lufs = rms_db - 15
-            
+
+            # Measured ITU-R BS.1770 integrated loudness (replaces the old
+            # rms_db - 15 guess).
+            estimated_lufs = self._measure_integrated_lufs(y, sr)
+
             # Recommend mastering target
             if estimated_lufs < -30:
                 recommended_lufs = -14
@@ -1300,7 +1322,7 @@ class BigFlavorMCPServer:
                 },
                 "mastering": {
                     "recommended": True,
-                    "current_lufs_estimate": round(float(estimated_lufs), 1),
+                    "current_lufs_measured": round(float(estimated_lufs), 1),
                     "target_lufs": float(recommended_lufs),
                     "estimated_gain_db": round(float(recommended_gain), 1)
                 },
@@ -1547,39 +1569,41 @@ class BigFlavorMCPServer:
                 logger.info("Step 3: Applying EQ...")
                 
                 eq_adjustments = recommendations["eq"]["adjustments"]
-                
-                # Apply recommended EQ
+
+                # Apply recommended EQ. Every "boost"/"reduce" adjustment
+                # becomes its own peaking band, applied together in one
+                # apply_eq call — previously this loop kept overwriting a
+                # single boost_freq/boost_db pair, so only the last
+                # recommendation ever survived.
                 high_pass_freq = None
                 low_pass_freq = None
-                boost_freq = None
-                boost_db = None
-                
+                eq_bands = []
+
                 for adj in eq_adjustments:
                     if adj["type"] == "high_pass":
                         high_pass_freq = adj["frequency"]
                     elif adj["type"] == "low_pass":
                         low_pass_freq = adj["frequency"]
-                    elif adj["type"] == "boost":
-                        boost_freq = adj["frequency"]
-                        boost_db = adj["amount"] * mult
-                    elif adj["type"] == "reduce":
-                        # Treat reduce as negative boost
-                        boost_freq = adj["frequency"]
-                        boost_db = adj["amount"] * mult
-                
+                    elif adj["type"] in ("boost", "reduce"):
+                        eq_bands.append({
+                            "frequency": adj["frequency"],
+                            "gain_db": adj["amount"] * mult
+                        })
+
                 if keep_intermediates:
                     eq_output = intermediate_dir / "03_eq.wav"
                 else:
                     import tempfile
                     eq_output = Path(tempfile.mktemp(suffix=".wav"))
-                
+
                 result = await self.apply_eq(
                     current_file,
                     high_pass_freq or 30,
                     low_pass_freq,
-                    boost_freq,
-                    boost_db or 0,
+                    None,
+                    0,
                     str(eq_output),
+                    eq_bands=eq_bands or None,
                     subtype=INTERMEDIATE_WAV_SUBTYPE
                 )
                 
@@ -2265,6 +2289,63 @@ class BigFlavorMCPServer:
                 "input_file": file_path
             }
     
+    @staticmethod
+    def _peaking_eq_sos(freq_hz: float, gain_db: float, sr: float, q: float = 1.5) -> "np.ndarray":
+        """RBJ Audio EQ Cookbook peaking filter, as a single second-order section.
+
+        A true peaking/notch biquad with a predictable gain at ``freq_hz``
+        (positive ``gain_db`` boosts, negative cuts), unlike band-passing the
+        signal and mixing it back in scaled — that approximation shifts
+        phase and doesn't produce the requested dB change at the target
+        frequency. At ``gain_db == 0`` the coefficients reduce to an exact
+        identity filter (b == a), so a "neutral" EQ pass is a true no-op.
+
+        Callers always run this through ``sosfiltfilt`` (forward+backward)
+        for zero-phase output, which squares the filter's magnitude response
+        and therefore doubles the dB gain of a single pass. Designing for
+        half the requested ``gain_db`` here means the *net* two-pass gain at
+        ``freq_hz`` matches what the caller asked for.
+        """
+        import numpy as np
+
+        A = 10 ** ((gain_db / 2) / 40)
+        w0 = 2 * np.pi * freq_hz / sr
+        alpha = np.sin(w0) / (2 * q)
+        cos_w0 = np.cos(w0)
+
+        b0 = 1 + alpha * A
+        b1 = -2 * cos_w0
+        b2 = 1 - alpha * A
+        a0 = 1 + alpha / A
+        a1 = -2 * cos_w0
+        a2 = 1 - alpha / A
+
+        return np.array([[b0 / a0, b1 / a0, b2 / a0, 1.0, a1 / a0, a2 / a0]])
+
+    @staticmethod
+    def _measure_integrated_lufs(y: "np.ndarray", sr: int) -> float:
+        """Measured ITU-R BS.1770 integrated loudness (LUFS) via pyloudnorm.
+
+        Replaces the previous ``rms_db - 15`` guess with a real gated-loudness
+        measurement. Falls back to that same RMS-based estimate only when
+        pyloudnorm can't measure the clip (e.g. shorter than its 400ms
+        analysis block), so callers always get a finite number back.
+        """
+        import numpy as np
+
+        try:
+            import pyloudnorm as pyln
+            meter = pyln.Meter(sr)
+            loudness = meter.integrated_loudness(y.astype(np.float64))
+            if np.isfinite(loudness):
+                return float(loudness)
+        except Exception as e:
+            logger.warning(f"pyloudnorm measurement failed, falling back to RMS estimate: {e}")
+
+        rms = np.sqrt(np.mean(y ** 2)) if len(y) else 0.0
+        rms_db = 20 * np.log10(rms) if rms > 0 else -70.0
+        return rms_db - 15
+
     async def apply_eq(
         self,
         file_path: str,
@@ -2273,18 +2354,30 @@ class BigFlavorMCPServer:
         boost_freq: Optional[float],
         boost_db: float,
         output_path: str,
+        eq_bands: Optional[List[dict]] = None,
         subtype: Optional[str] = None
     ) -> dict:
         """
         Apply equalizer filters to shape the sound.
 
+        All EQ filters (high-pass, low-pass, and each peaking band) are
+        applied zero-phase (``sosfiltfilt``) since this is offline
+        processing, not a real-time chain — that avoids the phase smear a
+        causal ``sosfilt`` introduces near cutoff/center frequencies.
+
         Args:
             file_path: Path to input audio file
             high_pass_freq: High-pass filter frequency in Hz
             low_pass_freq: Optional low-pass filter frequency in Hz
-            boost_freq: Optional frequency to boost
-            boost_db: Boost amount in dB
+            boost_freq: Optional frequency to boost/cut (used only if
+                eq_bands is not given)
+            boost_db: Boost/cut amount in dB for boost_freq
             output_path: Path for output file
+            eq_bands: Optional list of {"frequency": Hz, "gain_db": dB}
+                peaking adjustments to apply together in one pass. Takes
+                precedence over boost_freq/boost_db, and is how multiple
+                recommended EQ adjustments (e.g. cut mud + add clarity) get
+                applied in a single call instead of only the last one.
             subtype: Optional soundfile subtype for the output (e.g. 'FLOAT'
                 for lossless chain intermediates); None keeps the format default
 
@@ -2307,32 +2400,29 @@ class BigFlavorMCPServer:
             # Apply high-pass filter (remove low rumble)
             if high_pass_freq and high_pass_freq > 0:
                 sos = signal.butter(4, high_pass_freq, 'hp', fs=sr, output='sos')
-                y_filtered = signal.sosfilt(sos, y_filtered)
+                y_filtered = signal.sosfiltfilt(sos, y_filtered)
                 filters_applied.append(f"High-pass @ {high_pass_freq}Hz")
-            
+
             # Apply low-pass filter (remove high noise)
             if low_pass_freq and low_pass_freq > 0:
                 sos = signal.butter(4, low_pass_freq, 'lp', fs=sr, output='sos')
-                y_filtered = signal.sosfilt(sos, y_filtered)
+                y_filtered = signal.sosfiltfilt(sos, y_filtered)
                 filters_applied.append(f"Low-pass @ {low_pass_freq}Hz")
-            
-            # Apply parametric boost
-            if boost_freq and boost_freq > 0:
-                # Create a peaking EQ filter
-                Q = 1.5  # Quality factor (bandwidth)
-                gain_linear = librosa.db_to_amplitude(boost_db)
-                
-                # Design peaking filter
-                # Note: scipy doesn't have direct peaking filter, so we use bandpass
-                # with gain adjustment as approximation
-                sos = signal.butter(2, [boost_freq / 1.5, boost_freq * 1.5], 'bp', fs=sr, output='sos')
-                y_boost = signal.sosfilt(sos, y_filtered)
-                
-                # Mix boosted signal
-                boost_amount = (gain_linear - 1) * 0.5  # Scale the boost
-                y_filtered = y_filtered + y_boost * boost_amount
-                filters_applied.append(f"Boost {boost_db}dB @ {boost_freq}Hz")
-            
+
+            # Peaking/notch bands: every recommended boost/cut is applied in
+            # this one pass, not just the last one.
+            bands = eq_bands if eq_bands else (
+                [{"frequency": boost_freq, "gain_db": boost_db}] if boost_freq else []
+            )
+            for band in bands:
+                freq = band.get("frequency")
+                gain_db = band.get("gain_db", 0)
+                if not freq or freq <= 0 or freq >= sr / 2 or gain_db == 0:
+                    continue
+                sos = self._peaking_eq_sos(freq, gain_db, sr)
+                y_filtered = signal.sosfiltfilt(sos, y_filtered)
+                filters_applied.append(f"{'Boost' if gain_db > 0 else 'Cut'} {gain_db:+.1f}dB @ {freq}Hz")
+
             # Normalize to prevent clipping
             peak = np.max(np.abs(y_filtered))
             if peak > 0.95:
@@ -2341,8 +2431,8 @@ class BigFlavorMCPServer:
             # Save output
             _write_audio(output_path, y_filtered, sr, subtype=subtype)
 
-            logger.info(f"EQ applied: {', '.join(filters_applied)}")
-            
+            logger.info(f"EQ applied: {', '.join(filters_applied) if filters_applied else '(no-op)'}")
+
             return {
                 "status": "success",
                 "input_file": file_path,
@@ -2350,10 +2440,11 @@ class BigFlavorMCPServer:
                 "filters_applied": filters_applied,
                 "high_pass_freq": high_pass_freq,
                 "low_pass_freq": low_pass_freq,
+                "eq_bands": bands,
                 "boost_freq": boost_freq,
                 "boost_db": boost_db if boost_freq else 0
             }
-            
+
         except Exception as e:
             logger.error(f"Error applying EQ: {e}")
             return {
