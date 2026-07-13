@@ -9,6 +9,21 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-13 — Release `v0.12.0` (release-manager)
+Cut **`v0.12.0`** from `main` (HEAD `d225259`), a **minor** bump from `v0.11.1` — the 3-commit range
+includes a `feat:` commit (`bdd5aa2`, port concurrency standards from soccer-assistant-coach + run the
+pipeline in GitHub Actions), plus a `fix:` (`d225259`, document `gh` self-approval restriction as
+benign in qa-reviewer) and the v0.11.1 memory chore (`9abe59d`). All three commits touch only
+`.agents/`, `.claude/agents/`, `AGENTS.md`, and `.github/workflows/` — no application/database code —
+and were pushed directly to `main` without a PR, so there were no linked issues to notify. Published
+GitHub Release with auto-generated notes anchored to `v0.11.1`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.12.0. Sanity gate: backend restart
+**failed** with `asyncpg.exceptions.DatatypeMismatchError` in `ensure_song_versions_table()` (local
+Postgres `songs.id` is `character varying`, incompatible with the FK the code expects) — confirmed
+this is pre-existing local DB schema drift unrelated to the release range (no commit in range touches
+`database/database.py` or `backend_api.py`), not a regression, so **not** treated as a blocking `main`
+error. Frontend `npm run build` **passed**. Proceeded per Step 4.5.
+
 ### 2026-07-12 — Pipeline concurrency standards ported from soccer-assistant-coach + GitHub Actions sweep
 Copied the sibling repo's updated agent standards. **AGENTS.md** gained a **Concurrency** section
 (4 rules: re-check before write; lost races are benign skips, not errors; writers claim / readers
