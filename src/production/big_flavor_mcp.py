@@ -98,6 +98,142 @@ def _write_audio(output_path: str, y, sr: int, subtype: Optional[str] = None) ->
     sf.write(output_path, y.T if y.ndim > 1 else y, sr, subtype=subtype)
 
 
+# --------------------------------------------------------------- pitch (#68)
+#
+# Note-level, key-aware auto-tune. Auto-tune mode tracks a per-frame f0 curve
+# (librosa.pyin), segments it into discrete note events, snaps each note toward
+# the nearest tone in the detected/supplied key, and shifts only that note's
+# samples — so a single wrong note is fixed without detuning the correct ones,
+# unlike the old whole-file median shift.
+
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_MAJOR_STEPS = [0, 2, 4, 5, 7, 9, 11]
+_MINOR_STEPS = [0, 2, 3, 5, 7, 8, 10]  # natural minor
+
+# Krumhansl-Schmuckler key profiles (major / minor), used to pick the key from
+# the distribution of voiced pitch classes when the caller does not supply one.
+_MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+_MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+
+
+_FLAT_TO_SHARP = {"Bb": "A#", "Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#"}
+
+
+def _parse_key(key: str):
+    """Parse a key string like 'C', 'A minor', 'F# major' into
+    (tonic_pitch_class, is_minor). Returns None if it can't be parsed."""
+    if not key:
+        return None
+    parts = key.strip().split()
+    if not parts:
+        return None
+    tonic = parts[0][0].upper() + parts[0][1:]  # normalise case, keep '#'/'b'
+    tonic = _FLAT_TO_SHARP.get(tonic, tonic)
+    if tonic not in _NOTE_NAMES:
+        return None
+    is_minor = any("min" in p.lower() for p in parts[1:])
+    return _NOTE_NAMES.index(tonic), is_minor
+
+
+def _detect_key(pitch_classes):
+    """Correlate the histogram of voiced pitch classes against the 24 major/
+    minor Krumhansl profiles and return (tonic_pitch_class, is_minor)."""
+    import numpy as np
+
+    hist = np.zeros(12)
+    for pc in pitch_classes:
+        hist[int(pc) % 12] += 1
+    if hist.sum() == 0:
+        return 0, False  # default C major; caller only reaches here with voiced notes
+    hist = hist / hist.sum()
+
+    def _corr(profile, shift):
+        rolled = np.roll(profile, shift)
+        a = hist - hist.mean()
+        b = rolled - rolled.mean()
+        denom = np.linalg.norm(a) * np.linalg.norm(b)
+        return float(np.dot(a, b) / denom) if denom else -1.0
+
+    best_score = -2.0
+    best = (0, False)
+    for tonic in range(12):
+        maj = _corr(np.array(_MAJOR_PROFILE), tonic)
+        if maj > best_score:
+            best_score, best = maj, (tonic, False)
+        minr = _corr(np.array(_MINOR_PROFILE), tonic)
+        if minr > best_score:
+            best_score, best = minr, (tonic, True)
+    return best
+
+
+def _scale_midi_set(tonic_pc: int, is_minor: bool):
+    """Pitch classes (0-11) that belong to the given key's diatonic scale."""
+    steps = _MINOR_STEPS if is_minor else _MAJOR_STEPS
+    return {(tonic_pc + s) % 12 for s in steps}
+
+
+def _snap_midi(midi_value: float, chromatic: bool, scale_pcs) -> float:
+    """Snap a (fractional) MIDI value to the nearest integer MIDI note. In
+    key-aware mode, restrict targets to pitch classes in `scale_pcs`."""
+    if chromatic:
+        return float(round(midi_value))
+    base = int(round(midi_value))
+    # Search outward for the nearest MIDI note whose pitch class is in-scale.
+    best = None
+    for delta in range(-6, 7):
+        cand = base + delta
+        if cand % 12 in scale_pcs:
+            if best is None or abs(cand - midi_value) < abs(best - midi_value):
+                best = cand
+    return float(best if best is not None else round(midi_value))
+
+
+def _segment_notes(f0, voiced_flag, min_frames: int = 5):
+    """Split a per-frame f0 curve into discrete note events.
+
+    Splits on voicing gaps and on pitch jumps larger than ~0.6 semitone. Each
+    note's target pitch is the median of its own frames (robust to the pitch
+    glide at note onsets). Very short segments (< `min_frames`, i.e. the
+    one/two-frame slides between notes) are dropped so they neither pollute key
+    detection nor get corrected independently.
+
+    Returns a list of (start_frame, end_frame, median_midi) for voiced notes.
+    """
+    import numpy as np
+    import librosa
+
+    def _valid(j):
+        return bool(voiced_flag[j]) and f0[j] and f0[j] > 0 and np.isfinite(f0[j])
+
+    def _emit(start, end, out):
+        seg = [float(librosa.hz_to_midi(f0[j])) for j in range(start, end) if _valid(j)]
+        if end - start >= min_frames and seg:
+            out.append((start, end, float(np.median(seg))))
+
+    notes = []
+    start = None
+    prev_midi = None
+    for i, voiced in enumerate(voiced_flag):
+        cur_midi = float(librosa.hz_to_midi(f0[i])) if _valid(i) else None
+        if cur_midi is None:
+            if start is not None:
+                _emit(start, i, notes)
+                start = None
+                prev_midi = None
+            continue
+        if start is None:
+            start = i
+        elif prev_midi is not None and abs(cur_midi - prev_midi) > 0.6:
+            # Pitch jump → boundary between two notes.
+            _emit(start, i, notes)
+            start = i
+        seg = [f0[j] for j in range(start, i + 1) if _valid(j)]
+        prev_midi = float(np.median(librosa.hz_to_midi(np.array(seg)))) if seg else cur_midi
+    if start is not None:
+        _emit(start, len(voiced_flag), notes)
+    return notes
+
+
 class BigFlavorMCPServer:
     """MCP Server for Big Flavor audio production and analysis operations."""
     
@@ -373,7 +509,16 @@ class BigFlavorMCPServer:
                 ),
                 Tool(
                     name="correct_pitch",
-                    description="Apply pitch correction to fix wrong notes or tuning issues",
+                    description=(
+                        "Apply pitch correction to fix wrong notes or tuning "
+                        "issues. Auto-tune mode does per-note, key-aware "
+                        "correction on a monophonic source (solo vocal / lead "
+                        "line): it only nudges off-pitch notes toward the "
+                        "musical scale and leaves correct notes untouched. On "
+                        "polyphonic input it falls back to a whole-file shift "
+                        "and says so. Manual mode (auto_tune off) transposes "
+                        "the whole file by `semitones`."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -387,7 +532,32 @@ class BigFlavorMCPServer:
                             },
                             "auto_tune": {
                                 "type": "boolean",
-                                "description": "Enable automatic pitch correction to nearest notes (default: false)"
+                                "description": "Enable automatic per-note pitch correction (default: false)"
+                            },
+                            "correction_strength": {
+                                "type": "number",
+                                "description": (
+                                    "Auto-tune only: how far each note is nudged "
+                                    "toward its target pitch, 0-1 (0 = untouched, "
+                                    "1 = fully snapped, default: 1.0). Follows the "
+                                    "same strength convention as the other cleanup tools."
+                                )
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": (
+                                    "Auto-tune only: musical key to snap notes to, "
+                                    "e.g. 'C', 'A minor', 'F# major'. Omit to detect "
+                                    "the key automatically from the audio."
+                                )
+                            },
+                            "chromatic": {
+                                "type": "boolean",
+                                "description": (
+                                    "Auto-tune only: snap to the nearest semitone "
+                                    "instead of the nearest tone in the key/scale "
+                                    "(default: false, i.e. key-aware)."
+                                )
                             },
                             "output_path": {
                                 "type": "string",
@@ -598,8 +768,11 @@ class BigFlavorMCPServer:
                         arguments.get("semitones", 0),
                         arguments.get("auto_tune", False),
                         arguments["output_path"],
+                        correction_strength=arguments.get("correction_strength", 1.0),
+                        key=arguments.get("key"),
+                        chromatic=arguments.get("chromatic", False),
                         start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s")
+                        end_s=arguments.get("end_s"),
                     )
                 elif name == "normalize_audio":
                     result = await self.normalize_audio(
@@ -2227,98 +2400,185 @@ class BigFlavorMCPServer:
         semitones: float,
         auto_tune: bool,
         output_path: str,
+        correction_strength: float = 1.0,
+        key: Optional[str] = None,
+        chromatic: bool = False,
         start_s: Optional[float] = None,
-        end_s: Optional[float] = None
+        end_s: Optional[float] = None,
     ) -> dict:
         """
         Apply pitch correction to fix tuning or wrong notes.
 
+        Two modes:
+          * Manual (auto_tune=False): transpose the whole file by `semitones`.
+          * Auto-tune (auto_tune=True): per-note, key-aware correction on a
+            monophonic source. Tracks a per-frame f0 curve, segments it into
+            notes, snaps each note toward the nearest tone in the detected (or
+            supplied) key, and shifts only that note's samples — so a single
+            wrong note is fixed without detuning the correct ones. On
+            polyphonic input (too little confidently-voiced audio) it falls
+            back to a whole-file shift and reports `mode: "global_fallback"`.
+
+        Both modes accept an optional `start_s`/`end_s` region so correction can
+        be limited to one span (e.g. a single bad note) and spliced back into
+        the untouched remainder via the shared region helpers (issue #65).
+
         Args:
             file_path: Path to input audio file
-            semitones: Semitones to shift (0 for auto-tune only)
-            auto_tune: Enable automatic pitch correction
+            semitones: Semitones to shift (added on top of auto-tune, or the
+                whole-file shift in manual mode)
+            auto_tune: Enable per-note automatic pitch correction
             output_path: Path for output file
-            start_s / end_s: Optional time range (seconds) to limit pitch
-                correction to (e.g. fix one bad note); when omitted the whole
-                file is processed exactly as before. Pitch detection for
-                auto-tune runs on the selected region so the target note is the
-                region's, not the whole song's (issue #65).
+            correction_strength: Auto-tune only — how far each note is nudged
+                toward its target pitch, 0-1 (0 = untouched, 1 = fully snapped)
+            key: Auto-tune only — musical key to snap to (e.g. 'C', 'A minor');
+                None auto-detects the key from the audio
+            chromatic: Auto-tune only — snap to the nearest semitone instead of
+                the nearest in-key tone
+            start_s / end_s: Optional time range (seconds) to limit correction
+                to (e.g. fix one bad note); when omitted the whole file is
+                processed exactly as before. Auto-tune's pitch detection runs on
+                the selected region so the target note is the region's, not the
+                whole song's (issue #65).
 
         Returns:
             Operation result
         """
         try:
             import librosa
-            import soundfile as sf
             import numpy as np
 
             # Load audio (channel count preserved; pitch detection on mono mix).
-            # When a region is given, detect/shift only that span.
+            # When a region is given, detection and correction run on that span
+            # only and are spliced back into the untouched remainder via the
+            # shared region helpers (issue #65).
             y_full, sr = _load_audio(file_path)
+
+            if not auto_tune:
+                return self._apply_global_shift(
+                    y_full, sr, semitones, file_path, output_path,
+                    auto_tune_enabled=False, start_s=start_s, end_s=end_s,
+                )
+
             region_start, region_end = resolve_region(y_full, sr, start_s, end_s)
             y = y_full[..., region_start:region_end]
 
-            if auto_tune:
-                # Extract pitch using piptrack
-                pitches, magnitudes = librosa.piptrack(y=_to_mono(y), sr=sr)
-                
-                # Get dominant pitch over time
-                pitch_track = []
-                for t in range(pitches.shape[1]):
-                    index = magnitudes[:, t].argmax()
-                    pitch = pitches[index, t]
-                    if pitch > 0:
-                        pitch_track.append(pitch)
-                
-                if not pitch_track:
-                    return {
-                        "status": "error",
-                        "error": "Could not detect pitch in audio",
-                        "input_file": file_path
-                    }
-                
-                # Calculate average pitch
-                avg_pitch = np.median(pitch_track)
-                
-                # Find nearest MIDI note
-                midi_note = librosa.hz_to_midi(avg_pitch)
-                nearest_midi = round(midi_note)
-                
-                # Calculate correction needed
-                correction_semitones = nearest_midi - midi_note + semitones
-                
-                logger.info(f"Auto-tune: {avg_pitch:.1f}Hz → MIDI {nearest_midi} ({correction_semitones:+.2f} semitones)")
-            else:
-                correction_semitones = semitones
-            
-            # Apply pitch shift (length-preserving) to the region, then splice
-            # it back into the full signal with crossfaded boundaries. With no
-            # region this runs over the whole file — a byte-identical path.
-            def shift_process(segment: np.ndarray) -> np.ndarray:
-                if abs(correction_semitones) <= 0.01:
-                    return segment
-                return _apply_per_channel(
-                    segment,
-                    lambda ch: librosa.effects.pitch_shift(ch, sr=sr, n_steps=correction_semitones)
+            strength = float(min(1.0, max(0.0, correction_strength)))
+            mono = _to_mono(y)
+
+            # Probabilistic YIN: continuous f0 + per-frame voicing, far more
+            # robust than piptrack peak-picking for a monophonic line.
+            fmin = librosa.note_to_hz("C2")
+            fmax = librosa.note_to_hz("C7")
+            f0, voiced_flag, voiced_prob = librosa.pyin(
+                mono, fmin=fmin, fmax=fmax, sr=sr
+            )
+            hop_length = 512  # librosa.pyin default
+
+            voiced_ratio = float(np.mean(voiced_flag)) if len(voiced_flag) else 0.0
+            # Mean pyin confidence over the frames it flagged as voiced. A clean
+            # solo line sits high (~0.8+); a chord / full mix confuses YIN and
+            # drags this down.
+            voiced_conf = (
+                float(np.mean(voiced_prob[voiced_flag])) if voiced_ratio > 0 else 0.0
+            )
+
+            # Polyphony / non-monophonic guard: a chord or full mix yields
+            # sparse and/or low-confidence voicing. Rather than garble the
+            # audio, fall back to the old whole-file shift and say so.
+            if voiced_ratio < 0.25 or voiced_conf < 0.5:
+                fallback = self._apply_global_shift(
+                    y_full, sr, semitones, file_path, output_path,
+                    auto_tune_enabled=True, start_s=start_s, end_s=end_s,
                 )
+                fallback["mode"] = "global_fallback"
+                fallback["fallback_reason"] = (
+                    "Input does not look monophonic (voiced "
+                    f"{voiced_ratio * 100:.0f}% of the time, mean confidence "
+                    f"{voiced_conf:.2f}); note-level correction is unreliable, "
+                    "applied a whole-file shift instead."
+                )
+                logger.info(
+                    "correct_pitch: polyphonic/low-voicing input "
+                    f"(ratio={voiced_ratio:.2f}, conf={voiced_conf:.2f}) → global fallback"
+                )
+                return fallback
 
-            if abs(correction_semitones) <= 0.01:
-                logger.info("No pitch correction needed")
+            # Segment the f0 curve into discrete note events.
+            notes = _segment_notes(f0, voiced_flag)
+            if not notes:
+                fallback = self._apply_global_shift(
+                    y_full, sr, semitones, file_path, output_path,
+                    auto_tune_enabled=True, start_s=start_s, end_s=end_s,
+                )
+                fallback["mode"] = "global_fallback"
+                fallback["fallback_reason"] = "No stable notes detected; applied a whole-file shift."
+                return fallback
 
-            y_corrected, _ = apply_to_region(y_full, sr, start_s, end_s, shift_process)
+            # Determine the target scale.
+            note_pitch_classes = [int(round(m)) % 12 for _, _, m in notes]
+            parsed = _parse_key(key) if key else None
+            if parsed is None:
+                tonic_pc, is_minor = _detect_key(note_pitch_classes)
+                key_source = "detected"
+            else:
+                tonic_pc, is_minor = parsed
+                key_source = "supplied"
+            scale_pcs = _scale_midi_set(tonic_pc, is_minor)
+            key_name = f"{_NOTE_NAMES[tonic_pc]} {'minor' if is_minor else 'major'}"
 
-            # Save output
+            # Correct each note independently on the mono reference, then apply
+            # the same per-note shift to every channel so stereo is preserved.
+            def _correct_channel(channel):
+                out = channel.copy()
+                for start_f, end_f, note_midi in notes:
+                    s = int(start_f * hop_length)
+                    e = min(len(channel), int(end_f * hop_length))
+                    if e <= s:
+                        continue
+                    target = _snap_midi(note_midi, chromatic, scale_pcs)
+                    shift = (target - note_midi) * strength + semitones
+                    if abs(shift) < 0.01:
+                        continue
+                    out[s:e] = librosa.effects.pitch_shift(
+                        channel[s:e], sr=sr, n_steps=shift
+                    )
+                return out
+
+            # Apply the per-note correction to the region, then splice it back
+            # into the full signal with crossfaded boundaries via the shared
+            # region helper. With no region this processes the whole file — the
+            # byte-identical path.
+            y_corrected, _ = apply_to_region(
+                y_full, sr, start_s, end_s,
+                lambda seg: _apply_per_channel(seg, _correct_channel),
+            )
             _write_audio(output_path, y_corrected, sr)
+
+            corrected = sum(
+                1 for _, _, m in notes
+                if abs((_snap_midi(m, chromatic, scale_pcs) - m) * strength + semitones) >= 0.01
+            )
+            logger.info(
+                f"Auto-tune: {len(notes)} notes, key {key_name} ({key_source}), "
+                f"{corrected} shifted, strength={strength:.2f}"
+            )
 
             return {
                 "status": "success",
                 "input_file": file_path,
                 "output_file": output_path,
-                "semitones_shift": round(float(correction_semitones), 2),
-                "auto_tune_enabled": auto_tune,
-                "region": {"start_s": start_s, "end_s": end_s}
+                "auto_tune_enabled": True,
+                "mode": "per_note",
+                "notes_detected": len(notes),
+                "notes_corrected": corrected,
+                "key": key_name,
+                "key_source": key_source,
+                "chromatic": chromatic,
+                "correction_strength": round(strength, 2),
+                "region": {"start_s": start_s, "end_s": end_s},
             }
-            
+
         except Exception as e:
             logger.error(f"Error correcting pitch: {e}")
             return {
@@ -2326,6 +2586,41 @@ class BigFlavorMCPServer:
                 "error": str(e),
                 "input_file": file_path
             }
+
+    def _apply_global_shift(
+        self, y, sr, semitones, file_path, output_path, auto_tune_enabled,
+        start_s: Optional[float] = None, end_s: Optional[float] = None,
+    ) -> dict:
+        """Whole-file transposition by `semitones` (the legacy behaviour, used
+        for manual mode and as the polyphonic auto-tune fallback).
+
+        Honours an optional `start_s`/`end_s` region: the shift is applied only
+        within the span and spliced back into the untouched remainder via the
+        shared region helper (issue #65). Omitting both shifts the whole file."""
+        import librosa
+
+        def shift_process(segment):
+            if abs(semitones) <= 0.01:
+                return segment
+            return _apply_per_channel(
+                segment,
+                lambda ch: librosa.effects.pitch_shift(ch, sr=sr, n_steps=semitones),
+            )
+
+        if abs(semitones) <= 0.01:
+            logger.info("No pitch correction needed")
+
+        y_corrected, _ = apply_to_region(y, sr, start_s, end_s, shift_process)
+        _write_audio(output_path, y_corrected, sr)
+
+        return {
+            "status": "success",
+            "input_file": file_path,
+            "output_file": output_path,
+            "semitones_shift": round(float(semitones), 2),
+            "auto_tune_enabled": auto_tune_enabled,
+            "region": {"start_s": start_s, "end_s": end_s},
+        }
     
     async def normalize_audio(
         self,
