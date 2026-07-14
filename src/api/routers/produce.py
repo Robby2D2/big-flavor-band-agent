@@ -34,6 +34,7 @@ from src.rag.big_flavor_rag import SongRAGSystem
 from src.auth import require_role
 from src.api.dependencies import get_agent, get_db, get_rag
 from src.api import radio_service
+from src.api.region_tools import build_region_tool_args
 from src.production import stem_separation
 from database import DatabaseManager
 
@@ -94,6 +95,24 @@ class StemRenderRequest(BaseModel):
     gain/mute; unlisted stems play at unity gain, unmuted.
     """
     adjustments: Dict[str, StemAdjustment] = {}
+
+
+class RegionToolRequest(BaseModel):
+    """Run one v0.14.0 production tool over a selected time region (issue #70).
+
+    The waveform editor sends the catalog ``song_id`` (optionally a
+    ``source_version_id`` to process a specific version's audio), the friendly
+    ``tool`` name, the region bounds, a wet/dry ``strength``, and any
+    tool-specific ``params`` (target_bpm, key, eq_bands, ...). Preview and Apply
+    share this shape — the only difference is whether the run becomes a version.
+    """
+    song_id: int
+    source_version_id: Optional[int] = None
+    tool: str
+    start_s: Optional[float] = None
+    end_s: Optional[float] = None
+    strength: float = 1.0
+    params: Dict[str, Any] = {}
 
 
 class BatchStartRequest(BaseModel):
@@ -954,4 +973,210 @@ async def render_stem_remix(
         "song_id": stem_set["song_id"],
         "stem_set_id": set_id,
         "candidate_path": str(output_path),
+    }
+
+
+# ---- issue #70: waveform region editor — region-scoped preview / apply ----
+
+
+async def save_candidate_version(
+    song_id: int,
+    candidate_path: str,
+    metrics: Dict[str, Any],
+    db: DatabaseManager,
+) -> Dict[str, Any]:
+    """Record a produced file as a new unpublished candidate version (issue #70).
+
+    Seeds the song's 'original' version, then adds the rendered file as a
+    'cleaned' candidate — NOT published, so the song's default is untouched and
+    the producer promotes it via the existing versions list (audition -> approve
+    -> publish). Shared by region-apply and stem-mix apply so both enter that
+    flow identically.
+    """
+    source_path = await run_in_threadpool(_resolve_source_path, song_id)
+    await db.ensure_original_version(song_id, str(source_path))
+    version = await db.add_song_version(
+        song_id, candidate_path, label="cleaned", metrics=metrics
+    )
+    return {"version_id": version["id"], "is_published": version["is_published"]}
+
+
+async def _run_region_tool(
+    request: RegionToolRequest,
+    output_path: Path,
+    agent: BigFlavorAgent,
+    db: DatabaseManager,
+) -> Dict[str, Any]:
+    """Resolve the source, map the tool, and run it into ``output_path``.
+
+    Shared by preview and apply. Raises HTTPException (400 unknown tool, 502 tool
+    failure) so both endpoints surface the same errors. Returns the tool payload.
+    """
+    source_path = await _resolve_clean_source_path(
+        request.song_id, request.source_version_id, db
+    )
+    try:
+        tool_name, args = build_region_tool_args(
+            request.tool,
+            request.start_s,
+            request.end_s,
+            request.strength,
+            request.params,
+            str(source_path),
+            str(output_path),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    result = await agent.execute_tool(tool_name, args)
+    if result.get("status") != "success":
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("error", f"{request.tool} failed"),
+        )
+    return result
+
+
+@router.post("/api/produce/region/preview")
+async def preview_region(
+    request: RegionToolRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Process only the selected region and return a produced file to audition.
+
+    Non-destructive: writes a preview file under produced/ (streamable via
+    ``GET /api/produce/preview``) and creates **no** song version, so a producer
+    can A/B the result against the original before committing (issue #70).
+    """
+    output_path = _produced_dir() / f"{request.song_id}_preview_{int(time.time())}.wav"
+    result = await _run_region_tool(request, output_path, agent, db)
+    return {
+        "status": "success",
+        "tool": request.tool,
+        "candidate_path": str(output_path),
+        "result": result,
+    }
+
+
+@router.post("/api/produce/region/apply")
+async def apply_region(
+    request: RegionToolRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Apply a region tool and save the result as a new candidate version.
+
+    Same processing as preview, but the produced file becomes an unpublished
+    candidate version that enters the existing audition/approve/publish flow —
+    that flow is unchanged; this is only a new entry point into it (issue #70).
+    """
+    output_path = _build_output_path(request.song_id)
+    result = await _run_region_tool(request, output_path, agent, db)
+
+    after = await run_in_threadpool(_measure_audio, str(output_path))
+    metrics = {
+        "steps_applied": [{"step": request.tool}],
+        "region": {"start_s": request.start_s, "end_s": request.end_s},
+        "strength": request.strength,
+        "after": after,
+        "produced_at": time.time(),
+    }
+    version = await save_candidate_version(
+        request.song_id, str(output_path), metrics, db
+    )
+    return {"status": "success", "result": result, "version": version}
+
+
+def _detect_song_beats(path: str) -> list:
+    """Detect beat times (seconds) for a source file, reusing #69's detector.
+
+    Synchronous/CPU-bound (librosa) — callers run it off the event loop.
+    """
+    import librosa
+    from src.production.big_flavor_mcp import _detect_beats
+
+    y, sr = librosa.load(path, sr=22050, mono=True)
+    _tempo, beat_times, _conf = _detect_beats(y, sr)
+    return [round(float(t), 3) for t in beat_times]
+
+
+@router.get("/api/produce/songs/{song_id}/beats")
+async def get_song_beats(
+    song_id: int,
+    source_version_id: Optional[int] = None,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Return beat times for waveform beat markers (issue #70, reuses #69).
+
+    Degrades gracefully: on any detection error returns an empty list rather than
+    failing, so the editor stays usable when beats can't be found.
+    """
+    source_path = await _resolve_clean_source_path(song_id, source_version_id, db)
+    try:
+        beats = await run_in_threadpool(_detect_song_beats, str(source_path))
+    except Exception:
+        beats = []
+    return {"song_id": song_id, "beats": beats}
+
+
+@router.post("/api/produce/stems/{set_id}/apply")
+async def apply_stem_remix(
+    set_id: int,
+    request: StemRenderRequest,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Remix a stem set (per-stem gain/mute) into a new candidate version.
+
+    The stem-mixer's entry point into the versioning flow: downmixes the set with
+    the given adjustments, then saves the result as an unpublished candidate
+    version (same as region-apply). Nothing here touches the stems or originals
+    (issue #70).
+    """
+    stem_set = await db.get_stem_set(set_id)
+    if stem_set is None:
+        raise HTTPException(status_code=404, detail="Stem set not found")
+    if stem_set["status"] != "complete":
+        raise HTTPException(
+            status_code=409, detail="Stem set separation is not complete"
+        )
+
+    stems = await db.list_stems(set_id)
+    if not stems:
+        raise HTTPException(status_code=404, detail="Stem set has no stems")
+
+    output_path = _produced_dir() / f"{stem_set['song_id']}_remix_{int(time.time())}.wav"
+    adjustments = {
+        name: {"gain": adj.gain, "mute": adj.mute}
+        for name, adj in request.adjustments.items()
+    }
+    try:
+        await run_in_threadpool(
+            stem_separation.remix_stems,
+            [{"name": s["name"], "path": s["path"]} for s in stems],
+            str(output_path),
+            adjustments,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    after = await run_in_threadpool(_measure_audio, str(output_path))
+    metrics = {
+        "steps_applied": [{"step": "stem_remix"}],
+        "stem_set_id": set_id,
+        "after": after,
+        "produced_at": time.time(),
+    }
+    version = await save_candidate_version(
+        stem_set["song_id"], str(output_path), metrics, db
+    )
+    return {
+        "song_id": stem_set["song_id"],
+        "stem_set_id": set_id,
+        "candidate_path": str(output_path),
+        "version": version,
     }
