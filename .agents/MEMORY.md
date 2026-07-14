@@ -9,6 +9,25 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-13 — Release `v0.14.0` (release-manager)
+Cut **`v0.14.0`** from `main` (HEAD `223d816`), a **minor** bump from `v0.13.0` — the 11-commit range
+is a run of production-pipeline `feat:` commits across five merged PRs: region time-range + wet/dry
+strength on cleanup tools (#71, issue #65), Demucs stem separation with per-stem remix (#72, #67),
+note-level key-aware pitch-correction auto-tune (#73, #68), trim-to-selection + non-stationary
+(adaptive) noise reduction (#75, #66), and beat-level tempo quantization / `correct_beats` MCP tool
+(#74, #69) — plus their merge commits and the `chore: record v0.13.0` memory commit. Range touches
+only backend/production code (`src/production/`, `src/api/`, `database/`, `backend_api.py`, a stems
+migration, `docker-compose.yml`, `requirements-api.txt`) and tests — no frontend. Published GitHub
+Release with auto-generated notes anchored to `v0.13.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.14.0. Notified linked closed issues
+#65–#69. Sanity gate: backend restart booted clean (health 200; the `PermissionError` on
+`/app/streaming/playlist/radio.m3u` in the radio loop is a pre-existing local volume-mount permission
+issue, not a startup/import error and not in this range — note the prior asyncpg
+`DatatypeMismatchError` did **not** recur this run). Frontend `npm run build` first failed on a stale
+`.next/dev/types/validator.ts` referencing a renamed auth route (`[auth0]` vs the actual
+`[...google]`); since the range changes zero frontend files (last frontend commit `059df70` predates
+v0.13.0), cleared `.next` and rebuilt — **passed**. Proceeded per Step 4.5.
+
 ### 2026-07-13 — Release `v0.13.0` (release-manager)
 Cut **`v0.13.0`** from `main` (HEAD `0a5c9fb`), a **minor** bump from `v0.12.0` — the 12-commit range
 (5 merged feature PRs, #60–#64) is a run of production-pipeline `feat:` commits: preserve stereo
