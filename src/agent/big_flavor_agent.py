@@ -666,6 +666,7 @@ class BigFlavorAgent:
             "match_tempo",
             "create_transition",
             "apply_mastering",
+            "correct_beats",
             "trim_silence",
             "reduce_noise",
             "remove_hum",
@@ -756,99 +757,19 @@ class BigFlavorAgent:
                     result = {"error": f"Unknown RAG tool: {tool_name}"}
                     
             elif tool_name in production_tools:
-                # Route to Production server
+                # Route to the Production MCP server's single dispatcher, which
+                # forwards the full argument set (region bounds, wet/dry strength,
+                # and each tool's specific params) to the tool. Using one dispatch
+                # path — shared with the MCP protocol handler — keeps the agent
+                # from silently dropping the region/strength kwargs the /produce
+                # editor sends (issues #65-#70).
                 if not self.production_server:
                     result = {
                         "error": "Production tools not available. MCP package not installed.",
                         "message": "Audio processing tools require the 'mcp' package. Install it to use these features."
                     }
-                elif tool_name == "analyze_audio":
-                    result = await self.production_server.analyze_audio(
-                        tool_input["file_path"]
-                    )
-                elif tool_name == "analyze_and_recommend_processing":
-                    result = await self.production_server.analyze_and_recommend_processing(
-                        tool_input["file_path"]
-                    )
-                elif tool_name == "auto_clean_recording":
-                    result = await self.production_server.auto_clean_recording(
-                        tool_input["file_path"],
-                        tool_input["output_path"],
-                        tool_input.get("aggressiveness", "moderate"),
-                        tool_input.get("keep_intermediates", False),
-                        tool_input.get("steps_override")
-                    )
-                elif tool_name == "match_tempo":
-                    result = await self.production_server.match_tempo(
-                        tool_input["file_path"],
-                        tool_input["target_bpm"],
-                        tool_input["output_path"]
-                    )
-                elif tool_name == "create_transition":
-                    result = await self.production_server.create_transition(
-                        tool_input["song1_path"],
-                        tool_input["song2_path"],
-                        tool_input.get("transition_duration", 8),
-                        tool_input["output_path"]
-                    )
-                elif tool_name == "apply_mastering":
-                    result = await self.production_server.apply_mastering(
-                        tool_input["file_path"],
-                        tool_input.get("target_loudness", -14.0),
-                        tool_input["output_path"]
-                    )
-                # EDITING TOOLS
-                elif tool_name == "trim_silence":
-                    result = await self.production_server.trim_silence(
-                        tool_input["file_path"],
-                        tool_input.get("threshold_db", -40),
-                        tool_input["output_path"]
-                    )
-                elif tool_name == "reduce_noise":
-                    result = await self.production_server.reduce_noise(
-                        tool_input["file_path"],
-                        tool_input.get("noise_profile_duration", 1.0),
-                        tool_input.get("reduction_strength", 0.7),
-                        tool_input["output_path"],
-                        tool_input.get("highpass_hz")
-                    )
-                elif tool_name == "remove_hum":
-                    result = await self.production_server.remove_hum(
-                        tool_input["file_path"],
-                        tool_input["output_path"],
-                        tool_input.get("fundamental_hz")
-                    )
-                elif tool_name == "correct_pitch":
-                    result = await self.production_server.correct_pitch(
-                        tool_input["file_path"],
-                        tool_input.get("semitones", 0),
-                        tool_input.get("auto_tune", False),
-                        tool_input["output_path"]
-                    )
-                elif tool_name == "normalize_audio":
-                    result = await self.production_server.normalize_audio(
-                        tool_input["file_path"],
-                        tool_input.get("target_level_db", -3),
-                        tool_input.get("apply_compression", True),
-                        tool_input["output_path"]
-                    )
-                elif tool_name == "apply_eq":
-                    result = await self.production_server.apply_eq(
-                        tool_input["file_path"],
-                        tool_input.get("high_pass_freq", 30),
-                        tool_input.get("low_pass_freq"),
-                        tool_input.get("boost_freq"),
-                        tool_input.get("boost_db", 3),
-                        tool_input["output_path"]
-                    )
-                elif tool_name == "remove_artifacts":
-                    result = await self.production_server.remove_artifacts(
-                        tool_input["file_path"],
-                        tool_input.get("sensitivity", 0.5),
-                        tool_input["output_path"]
-                    )
                 else:
-                    result = {"error": f"Unknown production tool: {tool_name}"}
+                    result = await self.production_server.dispatch_tool(tool_name, tool_input)
             else:
                 result = {"error": f"Unknown tool: {tool_name}"}
             

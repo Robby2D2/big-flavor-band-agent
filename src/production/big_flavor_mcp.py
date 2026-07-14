@@ -946,139 +946,151 @@ class BigFlavorMCPServer:
         
         @self.app.call_tool()
         async def call_tool(name: str, arguments: Any) -> list[TextContent]:
-            """Handle tool execution requests."""
-            try:
-                if name == "analyze_audio":
-                    result = await self.analyze_audio(arguments["file_path"])
-                elif name == "analyze_and_recommend_processing":
-                    result = await self.analyze_and_recommend_processing(arguments["file_path"])
-                elif name == "auto_clean_recording":
-                    result = await self.auto_clean_recording(
-                        arguments["file_path"],
-                        arguments["output_path"],
-                        arguments.get("aggressiveness", "moderate"),
-                        arguments.get("keep_intermediates", False)
-                    )
-                elif name == "match_tempo":
-                    result = await self.match_tempo(
-                        arguments["file_path"],
-                        arguments["target_bpm"],
-                        arguments["output_path"]
-                    )
-                elif name == "correct_beats":
-                    result = await self.correct_beats(
-                        arguments["file_path"],
-                        arguments["output_path"],
-                        strength=arguments.get("strength", 0.5),
-                        target_bpm=arguments.get("target_bpm"),
-                        time_map=arguments.get("time_map"),
-                    )
-                elif name == "create_transition":
-                    result = await self.create_transition(
-                        arguments["song1_path"],
-                        arguments["song2_path"],
-                        arguments.get("transition_duration", 8),
-                        arguments["output_path"]
-                    )
-                elif name == "apply_mastering":
-                    result = await self.apply_mastering(
-                        arguments["file_path"],
-                        arguments.get("target_loudness", -14.0),
-                        arguments["output_path"],
-                        start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s")
-                    )
-                elif name == "get_audio_cache_stats":
-                    result = await self.get_audio_cache_stats()
-                # EDITING TOOLS
-                elif name == "trim_silence":
-                    result = await self.trim_silence(
-                        arguments["file_path"],
-                        arguments.get("threshold_db", -40),
-                        arguments["output_path"],
-                        start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s"),
-                        trim_to_selection=arguments.get("trim_to_selection", False),
-                        fade_ms=arguments.get("fade_ms", 10.0)
-                    )
-                elif name == "reduce_noise":
-                    result = await self.reduce_noise(
-                        arguments["file_path"],
-                        arguments.get("noise_profile_duration", 1.0),
-                        arguments.get("reduction_strength", 0.7),
-                        arguments["output_path"],
-                        arguments.get("highpass_hz"),
-                        start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s"),
-                        strength=arguments.get("strength", 1.0),
-                        noise_start_s=arguments.get("noise_start_s"),
-                        noise_end_s=arguments.get("noise_end_s"),
-                        non_stationary=arguments.get("non_stationary", False)
-                    )
-                elif name == "remove_hum":
-                    result = await self.remove_hum(
-                        arguments["file_path"],
-                        arguments["output_path"],
-                        arguments.get("fundamental_hz"),
-                        start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s"),
-                        strength=arguments.get("strength", 1.0)
-                    )
-                elif name == "correct_pitch":
-                    result = await self.correct_pitch(
-                        arguments["file_path"],
-                        arguments.get("semitones", 0),
-                        arguments.get("auto_tune", False),
-                        arguments["output_path"],
-                        correction_strength=arguments.get("correction_strength", 1.0),
-                        key=arguments.get("key"),
-                        chromatic=arguments.get("chromatic", False),
-                        start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s"),
-                    )
-                elif name == "normalize_audio":
-                    result = await self.normalize_audio(
-                        arguments["file_path"],
-                        arguments.get("target_level_db", -3),
-                        arguments.get("apply_compression", True),
-                        arguments["output_path"]
-                    )
-                elif name == "apply_eq":
-                    result = await self.apply_eq(
-                        arguments["file_path"],
-                        arguments.get("high_pass_freq", 30),
-                        arguments.get("low_pass_freq"),
-                        arguments.get("boost_freq"),
-                        arguments.get("boost_db", 3),
-                        arguments["output_path"],
-                        eq_bands=arguments.get("eq_bands"),
-                        start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s"),
-                        strength=arguments.get("strength", 1.0)
-                    )
-                elif name == "remove_artifacts":
-                    result = await self.remove_artifacts(
-                        arguments["file_path"],
-                        arguments.get("sensitivity", 0.5),
-                        arguments["output_path"],
-                        start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s"),
-                        strength=arguments.get("strength", 1.0)
-                    )
-                else:
-                    result = {"error": f"Unknown tool: {name}"}
-                
-                return [TextContent(
-                    type="text",
-                    text=json.dumps(result, indent=2)
-                )]
-            except Exception as e:
-                logger.error(f"Error executing tool {name}: {e}")
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({"error": str(e)})
-                )]
-    
+            """Handle MCP tool execution requests (protocol wrapper)."""
+            result = await self.dispatch_tool(name, arguments)
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2)
+            )]
+
+    async def dispatch_tool(self, name: str, arguments: Any) -> dict:
+        """Route a production-tool call to its handler and return the raw result.
+
+        The single dispatch path for every production tool: it forwards the full
+        argument set each tool accepts — region bounds (``start_s``/``end_s``),
+        wet/dry ``strength``, and per-tool params — so a caller that supplies a
+        region/strength always has it honored. Used both by the MCP protocol
+        handler above and by ``BigFlavorAgent.execute_tool`` (which the region
+        editor's preview/apply endpoints call), so the two can never drift on
+        which kwargs reach a tool (issues #65-#70).
+        """
+        try:
+            if name == "analyze_audio":
+                result = await self.analyze_audio(arguments["file_path"])
+            elif name == "analyze_and_recommend_processing":
+                result = await self.analyze_and_recommend_processing(arguments["file_path"])
+            elif name == "auto_clean_recording":
+                result = await self.auto_clean_recording(
+                    arguments["file_path"],
+                    arguments["output_path"],
+                    arguments.get("aggressiveness", "moderate"),
+                    arguments.get("keep_intermediates", False),
+                    arguments.get("steps_override")
+                )
+            elif name == "match_tempo":
+                result = await self.match_tempo(
+                    arguments["file_path"],
+                    arguments["target_bpm"],
+                    arguments["output_path"]
+                )
+            elif name == "correct_beats":
+                result = await self.correct_beats(
+                    arguments["file_path"],
+                    arguments["output_path"],
+                    strength=arguments.get("strength", 0.5),
+                    target_bpm=arguments.get("target_bpm"),
+                    time_map=arguments.get("time_map"),
+                )
+            elif name == "create_transition":
+                result = await self.create_transition(
+                    arguments["song1_path"],
+                    arguments["song2_path"],
+                    arguments.get("transition_duration", 8),
+                    arguments["output_path"]
+                )
+            elif name == "apply_mastering":
+                result = await self.apply_mastering(
+                    arguments["file_path"],
+                    arguments.get("target_loudness", -14.0),
+                    arguments["output_path"],
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s")
+                )
+            elif name == "get_audio_cache_stats":
+                result = await self.get_audio_cache_stats()
+            # EDITING TOOLS
+            elif name == "trim_silence":
+                result = await self.trim_silence(
+                    arguments["file_path"],
+                    arguments.get("threshold_db", -40),
+                    arguments["output_path"],
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s"),
+                    trim_to_selection=arguments.get("trim_to_selection", False),
+                    fade_ms=arguments.get("fade_ms", 10.0)
+                )
+            elif name == "reduce_noise":
+                result = await self.reduce_noise(
+                    arguments["file_path"],
+                    arguments.get("noise_profile_duration", 1.0),
+                    arguments.get("reduction_strength", 0.7),
+                    arguments["output_path"],
+                    arguments.get("highpass_hz"),
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s"),
+                    strength=arguments.get("strength", 1.0),
+                    noise_start_s=arguments.get("noise_start_s"),
+                    noise_end_s=arguments.get("noise_end_s"),
+                    non_stationary=arguments.get("non_stationary", False)
+                )
+            elif name == "remove_hum":
+                result = await self.remove_hum(
+                    arguments["file_path"],
+                    arguments["output_path"],
+                    arguments.get("fundamental_hz"),
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s"),
+                    strength=arguments.get("strength", 1.0)
+                )
+            elif name == "correct_pitch":
+                result = await self.correct_pitch(
+                    arguments["file_path"],
+                    arguments.get("semitones", 0),
+                    arguments.get("auto_tune", False),
+                    arguments["output_path"],
+                    correction_strength=arguments.get("correction_strength", 1.0),
+                    key=arguments.get("key"),
+                    chromatic=arguments.get("chromatic", False),
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s"),
+                )
+            elif name == "normalize_audio":
+                result = await self.normalize_audio(
+                    arguments["file_path"],
+                    arguments.get("target_level_db", -3),
+                    arguments.get("apply_compression", True),
+                    arguments["output_path"]
+                )
+            elif name == "apply_eq":
+                result = await self.apply_eq(
+                    arguments["file_path"],
+                    arguments.get("high_pass_freq", 30),
+                    arguments.get("low_pass_freq"),
+                    arguments.get("boost_freq"),
+                    arguments.get("boost_db", 3),
+                    arguments["output_path"],
+                    eq_bands=arguments.get("eq_bands"),
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s"),
+                    strength=arguments.get("strength", 1.0)
+                )
+            elif name == "remove_artifacts":
+                result = await self.remove_artifacts(
+                    arguments["file_path"],
+                    arguments.get("sensitivity", 0.5),
+                    arguments["output_path"],
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s"),
+                    strength=arguments.get("strength", 1.0)
+                )
+            else:
+                result = {"error": f"Unknown tool: {name}"}
+
+            return result
+        except Exception as e:
+            logger.error(f"Error executing tool {name}: {e}")
+            return {"error": str(e)}
+
     async def analyze_audio(self, file_path: str) -> dict:
         """
         Analyze an audio file to extract tempo, key, beats, and other features.

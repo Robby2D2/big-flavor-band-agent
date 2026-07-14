@@ -3,6 +3,7 @@
 import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
+import MultitrackEditor from '@/components/produce/MultitrackEditor';
 
 interface CatalogSong {
   id: number;
@@ -495,6 +496,25 @@ export default function ProduceSongPage({
               )}
             </div>
           )}
+        </div>
+
+        {/* Waveform region + stem editor */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-6">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+            Waveform editor
+          </h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            Drag-select a region on the waveform, pick a tool and strength, and
+            Preview the result A/B against the original — Preview never creates a
+            version. Apply saves the result as a new candidate version below. If the
+            song has been separated into stems, each part appears with its own
+            mute / solo / gain.
+          </p>
+          <MultitrackEditor
+            songId={songId}
+            sourceVersionId={sourceVersionId}
+            onApplied={loadVersions}
+          />
         </div>
 
         {/* Manage versions */}
