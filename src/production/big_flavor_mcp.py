@@ -24,9 +24,9 @@ from database import DatabaseManager
 # whether the package is loaded as ``src.production`` or with this directory on
 # sys.path (how the agent loads it).
 try:
-    from .region import apply_to_region, blend_strength, resolve_region
+    from .region import apply_to_region, blend_strength, fade_in_out, resolve_region
 except ImportError:  # pragma: no cover - fallback for flat sys.path loading
-    from region import apply_to_region, blend_strength, resolve_region
+    from region import apply_to_region, blend_strength, fade_in_out, resolve_region
 
 # Import librosa for audio analysis
 try:
@@ -421,11 +421,19 @@ class BigFlavorMCPServer:
                             },
                             "start_s": {
                                 "type": "number",
-                                "description": "Optional start of the time range (seconds) to trim within; omit to trim the whole file's leading/trailing silence"
+                                "description": "Optional start of the time range (seconds). Default mode: trim silence within this span. Trim-to-selection mode: start of the span to keep"
                             },
                             "end_s": {
                                 "type": "number",
-                                "description": "Optional end of the time range (seconds) to trim within; omit to trim through the end"
+                                "description": "Optional end of the time range (seconds). Default mode: trim silence within this span. Trim-to-selection mode: end of the span to keep"
+                            },
+                            "trim_to_selection": {
+                                "type": "boolean",
+                                "description": "When true, keep only the start_s..end_s span (discarding everything outside it) instead of trimming silence; requires start_s and/or end_s (default: false)"
+                            },
+                            "fade_ms": {
+                                "type": "number",
+                                "description": "Fade-in/out length in ms applied at the cut points in trim-to-selection mode, for a smooth edge instead of a click (default: 10)"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -468,6 +476,18 @@ class BigFlavorMCPServer:
                             "strength": {
                                 "type": "number",
                                 "description": "Wet/dry blend 0-1 (default: 1.0 = full effect); 0 leaves the region unchanged, values between blend the denoised signal against the original"
+                            },
+                            "noise_start_s": {
+                                "type": "number",
+                                "description": "Optional start (seconds) of a clean pure-noise patch to sample as the noise profile, instead of the quietest frames of the processed audio"
+                            },
+                            "noise_end_s": {
+                                "type": "number",
+                                "description": "Optional end (seconds) of the noise-profile patch"
+                            },
+                            "non_stationary": {
+                                "type": "boolean",
+                                "description": "When true, use an adaptive time-varying noise estimate that can remove intermittent noise (talking, a door, a thump) a single fixed profile can't (default: false)"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -740,7 +760,9 @@ class BigFlavorMCPServer:
                         arguments.get("threshold_db", -40),
                         arguments["output_path"],
                         start_s=arguments.get("start_s"),
-                        end_s=arguments.get("end_s")
+                        end_s=arguments.get("end_s"),
+                        trim_to_selection=arguments.get("trim_to_selection", False),
+                        fade_ms=arguments.get("fade_ms", 10.0)
                     )
                 elif name == "reduce_noise":
                     result = await self.reduce_noise(
@@ -751,7 +773,10 @@ class BigFlavorMCPServer:
                         arguments.get("highpass_hz"),
                         start_s=arguments.get("start_s"),
                         end_s=arguments.get("end_s"),
-                        strength=arguments.get("strength", 1.0)
+                        strength=arguments.get("strength", 1.0),
+                        noise_start_s=arguments.get("noise_start_s"),
+                        noise_end_s=arguments.get("noise_end_s"),
+                        non_stationary=arguments.get("non_stationary", False)
                     )
                 elif name == "remove_hum":
                     result = await self.remove_hum(
@@ -1638,6 +1663,11 @@ class BigFlavorMCPServer:
                 "file_path": file_path,
                 "duration_seconds": round(float(duration), 2),
                 "sample_rate": int(sr),
+                # Surfaced at the top level (also nested in recommendations.trim)
+                # so a caller can read and nudge the detected music span before
+                # feeding it to trim_silence's trim-to-selection mode (issue #66).
+                "detected_music_start": recommendations["trim"]["detected_music_start"],
+                "detected_music_end": recommendations["trim"]["detected_music_end"],
                 "recommendations": recommendations,
                 "processing_order": [
                     "1. Trim non-musical content" if recommendations["trim"]["recommended"] else None,
@@ -1713,6 +1743,11 @@ class BigFlavorMCPServer:
                 'trim', 'noise_reduction', 'eq', 'normalize', 'master'. A value
                 forces that step on (True) or off (False), overriding the
                 analysis recommendation; unspecified steps follow the analysis.
+                The 'trim' value may instead be a dict
+                ``{"trim_to_selection": True, "start_s": .., "end_s": ..,
+                "fade_ms": ..}`` to keep only a chosen span (with fades at the
+                cut points) instead of the auto-detected music-vs-silence trim
+                (issue #66).
 
         Returns:
             Processing results with steps taken
@@ -1739,6 +1774,10 @@ class BigFlavorMCPServer:
             # below, so flip that flag; normalize / master always run unless
             # turned off.
             overrides = steps_override or {}
+            # A dict 'trim' override carries a trim-to-selection request; a bool
+            # just toggles the step (issue #66).
+            trim_override = overrides.get("trim")
+            trim_selection = trim_override if isinstance(trim_override, dict) else None
             for _step in ("trim", "hum", "noise_reduction", "eq"):
                 if _step in overrides:
                     recommendations[_step]["recommended"] = bool(overrides[_step])
@@ -1769,18 +1808,30 @@ class BigFlavorMCPServer:
                 # Load audio (channel count preserved)
                 y, sr = _load_audio(current_file)
 
-                # Calculate trim points from analysis
-                trim_start_samples = int(recommendations["trim"]["detected_music_start"] * sr)
-                detected_end = recommendations["trim"]["detected_music_end"]
-                trim_end_samples = int(detected_end * sr)
+                if trim_selection and (
+                    trim_selection.get("start_s") is not None
+                    or trim_selection.get("end_s") is not None
+                ):
+                    # Keep only the caller-chosen span, with fades at the cut
+                    # points, instead of the auto-detected music trim (issue #66).
+                    trim_start, trim_end = resolve_region(
+                        y, sr, trim_selection.get("start_s"), trim_selection.get("end_s")
+                    )
+                    y_trimmed = np.array(y[..., trim_start:trim_end], copy=True)
+                    y_trimmed = fade_in_out(y_trimmed, sr, trim_selection.get("fade_ms", 10.0))
+                else:
+                    # Calculate trim points from analysis
+                    trim_start_samples = int(recommendations["trim"]["detected_music_start"] * sr)
+                    detected_end = recommendations["trim"]["detected_music_end"]
+                    trim_end_samples = int(detected_end * sr)
 
-                # Add small buffer
-                buffer_samples = int(0.1 * sr)
-                trim_start = max(0, trim_start_samples - buffer_samples)
-                trim_end = min(y.shape[-1], trim_end_samples + buffer_samples)
+                    # Add small buffer
+                    buffer_samples = int(0.1 * sr)
+                    trim_start = max(0, trim_start_samples - buffer_samples)
+                    trim_end = min(y.shape[-1], trim_end_samples + buffer_samples)
 
-                # Trim
-                y_trimmed = y[..., trim_start:trim_end]
+                    # Trim
+                    y_trimmed = y[..., trim_start:trim_end]
 
                 # Save
                 if keep_intermediates:
@@ -2017,21 +2068,30 @@ class BigFlavorMCPServer:
         threshold_db: float,
         output_path: str,
         start_s: Optional[float] = None,
-        end_s: Optional[float] = None
+        end_s: Optional[float] = None,
+        trim_to_selection: bool = False,
+        fade_ms: float = 10.0
     ) -> dict:
         """
-        Remove silence from beginning and end of audio.
+        Remove silence from beginning and end of audio, or keep only a chosen span.
 
         Args:
             file_path: Path to input audio file
             threshold_db: Silence threshold in dB (default: -40)
             output_path: Path for output file
-            start_s / end_s: Optional time range (seconds) to limit trimming to;
-                when given, only silence within that span is removed and audio
-                outside it is kept intact. Omitting both trims the whole file's
-                leading/trailing silence exactly as before. Trimming has no
-                wet/dry ``strength`` — it removes samples rather than blending
-                (issue #65).
+            start_s / end_s: Optional time range (seconds). In the default
+                silence-trim mode this limits trimming to that span (only
+                silence within it is removed, audio outside it is kept intact);
+                omitting both trims the whole file's leading/trailing silence
+                exactly as before. In trim-to-selection mode it is the span to
+                keep (issue #65/#66). Trimming has no wet/dry ``strength`` — it
+                removes samples rather than blending.
+            trim_to_selection: When True, ignore silence detection and keep only
+                the ``start_s``..``end_s`` span, discarding everything outside
+                it. Requires at least one of ``start_s``/``end_s`` (issue #66).
+            fade_ms: Fade-in/out length in milliseconds applied at the cut points
+                in trim-to-selection mode, so the kept span opens and closes
+                smoothly instead of with a hard edge (default: 10.0).
 
         Returns:
             Operation result with trimming statistics
@@ -2045,26 +2105,44 @@ class BigFlavorMCPServer:
             y, sr = _load_audio(file_path)
             original_duration = y.shape[-1] / sr
 
-            def trim_process(segment: np.ndarray) -> np.ndarray:
-                # Find non-silent intervals on the mono mix so both channels
-                # share the same trim points
-                non_silent = librosa.effects.split(_to_mono(segment), top_db=-threshold_db)
-                if len(non_silent) == 0:
-                    raise ValueError("No non-silent audio found")
-                start_sample = non_silent[0][0]
-                end_sample = non_silent[-1][1]
-                return segment[..., start_sample:end_sample]
+            if trim_to_selection:
+                # Keep only the chosen span, with fades at the cut points.
+                if start_s is None and end_s is None:
+                    return {
+                        "status": "error",
+                        "error": "trim_to_selection requires start_s and/or end_s",
+                        "input_file": file_path
+                    }
+                sel_start, sel_end = resolve_region(y, sr, start_s, end_s)
+                if sel_end <= sel_start:
+                    return {
+                        "status": "error",
+                        "error": "Selected trim region is empty",
+                        "input_file": file_path
+                    }
+                y_trimmed = np.array(y[..., sel_start:sel_end], copy=True)
+                y_trimmed = fade_in_out(y_trimmed, sr, fade_ms)
+            else:
+                def trim_process(segment: np.ndarray) -> np.ndarray:
+                    # Find non-silent intervals on the mono mix so both channels
+                    # share the same trim points
+                    non_silent = librosa.effects.split(_to_mono(segment), top_db=-threshold_db)
+                    if len(non_silent) == 0:
+                        raise ValueError("No non-silent audio found")
+                    start_sample = non_silent[0][0]
+                    end_sample = non_silent[-1][1]
+                    return segment[..., start_sample:end_sample]
 
-            # Trim within the region (or the whole file when no region is
-            # given), keeping any audio outside the region intact.
-            try:
-                y_trimmed, _ = apply_to_region(y, sr, start_s, end_s, trim_process)
-            except ValueError as exc:
-                return {
-                    "status": "error",
-                    "error": str(exc),
-                    "input_file": file_path
-                }
+                # Trim within the region (or the whole file when no region is
+                # given), keeping any audio outside the region intact.
+                try:
+                    y_trimmed, _ = apply_to_region(y, sr, start_s, end_s, trim_process)
+                except ValueError as exc:
+                    return {
+                        "status": "error",
+                        "error": str(exc),
+                        "input_file": file_path
+                    }
 
             trimmed_duration = y_trimmed.shape[-1] / sr
 
@@ -2081,6 +2159,8 @@ class BigFlavorMCPServer:
                 "trimmed_duration_seconds": round(trimmed_duration, 2),
                 "removed_seconds": round(original_duration - trimmed_duration, 2),
                 "threshold_db": threshold_db,
+                "mode": "selection" if trim_to_selection else "silence",
+                "fade_ms": fade_ms if trim_to_selection else None,
                 "region": {"start_s": start_s, "end_s": end_s}
             }
             
@@ -2102,7 +2182,10 @@ class BigFlavorMCPServer:
         subtype: Optional[str] = None,
         start_s: Optional[float] = None,
         end_s: Optional[float] = None,
-        strength: float = 1.0
+        strength: float = 1.0,
+        noise_start_s: Optional[float] = None,
+        noise_end_s: Optional[float] = None,
+        non_stationary: bool = False
     ) -> dict:
         """
         Remove background noise, hum, hiss, and feedback.
@@ -2112,7 +2195,8 @@ class BigFlavorMCPServer:
             file_path: Path to input audio file
             noise_profile_duration: Amount of the quietest audio (in seconds)
                 used to estimate the noise profile (default: 1.0)
-            reduction_strength: Reduction strength 0-1 (default: 0.7)
+            reduction_strength: Reduction strength 0-1 (default: 0.7). In
+                non-stationary mode this maps to noisereduce's ``prop_decrease``.
             output_path: Path for output file
             highpass_hz: Optional high-pass cutoff in Hz for rumble removal.
                 Off by default — rumble control belongs to the EQ step.
@@ -2120,12 +2204,23 @@ class BigFlavorMCPServer:
                 for lossless chain intermediates); None keeps the format default
             start_s / end_s: Optional time range (seconds) to limit noise
                 reduction to; when omitted the whole file is processed exactly
-                as before, and the noise profile is estimated from within the
-                region when one is given (issue #65).
+                as before (issue #65). This is *where* denoising is applied.
             strength: Wet/dry blend 0-1 (default 1.0 = today's full effect);
                 blends the denoised signal against the untouched input within
                 the region so 0 is a no-op (issue #65). Distinct from
                 ``reduction_strength``, which scales the spectral gate itself.
+            noise_start_s / noise_end_s: Optional time range (seconds, absolute
+                in the file) pointing at a clean patch of pure noise to sample as
+                the noise profile, instead of the quietest frames of the audio
+                being processed (issue #66). Lets the caller aim the profile at
+                chatter before a count-in, room tone, etc. Independent of
+                ``start_s``/``end_s`` (which region gets processed).
+            non_stationary: When True, use noisereduce's adaptive, time-varying
+                noise estimate instead of the fixed-profile spectral gate — the
+                mode that can remove *intermittent* noise (talking, a door, a
+                thump) that doesn't match a single profile (issue #66).
+                ``reduction_strength`` drives its ``prop_decrease``; ``strength``
+                still applies the wet/dry blend.
 
         Returns:
             Operation result
@@ -2143,7 +2238,41 @@ class BigFlavorMCPServer:
             hop_length = 512  # librosa.stft default
             channel_stats = []  # (original_noise, reduced_noise) per channel
 
-            def denoise_channel(ch: np.ndarray) -> np.ndarray:
+            # Optional explicit noise-profile clip, sampled from absolute file
+            # coordinates so the caller can point at pure noise anywhere in the
+            # file rather than relying on the quietest frames of the processed
+            # region (issue #66).
+            noise_clip = None
+            if noise_start_s is not None or noise_end_s is not None:
+                ns, ne = resolve_region(y, sr, noise_start_s, noise_end_s)
+                if ne > ns:
+                    noise_clip = y[..., ns:ne]
+
+            def quietest_frame_rms(ch: np.ndarray) -> float:
+                """Mean RMS of the quietest frames — the residual noise metric."""
+                mag = np.abs(librosa.stft(ch))
+                frame_rms = np.sqrt((mag ** 2).mean(axis=0))
+                n = int(round(noise_profile_duration * sr / hop_length))
+                n = max(1, min(n, mag.shape[1]))
+                return float(np.sort(frame_rms)[:n].mean())
+
+            def denoise_channel(ch: np.ndarray, ch_noise: Optional[np.ndarray]) -> np.ndarray:
+                if non_stationary:
+                    # Adaptive, time-varying noise estimate (issue #66). Removes
+                    # intermittent noise a single fixed profile can't.
+                    import noisereduce as nr
+                    before = quietest_frame_rms(ch)
+                    prop = float(np.clip(reduction_strength, 0.0, 1.0))
+                    ch_denoised = nr.reduce_noise(
+                        y=ch, sr=sr, stationary=False, prop_decrease=prop,
+                        y_noise=ch_noise if ch_noise is not None and ch_noise.shape[-1] > 0 else None
+                    ).astype(ch.dtype, copy=False)
+                    if highpass_hz:
+                        sos = signal.butter(4, highpass_hz, 'hp', fs=sr, output='sos')
+                        ch_denoised = signal.sosfilt(sos, ch_denoised)
+                    channel_stats.append((before, quietest_frame_rms(ch_denoised)))
+                    return ch_denoised
+
                 n_samples = ch.shape[-1]
 
                 # Compute STFT
@@ -2151,15 +2280,20 @@ class BigFlavorMCPServer:
                 mag = np.abs(D)
                 phase = np.angle(D)
 
-                # Estimate the noise spectrum from the quietest frames of the
-                # whole channel rather than its opening seconds: in the
-                # auto-clean chain the input is already trimmed to music
-                # start, so "the beginning" is music, not noise (issue #56).
+                # Estimate the noise spectrum. By default use the quietest frames
+                # of the whole channel rather than its opening seconds: in the
+                # auto-clean chain the input is already trimmed to music start,
+                # so "the beginning" is music, not noise (issue #56). When the
+                # caller supplies an explicit noise clip, sample the profile from
+                # that instead (issue #66).
                 frame_rms = np.sqrt((mag ** 2).mean(axis=0))
                 n_noise_frames = int(round(noise_profile_duration * sr / hop_length))
                 n_noise_frames = max(1, min(n_noise_frames, mag.shape[1]))
                 quietest_frames = np.argsort(frame_rms)[:n_noise_frames]
-                noise_mag = mag[:, quietest_frames].mean(axis=1, keepdims=True)
+                if ch_noise is not None and ch_noise.shape[-1] > 0:
+                    noise_mag = np.abs(librosa.stft(ch_noise)).mean(axis=1, keepdims=True)
+                else:
+                    noise_mag = mag[:, quietest_frames].mean(axis=1, keepdims=True)
 
                 # Spectral gating: reduce magnitude where it's close to noise level
                 # Scale noise threshold by reduction strength
@@ -2190,9 +2324,26 @@ class BigFlavorMCPServer:
                 return ch_denoised
 
             # Denoise the region (or the whole file when no region is given, a
-            # byte-identical path) and wet/dry-blend it back per strength.
+            # byte-identical path) and wet/dry-blend it back per strength. The
+            # per-channel loop threads each channel's matching slice of the
+            # explicit noise clip (when one was given) so stereo channels keep
+            # independent profiles.
             def denoise_process(segment: np.ndarray) -> np.ndarray:
-                denoised = _apply_per_channel(segment, denoise_channel)
+                if segment.ndim == 1:
+                    ch_noise = noise_clip if noise_clip is not None else None
+                    denoised = denoise_channel(segment, ch_noise)
+                else:
+                    results = []
+                    for ci in range(segment.shape[0]):
+                        if noise_clip is None:
+                            ch_noise = None
+                        elif noise_clip.ndim > 1:
+                            ch_noise = noise_clip[ci]
+                        else:
+                            ch_noise = noise_clip
+                        results.append(denoise_channel(segment[ci], ch_noise))
+                    min_len = min(r.shape[-1] for r in results)
+                    denoised = np.vstack([r[..., :min_len] for r in results])
                 return blend_strength(segment, denoised, strength)
 
             y_filtered, _ = apply_to_region(y, sr, start_s, end_s, denoise_process)
@@ -2215,6 +2366,8 @@ class BigFlavorMCPServer:
                 "noise_profile_duration": noise_profile_duration,
                 "highpass_hz": highpass_hz,
                 "region": {"start_s": start_s, "end_s": end_s},
+                "noise_profile_region": {"start_s": noise_start_s, "end_s": noise_end_s},
+                "non_stationary": non_stationary,
                 "strength": strength
             }
             

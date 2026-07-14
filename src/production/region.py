@@ -66,6 +66,27 @@ def _fade_ramps(length: int) -> Tuple[np.ndarray, np.ndarray]:
     return fade_in, fade_out
 
 
+def fade_in_out(y: np.ndarray, sr: int, fade_ms: float) -> np.ndarray:
+    """Apply an equal-power fade-in at the start and fade-out at the end of ``y``.
+
+    Used at trim-to-selection cut points so a kept span opens and closes with a
+    smooth ramp instead of a hard edge (a click). Works on mono ``(samples,)``
+    and ``(channels, samples)`` layouts — the ramp broadcasts across channels.
+    ``fade_ms`` is clamped so the two ramps never overlap; ``fade_ms <= 0``
+    returns ``y`` unchanged. The input is not mutated (a copy is returned).
+    """
+    n = _num_samples(y)
+    fade = int(round(fade_ms / 1000.0 * sr))
+    fade = min(fade, n // 2)
+    if fade <= 0:
+        return y
+    out = np.array(y, copy=True)
+    fade_in, fade_out = _fade_ramps(fade)
+    out[..., :fade] = out[..., :fade] * fade_in
+    out[..., -fade:] = out[..., -fade:] * fade_out
+    return out
+
+
 def apply_to_region(
     y: np.ndarray,
     sr: int,

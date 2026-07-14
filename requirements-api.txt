@@ -39,6 +39,11 @@ sentence-transformers>=2.2.0
 # Speech and Audio Processing
 faster-whisper>=0.10.0
 
+# Adaptive / non-stationary noise reduction (issue #66) — time-varying spectral
+# gate that removes intermittent noise (talking, a door, a thump) a single fixed
+# profile can't. MIT-licensed.
+noisereduce>=3.0.0
+
 # Stem separation (issue #67) — Demucs splits a song into vocals/drums/bass/
 # guitar/other. torch/torchaudio (above) are the heavy deps; demucs adds the
 # pretrained models and separation pipeline. MIT-licensed.
