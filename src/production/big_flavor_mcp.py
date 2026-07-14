@@ -234,6 +234,173 @@ def _segment_notes(f0, voiced_flag, min_frames: int = 5):
     return notes
 
 
+# --------------------------------------------------------------- beats (#69)
+#
+# Beat-level tempo correction. Unlike match_tempo (which time-stretches the
+# whole file to a single BPM and can't touch a section that locally rushes or
+# drags), this detects beat times, builds a target grid, and stretches each
+# inter-beat segment independently so a detected beat is nudged `strength` of
+# the way toward its grid position. A single time map is computed per pass and
+# can be re-applied across a set of stems so they stay in sync (#67).
+
+# Reliability guard: a grid needs enough confidently-detected beats. Below this
+# the tool reports the input as un-correctable rather than garbling it.
+MIN_BEATS_FOR_GRID = 4
+# Default per-beat strength/confidence below which we warn the caller that the
+# beat detection is shaky (a performance issue no grid-nudge can fix cleanly).
+LOW_BEAT_CONFIDENCE = 0.2
+
+
+def _detect_beats(mono, sr: int):
+    """Detect beat times (seconds) and a per-beat strength/confidence.
+
+    Confidence is how far the onset-envelope peak at each beat stands above the
+    track's baseline (median) onset energy, squashed to 0-1. It is scale- and
+    loudness-invariant: a clearly-articulated downbeat towers over the baseline
+    (→ near 1), while a beat that ``beat_track`` fabricated from near-silent
+    noise barely exceeds it (→ near 0). That lets the caller tell a real pulse
+    from a grid hallucinated over ambiguous audio.
+
+    Returns (tempo_bpm, beat_times, beat_confidence) where beat_times and
+    beat_confidence are 1-D numpy arrays of equal length.
+    """
+    import numpy as np
+    import librosa
+
+    onset_env = librosa.onset.onset_strength(y=mono, sr=sr)
+    tempo, beat_frames = librosa.beat.beat_track(
+        onset_envelope=onset_env, sr=sr
+    )
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+
+    # Baseline = a high percentile of the onset envelope. On a sparse, clearly
+    # articulated track (clicks/drums) the 90th percentile is still low, so a
+    # beat peak towers over it; on dense noise or a sustained tone the 90th
+    # percentile sits near the peak, so beats barely exceed it. This makes the
+    # ratio a scale-invariant "is this a real pulse?" signal.
+    baseline = float(np.percentile(onset_env, 90)) if len(onset_env) else 0.0
+    if len(beat_frames) and baseline > 0:
+        strengths = onset_env[np.clip(beat_frames, 0, len(onset_env) - 1)]
+        prominence = np.maximum(0.0, strengths / baseline - 1.0)
+        beat_conf = prominence / (prominence + 1.0)
+    elif len(beat_frames) and onset_env.max() > 0:
+        # Baseline is exactly 0 (extremely sparse) but there are real peaks —
+        # any nonzero beat is maximally prominent.
+        strengths = onset_env[np.clip(beat_frames, 0, len(onset_env) - 1)]
+        beat_conf = (strengths > 0).astype(float)
+    else:
+        beat_conf = np.zeros(len(beat_frames))
+
+    tempo_bpm = float(tempo) if np.isscalar(tempo) else float(np.atleast_1d(tempo)[0])
+    return tempo_bpm, np.asarray(beat_times, dtype=float), np.asarray(beat_conf, dtype=float)
+
+
+def _target_grid(beat_times, target_bpm: Optional[float]):
+    """Build the target beat positions for the detected beats.
+
+    * Explicit target_bpm → a rigid isochronous grid at that tempo, anchored to
+      the first detected beat.
+    * Otherwise → a *smoothed* version of the performance's own tempo curve: the
+      inter-beat intervals are moving-average smoothed so a locally rushed/
+      dragged section is pulled back toward the surrounding feel without
+      robotizing intentional tempo changes.
+
+    Returns a numpy array of target times, same length as beat_times.
+    """
+    import numpy as np
+
+    beat_times = np.asarray(beat_times, dtype=float)
+    if len(beat_times) < 2:
+        return beat_times.copy()
+
+    if target_bpm and target_bpm > 0:
+        interval = 60.0 / target_bpm
+        return beat_times[0] + np.arange(len(beat_times)) * interval
+
+    intervals = np.diff(beat_times)
+    # Moving-average smooth the inter-beat intervals (window 3), preserving the
+    # gradual tempo arc while flattening single-beat jitter.
+    smoothed = intervals.copy()
+    for i in range(len(intervals)):
+        lo = max(0, i - 1)
+        hi = min(len(intervals), i + 2)
+        smoothed[i] = intervals[lo:hi].mean()
+    grid = np.empty_like(beat_times)
+    grid[0] = beat_times[0]
+    grid[1:] = beat_times[0] + np.cumsum(smoothed)
+    return grid
+
+
+def _build_time_map(beat_times, grid_times, strength: float):
+    """Compute the source→target time map: each detected beat moved `strength`
+    of the way toward its grid position (0 = untouched, 1 = full quantize).
+
+    Returns (src_times, dst_times) numpy arrays including the 0 and end anchors
+    so a caller can stretch each inter-beat segment to the corrected spacing.
+    """
+    import numpy as np
+
+    beat_times = np.asarray(beat_times, dtype=float)
+    grid_times = np.asarray(grid_times, dtype=float)
+    strength = float(min(1.0, max(0.0, strength)))
+
+    dst = beat_times + (grid_times - beat_times) * strength
+    # Keep the map monotonically increasing so segment stretch ratios stay
+    # positive even if a heavy correction would otherwise reorder two beats.
+    dst = np.maximum.accumulate(dst)
+    return beat_times.copy(), dst
+
+
+def _apply_time_map(mono, sr: int, src_times, dst_times):
+    """Variable-rate time-stretch a signal so its src_times land on dst_times.
+
+    Each inter-beat segment is time-stretched independently with
+    librosa.effects.time_stretch (phase vocoder). The first anchor is time 0 and
+    the audio after the last beat is passed through at unit rate, so total
+    length changes only by the accumulated correction.
+    """
+    import numpy as np
+    import librosa
+
+    src = np.asarray(src_times, dtype=float)
+    dst = np.asarray(dst_times, dtype=float)
+
+    # Anchor the start at 0 so the lead-in is corrected too.
+    src = np.concatenate([[0.0], src])
+    dst = np.concatenate([[0.0], dst])
+
+    pieces = []
+    total = len(mono)
+    for i in range(len(src) - 1):
+        s0 = int(round(src[i] * sr))
+        s1 = int(round(src[i + 1] * sr))
+        s0 = max(0, min(s0, total))
+        s1 = max(0, min(s1, total))
+        if s1 <= s0:
+            continue
+        seg = mono[s0:s1]
+        src_dur = (s1 - s0) / sr
+        dst_dur = dst[i + 1] - dst[i]
+        if dst_dur <= 0 or src_dur <= 0:
+            pieces.append(seg)
+            continue
+        rate = src_dur / dst_dur  # >1 speeds up (shortens), <1 slows down
+        if abs(rate - 1.0) < 1e-3:
+            pieces.append(seg)
+        else:
+            pieces.append(librosa.effects.time_stretch(seg, rate=rate))
+
+    # Tail after the last mapped beat, unchanged.
+    last = int(round(src[-1] * sr))
+    last = max(0, min(last, total))
+    if last < total:
+        pieces.append(mono[last:])
+
+    if not pieces:
+        return mono.copy()
+    return np.concatenate(pieces)
+
+
 class BigFlavorMCPServer:
     """MCP Server for Big Flavor audio production and analysis operations."""
     
@@ -293,6 +460,68 @@ class BigFlavorMCPServer:
                             }
                         },
                         "required": ["file_path", "target_bpm", "output_path"]
+                    }
+                ),
+                Tool(
+                    name="correct_beats",
+                    description=(
+                        "Beat-level tempo correction: nudge detected beats "
+                        "toward a target grid to fix a section that locally "
+                        "rushes or drags, without robotizing the whole "
+                        "performance. Unlike match_tempo (which stretches the "
+                        "entire file to one BPM), this stretches each inter-beat "
+                        "segment independently at an adjustable strength. "
+                        "Detects beat times + a per-beat confidence and returns "
+                        "them, and computes a single time map that can be "
+                        "re-applied across a set of stems to keep them in sync. "
+                        "When beats are too sparse/low-confidence to form a "
+                        "reliable grid it says so instead of over-correcting."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the audio file to correct (full mix, or a supplied drum stem)"
+                            },
+                            "output_path": {
+                                "type": "string",
+                                "description": "Output path for the corrected file"
+                            },
+                            "strength": {
+                                "type": "number",
+                                "description": (
+                                    "How far each beat is moved toward the grid, "
+                                    "0-1 (0 = untouched, 1 = fully quantized, "
+                                    "default: 0.5 — conservative)."
+                                )
+                            },
+                            "target_bpm": {
+                                "type": "number",
+                                "description": (
+                                    "Optional explicit target tempo (rigid grid). "
+                                    "Omit to correct toward a smoothed version of "
+                                    "the performance's own tempo curve."
+                                )
+                            },
+                            "time_map": {
+                                "type": "object",
+                                "description": (
+                                    "Optional pre-computed time map "
+                                    "{src_times: [s], dst_times: [s]} from a "
+                                    "previous correction of another stem in the "
+                                    "same set. When given, that exact map is "
+                                    "applied to this file so all stems stay in "
+                                    "sync (detection/strength/target_bpm are then "
+                                    "ignored)."
+                                ),
+                                "properties": {
+                                    "src_times": {"type": "array", "items": {"type": "number"}},
+                                    "dst_times": {"type": "array", "items": {"type": "number"}}
+                                }
+                            }
+                        },
+                        "required": ["file_path", "output_path"]
                     }
                 ),
                 Tool(
@@ -736,6 +965,14 @@ class BigFlavorMCPServer:
                         arguments["target_bpm"],
                         arguments["output_path"]
                     )
+                elif name == "correct_beats":
+                    result = await self.correct_beats(
+                        arguments["file_path"],
+                        arguments["output_path"],
+                        strength=arguments.get("strength", 0.5),
+                        target_bpm=arguments.get("target_bpm"),
+                        time_map=arguments.get("time_map"),
+                    )
                 elif name == "create_transition":
                     result = await self.create_transition(
                         arguments["song1_path"],
@@ -1053,7 +1290,157 @@ class BigFlavorMCPServer:
                 "error": str(e),
                 "input_file": file_path
             }
-    
+
+    async def correct_beats(
+        self,
+        file_path: str,
+        output_path: str,
+        strength: float = 0.5,
+        target_bpm: Optional[float] = None,
+        time_map: Optional[dict] = None,
+    ) -> dict:
+        """
+        Beat-level tempo correction (issue #69).
+
+        Detects beat times, builds a target grid (a smoothed version of the
+        performance's own tempo curve by default, or a rigid grid at
+        ``target_bpm``), computes a single source→target time map that moves
+        each beat ``strength`` of the way to the grid, and time-stretches each
+        inter-beat segment independently so a locally rushing/dragging section
+        is pulled back without robotizing the whole performance. The whole-file
+        ``match_tempo`` path is unchanged and remains available.
+
+        The computed ``time_map`` is returned so a caller can re-apply the exact
+        same map to every stem in a set (issue #67) and keep them in sync; pass
+        it back in via ``time_map`` to do so (detection/strength/target_bpm are
+        then ignored). When beats are too sparse/low-confidence to form a
+        reliable grid the tool reports that instead of over-correcting — an
+        ensemble disagreeing within a pulse is a performance issue no grid-nudge
+        can fix cleanly.
+
+        Args:
+            file_path: Path to input audio (full mix, or a supplied drum stem)
+            output_path: Path for the corrected output
+            strength: 0-1, how far each beat moves toward the grid (default 0.5)
+            target_bpm: Optional explicit target tempo (rigid grid)
+            time_map: Optional {src_times, dst_times} from a prior correction of
+                another stem in the same set — applied verbatim for stem sync
+
+        Returns:
+            Operation result including detected beats, per-beat confidence, and
+            the time map used.
+        """
+        try:
+            import numpy as np
+
+            strength = float(min(1.0, max(0.0, strength)))
+
+            # Load audio (channel count preserved; detection on the mono mix,
+            # the same time map applied to every channel).
+            y, sr = _load_audio(file_path)
+            mono = _to_mono(y)
+
+            # Shared-map path: apply a caller-supplied map verbatim so all stems
+            # of a set stay locked together.
+            if time_map is not None:
+                src = np.asarray(time_map.get("src_times", []), dtype=float)
+                dst = np.asarray(time_map.get("dst_times", []), dtype=float)
+                if len(src) == 0 or len(src) != len(dst):
+                    return {
+                        "status": "error",
+                        "error": "time_map must have equal-length src_times and dst_times",
+                        "input_file": file_path,
+                    }
+                y_corrected = _apply_per_channel(
+                    y, lambda ch: _apply_time_map(ch, sr, src, dst)
+                )
+                _write_audio(output_path, y_corrected, sr)
+                logger.info(
+                    f"correct_beats: applied shared time map ({len(src)} beats) to {file_path}"
+                )
+                return {
+                    "status": "success",
+                    "mode": "shared_time_map",
+                    "input_file": file_path,
+                    "output_file": output_path,
+                    "beats_in_map": int(len(src)),
+                    "time_map": {"src_times": src.tolist(), "dst_times": dst.tolist()},
+                }
+
+            tempo_bpm, beat_times, beat_conf = _detect_beats(mono, sr)
+
+            # Reliability guard: too few beats to form a grid, or the detected
+            # beats are uniformly weak (ambiguous pulse). Copy through unchanged
+            # and say why rather than garbling the audio.
+            mean_conf = float(np.mean(beat_conf)) if len(beat_conf) else 0.0
+            if len(beat_times) < MIN_BEATS_FOR_GRID or mean_conf < LOW_BEAT_CONFIDENCE:
+                _write_audio(output_path, y, sr)
+                reason = (
+                    f"Only {len(beat_times)} beats detected"
+                    if len(beat_times) < MIN_BEATS_FOR_GRID
+                    else f"Beat detection is low-confidence (mean {mean_conf:.2f})"
+                )
+                logger.info(f"correct_beats: {reason}; copied unchanged")
+                return {
+                    "status": "success",
+                    "mode": "uncorrectable",
+                    "input_file": file_path,
+                    "output_file": output_path,
+                    "reason": (
+                        f"{reason}; no reliable beat grid could be formed. This "
+                        "tool corrects a section drifting against a stable pulse; "
+                        "it cannot fix ensemble members disagreeing within the "
+                        "same beat (a performance issue). Audio copied unchanged."
+                    ),
+                    "detected_bpm": round(tempo_bpm, 1),
+                    "beats": beat_times.tolist(),
+                    "beat_confidence": [round(float(c), 3) for c in beat_conf],
+                }
+
+            grid_times = _target_grid(beat_times, target_bpm)
+            src, dst = _build_time_map(beat_times, grid_times, strength)
+
+            y_corrected = _apply_per_channel(
+                y, lambda ch: _apply_time_map(ch, sr, src, dst)
+            )
+            _write_audio(output_path, y_corrected, sr)
+
+            max_shift_ms = float(np.max(np.abs(dst - src)) * 1000) if len(src) else 0.0
+            logger.info(
+                f"correct_beats: {len(beat_times)} beats, {tempo_bpm:.1f} BPM, "
+                f"strength={strength:.2f}, max shift {max_shift_ms:.0f} ms"
+            )
+
+            return {
+                "status": "success",
+                "mode": "beat_grid",
+                "input_file": file_path,
+                "output_file": output_path,
+                "detected_bpm": round(tempo_bpm, 1),
+                "strength": round(strength, 2),
+                "target": "fixed_bpm" if target_bpm else "smoothed_tempo_curve",
+                "target_bpm": float(target_bpm) if target_bpm else None,
+                "beats_detected": int(len(beat_times)),
+                "beats": beat_times.tolist(),
+                "beat_confidence": [round(float(c), 3) for c in beat_conf],
+                "max_shift_ms": round(max_shift_ms, 1),
+                "time_map": {"src_times": src.tolist(), "dst_times": dst.tolist()},
+                "note": (
+                    "This corrects a section drifting against a stable pulse. It "
+                    "cannot fix ensemble members disagreeing with each other "
+                    "within the same beat (a performance issue) without artifacts; "
+                    "keep strength conservative and preview before committing."
+                ),
+            }
+
+        except Exception as e:
+            logger.error(f"Error correcting beats: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "input_file": file_path,
+            }
+
     async def create_transition(
         self, 
         song1_path: str, 
