@@ -11,6 +11,11 @@ interface WaveformViewProps {
   selectable?: boolean;
   region?: Region | null;
   onRegionChange?: (region: Region | null) => void;
+  /**
+   * The detected "keep" span (e.g. analysis's detected_music_start/end).
+   * The area outside it is shaded red to show what trimming would remove.
+   */
+  trimRegion?: Region | null;
   /** Beat times (seconds) drawn as faint vertical markers. */
   beats?: number[];
   /** Current playback position (seconds), drawn as a moving line. */
@@ -32,6 +37,7 @@ export default function WaveformView({
   selectable = false,
   region = null,
   onRegionChange,
+  trimRegion = null,
   beats,
   playhead = null,
   waveColor = DEFAULT_WAVE,
@@ -69,6 +75,20 @@ export default function WaveformView({
     ctx.clearRect(0, 0, width, height);
 
     const mid = height / 2;
+
+    // Trim-away zones (drawn under everything else): shade the parts of the
+    // clip outside the detected "keep" span in red, with a boundary marker
+    // at each cut point.
+    if (trimRegion && duration > 0) {
+      const xStart = (trimRegion.start / duration) * width;
+      const xEnd = (trimRegion.end / duration) * width;
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.16)';
+      if (xStart > 0) ctx.fillRect(0, 0, xStart, height);
+      if (xEnd < width) ctx.fillRect(xEnd, 0, width - xEnd, height);
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+      if (xStart > 0) ctx.fillRect(Math.max(0, xStart - 1.5), 0, 1.5, height);
+      if (xEnd < width) ctx.fillRect(xEnd, 0, 1.5, height);
+    }
 
     // Region highlight (drawn under the waveform).
     if (region && duration > 0) {
@@ -109,7 +129,7 @@ export default function WaveformView({
       ctx.fillStyle = '#ef4444';
       ctx.fillRect(x, 0, 1.5, height);
     }
-  }, [peaks, width, height, region, duration, beats, playhead, waveColor]);
+  }, [peaks, width, height, region, trimRegion, duration, beats, playhead, waveColor]);
 
   const xToTime = useCallback(
     (clientX: number): number => {

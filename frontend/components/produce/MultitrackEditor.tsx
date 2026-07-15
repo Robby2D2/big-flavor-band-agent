@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import WaveformView from './WaveformView';
 import StemMixer from './StemMixer';
+import { Meter, BalanceBar, MeterTone } from './IssueMeter';
 import { decodeAudio, formatTime, Region } from './audioEngine';
 
 interface VersionOption {
@@ -108,6 +109,89 @@ function stepsFromAnalysis(result: any): Record<string, boolean> {
     normalize: recs.normalization?.recommended ?? true,
     master: recs.mastering?.recommended ?? true,
   };
+}
+
+function clamp01(x: number): number {
+  return Math.min(1, Math.max(0, x));
+}
+
+// Scales for each meter's track. These mirror the thresholds the backend
+// uses to flag a recommendation (analyze_and_recommend_processing), so the
+// meter fill and its color band line up with when a step actually fires.
+function noiseMeterProps(recs: any) {
+  const db = recs?.noise_reduction?.noise_level_db;
+  if (db == null) return null;
+  const min = -60;
+  const max = -20;
+  const tone: MeterTone = db > -40 ? 'critical' : db > -50 ? 'warning' : 'ok';
+  return { fraction: clamp01((db - min) / (max - min)), tone, valueLabel: `${db.toFixed(1)} dB` };
+}
+
+function normalizationMeterProps(recs: any) {
+  const peak = recs?.normalization?.current_peak_db;
+  const target = recs?.normalization?.target_peak_db ?? -3;
+  if (peak == null) return null;
+  const min = -24;
+  const max = 0;
+  const tone: MeterTone = peak > -1 ? 'critical' : peak < -6 ? 'warning' : 'ok';
+  return {
+    fraction: clamp01((peak - min) / (max - min)),
+    target: clamp01((target - min) / (max - min)),
+    tone,
+    valueLabel: `${peak.toFixed(1)} dB (target ${target.toFixed(0)})`,
+  };
+}
+
+function masteringMeterProps(recs: any) {
+  const lufs = recs?.mastering?.current_lufs_measured;
+  const target = recs?.mastering?.target_lufs ?? -14;
+  if (lufs == null) return null;
+  const min = -32;
+  const max = -8;
+  const tone: MeterTone =
+    lufs > -10 ? 'critical' : Math.abs(lufs - target) <= 2 ? 'ok' : 'warning';
+  return {
+    fraction: clamp01((lufs - min) / (max - min)),
+    target: clamp01((target - min) / (max - min)),
+    tone,
+    valueLabel: `${lufs.toFixed(1)} LUFS (target ${target.toFixed(0)})`,
+  };
+}
+
+// Renders the small visual for a "Detected issues" row, matched by the
+// step's processing_order text. Trim has no meter here — it's drawn as the
+// red zones directly on the waveform instead.
+function meterForIssueRow(text: string, recs: any) {
+  if (text.includes('Reduce noise')) {
+    const m = noiseMeterProps(recs);
+    return m ? <Meter valueLabel={m.valueLabel} fraction={m.fraction} tone={m.tone} /> : null;
+  }
+  if (text.includes('Apply EQ corrections')) {
+    const fb = recs?.eq?.frequency_balance;
+    return fb ? (
+      <BalanceBar bass={fb.bass_percent} mid={fb.mid_percent} treble={fb.treble_percent} />
+    ) : null;
+  }
+  if (text.includes('Normalize with compression')) {
+    const m = normalizationMeterProps(recs);
+    return m ? (
+      <Meter valueLabel={m.valueLabel} fraction={m.fraction} target={m.target} tone={m.tone} />
+    ) : null;
+  }
+  if (text.includes('Apply mastering')) {
+    const m = masteringMeterProps(recs);
+    return m ? (
+      <Meter valueLabel={m.valueLabel} fraction={m.fraction} target={m.target} tone={m.tone} />
+    ) : null;
+  }
+  if (text.includes('Trim non-musical content')) {
+    return (
+      <span className="text-xs text-gray-500 dark:text-gray-400">
+        Shown as the red zones on the waveform above.
+      </span>
+    );
+  }
+  return null;
 }
 
 /**
@@ -519,17 +603,25 @@ export default function MultitrackEditor({
             buffer={buffer}
             duration={duration}
             selectable={selectionMode === 'region'}
-            region={
-              selectionMode === 'whole'
-                ? duration > 0
-                  ? { start: 0, end: duration }
-                  : null
-                : region
-            }
+            region={selectionMode === 'region' ? region : null}
             onRegionChange={selectionMode === 'region' ? setRegion : undefined}
+            trimRegion={
+              selectionMode === 'whole' && analysisOk
+                ? {
+                    start: analysis.recommendations.trim.detected_music_start,
+                    end: analysis.recommendations.trim.detected_music_end,
+                  }
+                : null
+            }
             beats={beats}
             playhead={playhead}
           />
+
+          {selectionMode === 'whole' && analysisOk && analysis.recommendations.trim.recommended && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Red zones show the non-musical content Trim would remove.
+            </p>
+          )}
 
           {selectionMode === 'region' && (
             <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-gray-600 dark:text-gray-400">
@@ -599,11 +691,14 @@ export default function MultitrackEditor({
                       <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">
                         {analysis.summary}
                       </p>
-                      <ul className="text-sm text-gray-600 dark:text-gray-400 list-disc list-inside space-y-1">
+                      <ul className="text-sm text-gray-600 dark:text-gray-400 list-disc list-inside space-y-3">
                         {(analysis.processing_order || [])
                           .filter((s: string | null) => s)
                           .map((s: string) => (
-                            <li key={s}>{s}</li>
+                            <li key={s}>
+                              {s}
+                              {meterForIssueRow(s, analysis.recommendations)}
+                            </li>
                           ))}
                       </ul>
                     </>
