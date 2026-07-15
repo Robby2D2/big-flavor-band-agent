@@ -9,6 +9,24 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-14 — Release `v0.15.0` (release-manager)
+Cut **`v0.15.0`** from `main` (HEAD `8d59ce5`), a **minor** bump from `v0.14.0` — the 4-commit range
+is a single merged PR (#76, closing issue #70): a `feat:` commit (`5c20f7c`, add a multitrack
+producer UI with region preview and stem mixer — new `MultitrackEditor`/`StemMixer`/`WaveformView`
+frontend components + `region`/`stems`/`beats` API routes under `frontend/app/api/produce/`, plus
+backend `src/api/region_tools.py` and `src/api/routers/produce.py`) and a same-day `fix:`
+(`8528dfc`, route region tools through one dispatch path that honors kwargs — refactored
+`src/production/big_flavor_mcp.py` and `src/agent/big_flavor_agent.py` tool dispatch, +282
+lines of new dispatch tests), plus the v0.14.0 memory chore. Published GitHub Release with
+auto-generated notes anchored to `v0.14.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.15.0. Notified linked closed issue
+#70. Sanity gate: backend restart came up **healthy** after model warm-up (CLAP model re-fetches
+from Hugging Face on cold start — expected, not an error); the only log error was the same
+pre-existing `PermissionError` on `/app/streaming/playlist/radio.m3u` in the radio loop noted since
+v0.14.0 (local volume-mount permission issue, unrelated to this range). Frontend `npm run build`
+**passed**, including the new `/produce/[songId]` region/stems/beats API routes. Proceeded per
+Step 4.5.
+
 ### 2026-07-13 — Release `v0.14.0` (release-manager)
 Cut **`v0.14.0`** from `main` (HEAD `223d816`), a **minor** bump from `v0.13.0` — the 11-commit range
 is a run of production-pipeline `feat:` commits across five merged PRs: region time-range + wet/dry
