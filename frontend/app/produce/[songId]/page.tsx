@@ -10,8 +10,6 @@ interface CatalogSong {
   title: string;
 }
 
-type Intensity = 'gentle' | 'moderate' | 'aggressive';
-
 interface SongVersion {
   id: number;
   name: string;
@@ -22,52 +20,6 @@ interface SongVersion {
   duration_seconds: number | null;
   file_size_bytes: number | null;
   created_at: string | null;
-}
-
-// The cleanup steps the editor can toggle, in processing order. Keys match the
-// backend steps_override map (trim / noise_reduction / eq / normalize / master).
-const STEPS: { key: string; label: string; help: string }[] = [
-  {
-    key: 'trim',
-    label: 'Trim non-musical content',
-    help: 'Cuts the silence, noise, or talking detected before the music starts and after it ends, so the track begins and finishes on the music.',
-  },
-  {
-    key: 'noise_reduction',
-    label: 'Reduce noise',
-    help: 'Removes steady background noise such as hiss, hum, or room tone. How hard it is applied depends on the Intensity setting.',
-  },
-  {
-    key: 'eq',
-    label: 'Apply EQ corrections',
-    help: 'Balances the frequencies: filters out low rumble, tames a boomy or muddy low end, and adds clarity (or softens harsh highs) based on the analysis.',
-  },
-  {
-    key: 'normalize',
-    label: 'Normalize',
-    help: 'Raises the track to a consistent volume and evens out the loud and quiet parts with light compression. Intensity sets how strong that compression is.',
-  },
-  {
-    key: 'master',
-    label: 'Master',
-    help: 'A final polish that brings the track up to a standard, cohesive loudness so it sits well alongside other songs.',
-  },
-];
-
-const INTENSITY_HELP =
-  'How strongly the enabled steps are applied. Gentle is a light touch (less noise reduction, EQ, and compression), Moderate is the balanced default, and Aggressive pushes each effect harder for noisier or more uneven recordings.';
-
-function InfoTip({ text, label }: { text: string; label: string }) {
-  return (
-    <span
-      title={text}
-      aria-label={`${label}: ${text}`}
-      tabIndex={0}
-      className="inline-flex items-center justify-center h-4 w-4 rounded-full border border-gray-400 dark:border-gray-500 text-[10px] font-semibold leading-none text-gray-500 dark:text-gray-400 cursor-help select-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-    >
-      i
-    </span>
-  );
 }
 
 export default function ProduceSongPage({
@@ -86,16 +38,6 @@ export default function ProduceSongPage({
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [versionBusyId, setVersionBusyId] = useState<number | null>(null);
-
-  // Version-level analyze + clean. A clean starts from `sourceVersionId` and
-  // produces a NEW version — the source version is never overwritten.
-  const [sourceVersionId, setSourceVersionId] = useState<number | null>(null);
-  const [analysis, setAnalysis] = useState<any>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [intensity, setIntensity] = useState<Intensity>('moderate');
-  const [stepEnabled, setStepEnabled] = useState<Record<string, boolean>>({});
-  const [cleanResult, setCleanResult] = useState<any>(null);
-  const [cleaning, setCleaning] = useState(false);
 
   useEffect(() => {
     if (Number.isNaN(songId)) {
@@ -139,88 +81,12 @@ export default function ProduceSongPage({
       }
       const list: SongVersion[] = data.versions || [];
       setVersions(list);
-      // Default the clean source to the published version, else the first one.
-      setSourceVersionId((prev) => {
-        if (prev != null && list.some((v) => v.id === prev)) return prev;
-        const published = list.find((v) => v.is_published);
-        return published?.id ?? list[0]?.id ?? null;
-      });
     } catch (err: any) {
       setVersionsError(err.message);
       setVersions([]);
     } finally {
       setVersionsLoading(false);
     }
-  };
-
-  const seedStepsFromAnalysis = (result: any) => {
-    const recs = result?.recommendations;
-    if (!recs) return;
-    setStepEnabled({
-      trim: !!recs.trim?.recommended,
-      noise_reduction: !!recs.noise_reduction?.recommended,
-      eq: !!recs.eq?.recommended,
-      normalize: recs.normalization?.recommended ?? true,
-      master: recs.mastering?.recommended ?? true,
-    });
-  };
-
-  const handleAnalyze = async () => {
-    if (sourceVersionId == null) return;
-    setAnalyzing(true);
-    setAnalysis(null);
-    setCleanResult(null);
-    try {
-      const response = await fetch('/api/produce/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ song_id: songId, source_version_id: sourceVersionId }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Analysis failed');
-      }
-      setAnalysis(data.result);
-      seedStepsFromAnalysis(data.result);
-    } catch (err: any) {
-      setAnalysis({ status: 'error', error: err.message });
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const handleClean = async () => {
-    if (sourceVersionId == null) return;
-    setCleaning(true);
-    setCleanResult(null);
-    try {
-      const response = await fetch('/api/produce/auto-clean', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          song_id: songId,
-          aggressiveness: intensity,
-          steps_override: stepEnabled,
-          source_version_id: sourceVersionId,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Clean failed');
-      }
-      setCleanResult(data.result);
-      if (data.result?.status === 'success') {
-        loadVersions();
-      }
-    } catch (err: any) {
-      setCleanResult({ status: 'error', error: err.message });
-    } finally {
-      setCleaning(false);
-    }
-  };
-
-  const toggleStep = (key: string) => {
-    setStepEnabled((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const handleSetDefault = async (versionId: number) => {
@@ -339,8 +205,6 @@ export default function ProduceSongPage({
     );
   }
 
-  const analysisOk = analysis && analysis.status === 'success';
-
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       <Header title="Produce" subtitle={song?.title ?? 'Song detail'} />
@@ -357,162 +221,23 @@ export default function ProduceSongPage({
           {song?.title}
         </h1>
 
-        {/* Analyze + clean (version-level) */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-            Analyze and clean a version
-          </h2>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-            Pick a starting version, then analyze and clean it. Cleaning produces a
-            new version — the version you start from is never overwritten, so you can
-            re-clean an already-cleaned version with different options.
-          </p>
-
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Starting version
-            </label>
-            <select
-              value={sourceVersionId ?? ''}
-              onChange={(e) => {
-                setSourceVersionId(e.target.value ? Number(e.target.value) : null);
-                setAnalysis(null);
-                setCleanResult(null);
-              }}
-              disabled={versions.length === 0}
-              className="w-full max-w-md px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
-            >
-              {versions.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name}
-                  {v.is_published ? ' (default)' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={handleAnalyze}
-            disabled={sourceVersionId == null || analyzing}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-          >
-            {analyzing ? 'Analyzing...' : 'Analyze'}
-          </button>
-
-          {analysis && (
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-                Detected issues
-              </h3>
-              {analysis.status === 'error' ? (
-                <div className="p-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg">
-                  {analysis.error}
-                </div>
-              ) : (
-                <>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">
-                    {analysis.summary}
-                  </p>
-                  <ul className="text-sm text-gray-600 dark:text-gray-400 list-disc list-inside space-y-1">
-                    {(analysis.processing_order || [])
-                      .filter((s: string | null) => s)
-                      .map((s: string) => (
-                        <li key={s}>{s}</li>
-                      ))}
-                  </ul>
-                </>
-              )}
-            </div>
-          )}
-
-          {analysisOk && (
-            <div className="mt-6 border-t border-gray-200 dark:border-gray-700 pt-6">
-              <div className="mb-4">
-                <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Intensity
-                  <InfoTip text={INTENSITY_HELP} label="Intensity" />
-                </label>
-                <select
-                  value={intensity}
-                  onChange={(e) => setIntensity(e.target.value as Intensity)}
-                  className="w-full max-w-md px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
-                >
-                  <option value="gentle">Gentle</option>
-                  <option value="moderate">Moderate</option>
-                  <option value="aggressive">Aggressive</option>
-                </select>
-              </div>
-
-              <div className="mb-4">
-                <p className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Steps
-                </p>
-                <div className="space-y-2">
-                  {STEPS.map((step) => (
-                    <label
-                      key={step.key}
-                      className="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={!!stepEnabled[step.key]}
-                        onChange={() => toggleStep(step.key)}
-                        className="h-4 w-4"
-                      />
-                      {step.label}
-                      <InfoTip text={step.help} label={step.label} />
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <button
-                onClick={handleClean}
-                disabled={cleaning}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-              >
-                {cleaning ? 'Cleaning...' : 'Clean to new version'}
-              </button>
-            </div>
-          )}
-
-          {cleanResult && (
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-                Result
-              </h3>
-              {cleanResult.status === 'error' ? (
-                <div className="p-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg">
-                  <p className="font-semibold">Failed</p>
-                  <p className="mt-1">{cleanResult.error}</p>
-                </div>
-              ) : (
-                <div className="p-4 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200 rounded-lg">
-                  <p className="font-semibold">
-                    Success — {cleanResult.total_steps} step(s) applied. Saved as a new
-                    version below.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Waveform region + stem editor */}
+        {/* Audio processing (unified whole-song + region editor, issue #77) */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-6">
           <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-            Waveform editor
+            Audio processing
           </h2>
           <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-            Drag-select a region on the waveform, pick a tool and strength, and
-            Preview the result A/B against the original — Preview never creates a
-            version. Apply saves the result as a new candidate version below. If the
-            song has been separated into stems, each part appears with its own
-            mute / solo / gain.
+            Pick a starting version, then either clean the whole song
+            (analyze → recommended steps/intensity → clean) or drag-select a
+            region on the waveform and run a tool with Preview/Apply.
+            Cleaning/Applying always produces a new version below — the
+            version you start from is never overwritten. If the song has been
+            separated into stems, each part appears with its own mute / solo
+            / gain.
           </p>
           <MultitrackEditor
             songId={songId}
-            sourceVersionId={sourceVersionId}
+            versions={versions}
             onApplied={loadVersions}
           />
         </div>
