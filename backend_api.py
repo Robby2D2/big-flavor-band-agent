@@ -44,6 +44,7 @@ from src.api.radio_service import (  # noqa: F401
     update_radio_position,
     advance_to_next_song,
     auto_populate_queue,
+    ensure_playback_started,
     register_listener,
 )
 from src.api.dependencies import (  # noqa: F401

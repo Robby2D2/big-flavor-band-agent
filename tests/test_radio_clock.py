@@ -108,6 +108,44 @@ async def test_auto_populate_fills_queue_when_low(monkeypatch):
     assert [s["id"] for s in state["queue"]] == [10, 11, 12]
 
 
+def test_ensure_playback_started_promotes_next_song_when_idle():
+    """Continuous broadcast (issue #79): a filled queue with nothing playing must
+    auto-start so radio_state mirrors the live stream instead of sitting empty."""
+    state = _state(current_song=None, queue=[_song(1), _song(2)], is_playing=False)
+
+    started = backend_api.ensure_playback_started(state)
+
+    assert started is True
+    assert state["current_song"]["id"] == 1
+    assert state["is_playing"] is True
+    assert [s["id"] for s in state["queue"]] == [2]
+
+
+def test_ensure_playback_started_does_not_resume_explicit_pause():
+    """An explicit editor pause keeps current_song set with is_playing False; the
+    auto-start must not resume it (guard is current_song is None)."""
+    state = _state(current_song=_song(1, duration=180), queue=[_song(2)],
+                   is_playing=False, position=42)
+
+    started = backend_api.ensure_playback_started(state)
+
+    assert started is False
+    assert state["is_playing"] is False
+    assert state["current_song"]["id"] == 1
+    assert state["position"] == 42  # untouched
+
+
+def test_ensure_playback_started_noop_when_queue_empty():
+    """Nothing to play and nothing queued -> stay idle (genuine empty state)."""
+    state = _state(current_song=None, queue=[], is_playing=False)
+
+    started = backend_api.ensure_playback_started(state)
+
+    assert started is False
+    assert state["current_song"] is None
+    assert state["is_playing"] is False
+
+
 @pytest.mark.asyncio
 async def test_auto_populate_skips_when_queue_full(monkeypatch):
     called = False

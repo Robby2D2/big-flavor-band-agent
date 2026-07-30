@@ -132,6 +132,12 @@ export default function RadioPage() {
 
   const isEditor = userRole === 'editor' || userRole === 'admin';
 
+  // The radio is an always-on broadcast: treat it as LIVE whenever the backend
+  // reports playback OR the listener is actively tuned in (hearing audio). This
+  // prevents the status pill from reading PAUSED while a stream is audibly
+  // playing (issue #79).
+  const isLive = Boolean(radioState?.is_playing) || isListening;
+
   const toggleListening = () => {
     if (!audioRef.current) return;
 
@@ -190,9 +196,9 @@ export default function RadioPage() {
               Now Playing
             </h2>
             <div className="flex items-center gap-2">
-              <div className={`w-3 h-3 rounded-full ${radioState?.is_playing ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+              <div className={`w-3 h-3 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
               <span className="text-sm text-gray-600 dark:text-gray-400">
-                {radioState?.is_playing ? 'LIVE' : 'PAUSED'}
+                {isLive ? 'LIVE' : 'PAUSED'}
               </span>
             </div>
           </div>
@@ -224,6 +230,16 @@ export default function RadioPage() {
                   }}
                 />
               </div>
+            </div>
+          ) : isLive ? (
+            <div>
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+                Fallback music
+              </h3>
+              <p className="text-gray-600 dark:text-gray-400 mb-4">
+                Streaming fallback music — no catalog song is queued right now.
+                {isEditor && ' Add some songs to take over the airwaves!'}
+              </p>
             </div>
           ) : (
             <p className="text-gray-600 dark:text-gray-400 mb-4">
