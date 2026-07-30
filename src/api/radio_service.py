@@ -203,6 +203,25 @@ def advance_to_next_song(state: Dict[str, Any]):
         write_playlist_file(state)
 
 
+def ensure_playback_started(state: Dict[str, Any]) -> bool:
+    """Start the always-on broadcast when content is waiting but nothing plays.
+
+    The radio is a continuous broadcast owned by ``radio_background_loop`` (issue
+    #5). If the queue has songs but no song is current (right after startup, or
+    after the queue drained and was refilled), promote the next song so
+    ``radio_state`` reflects the live stream instead of sitting at the empty,
+    "PAUSED" default while Liquidsoap plays fallback music (issue #79).
+
+    An explicit editor pause keeps ``current_song`` set with ``is_playing`` False,
+    so the ``current_song is None`` guard here never resumes a deliberately paused
+    broadcast. Returns True if playback was started (state was mutated).
+    """
+    if state["current_song"] is None and len(state["queue"]) > 0:
+        advance_to_next_song(state)
+        return True
+    return False
+
+
 async def auto_populate_queue(state: Dict[str, Any]):
     """Auto-populate queue with songs if it's running low (mutates state in place)."""
     if len(state["queue"]) < 5:
@@ -251,11 +270,12 @@ async def radio_background_loop():
     """Own the radio playback clock and queue top-up, independent of requests.
 
     Advances the playback position (rolling to the next song when one finishes)
-    every tick, and refills the queue periodically. This is the single driver of
-    playback time and top-up, so the stream keeps advancing and never runs dry
-    whether or not any client is polling GET /api/radio/state. State lives in the
-    process-external RadioStateStore (issue #2), so each tick loads, mutates, and
-    saves it back.
+    every tick, refills the queue periodically, and starts the broadcast when the
+    queue has content but nothing is currently playing (issue #79) — so the radio
+    is genuinely always-on and radio_state mirrors the live stream regardless of
+    whether any listener happens to be polling. This is the single driver of
+    playback time, top-up, and auto-start. State lives in the process-external
+    RadioStateStore (issue #2), so each tick loads, mutates, and saves it back.
     """
     logger.info("Radio background loop started")
     tick = 0
@@ -269,6 +289,7 @@ async def radio_background_loop():
                 update_radio_position(state)
                 if tick % RADIO_TOPUP_EVERY_TICKS == 0:
                     await auto_populate_queue(state)
+                ensure_playback_started(state)
                 await store.save_state(state)
             except Exception:
                 logger.exception("Radio background loop tick failed")
