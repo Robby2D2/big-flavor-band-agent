@@ -9,6 +9,17 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-30 — Release `v0.16.1` (release-manager)
+Cut **`v0.16.1`** from `main` (HEAD `adefdb8`), a **patch** bump from `v0.16.0` — the 3-commit range
+has no new feature: the only product change is a `fix:` (`8f62529`, keep radio Now Playing/Up Next in
+sync with the live stream) merged via PR #80, plus its merge commit and the v0.16.0 memory chore
+(`ed4698a`). Published GitHub Release with auto-generated notes anchored to `v0.16.0`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.16.1. Notified linked closed issue
+#79. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check
+skipped; frontend `npm run build` **passed** and built the radio routes (`/radio`, `/api/radio/*`)
+this fix touches. Proceeded per Step 4.5. (Note: a stray untracked `err.txt` sat at repo root — not
+tracked human work, left untouched.)
+
 ### 2026-07-30 — Release `v0.16.0` (release-manager)
 Cut **`v0.16.0`** from `main` (HEAD `d99b4e0`), a **minor** bump from `v0.15.0` — the 4-commit range
 includes a `feat:` commit (`8c6c128`, unify analyze/clean and the waveform editor into one `/produce`
