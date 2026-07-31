@@ -45,22 +45,24 @@ Use for: **Modifying** audio, **analyzing** files, **creating** new versions
 
 ## Decision Tree
 
-```
-User Query
-    │
-    ├── Wants to FIND/SEARCH music?
-    │   └── Use RAG Server
-    │       ├── Has audio file? → search_by_audio_file
-    │       ├── Has text description? → search_by_text_description
-    │       ├── Knows BPM range? → search_by_tempo_range
-    │       └── Multiple criteria? → search_hybrid
-    │
-    └── Wants to MODIFY/ANALYZE audio?
-        └── Use MCP Server
-            ├── Extract info? → analyze_audio
-            ├── Change tempo? → match_tempo
-            ├── DJ mixing? → create_transition
-            └── Mastering? → apply_mastering
+```mermaid
+flowchart TD
+    query["User Query"]
+    rag["Use RAG Server"]
+    mcp["Use MCP Server"]
+
+    query -->|"Wants to FIND/SEARCH music?"| rag
+    query -->|"Wants to MODIFY/ANALYZE audio?"| mcp
+
+    rag -->|"Has audio file?"| a1["search_by_audio_file"]
+    rag -->|"Has text description?"| a2["search_by_text_description"]
+    rag -->|"Knows BPM range?"| a3["search_by_tempo_range"]
+    rag -->|"Multiple criteria?"| a4["search_hybrid"]
+
+    mcp -->|"Extract info?"| b1["analyze_audio"]
+    mcp -->|"Change tempo?"| b2["match_tempo"]
+    mcp -->|"DJ mixing?"| b3["create_transition"]
+    mcp -->|"Mastering?"| b4["apply_mastering"]
 ```
 
 ---
@@ -119,29 +121,16 @@ User: "Master the final mix"
 
 ## Architecture Flow
 
-```
-┌──────────────────────────────────────────────────┐
-│              User Query                          │
-│    "Find calm music at 90 BPM for sleeping"     │
-└────────────────┬─────────────────────────────────┘
-                 │
-                 ▼
-┌──────────────────────────────────────────────────┐
-│           Claude AI Agent                        │
-│     Interprets intent & routes to server        │
-└────────────┬─────────────────┬───────────────────┘
-             │                 │
-    "Find" = RAG      "Change" = Production
-             │                 │
-             ▼                 ▼
-┌─────────────────────┐  ┌──────────────────────┐
-│   RAG Server        │  │  Production Server   │
-│                     │  │                      │
-│ • search_by_audio   │  │ • analyze_audio      │
-│ • search_by_text    │  │ • match_tempo        │
-│ • search_by_tempo   │  │ • create_transition  │
-│ • search_hybrid     │  │ • apply_mastering    │
-└─────────────────────┘  └──────────────────────┘
+```mermaid
+flowchart TD
+    query["User Query<br/>&quot;Find calm music at 90 BPM for sleeping&quot;"]
+    agent["Claude AI Agent<br/>Interprets intent &amp; routes to server"]
+    rag["RAG Server<br/>• search_by_audio<br/>• search_by_text<br/>• search_by_tempo<br/>• search_hybrid"]
+    prod["Production Server<br/>• analyze_audio<br/>• match_tempo<br/>• create_transition<br/>• apply_mastering"]
+
+    query --> agent
+    agent -->|"'Find' = RAG"| rag
+    agent -->|"'Change' = Production"| prod
 ```
 
 ---

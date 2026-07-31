@@ -116,33 +116,16 @@ Your MCP server now includes **semantic search capabilities** powered by the RAG
 
 ### Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   AI Agent (via MCP)                     │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│              BigFlavorMCPServer                          │
-│  • Original Tools (RSS, search, filter)                 │
-│  • NEW: RAG-powered semantic search                     │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│                 SongRAGSystem                            │
-│  • Audio similarity search (549-dim vectors)            │
-│  • Text similarity search (1536-dim vectors)            │
-│  • Hybrid search (audio + text)                         │
-│  • Tempo-based search with audio similarity             │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│         PostgreSQL + pgvector Database                   │
-│  • audio_embeddings table                               │
-│  • IVFFlat indexes for fast similarity search           │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    agent["AI Agent (via MCP)"]
+    mcp["BigFlavorMCPServer<br/>• Original Tools (RSS, search, filter)<br/>• NEW: RAG-powered semantic search"]
+    ragsys["SongRAGSystem<br/>• Audio similarity search (549-dim vectors)<br/>• Text similarity search (1536-dim vectors)<br/>• Hybrid search (audio + text)<br/>• Tempo-based search with audio similarity"]
+    db[("PostgreSQL + pgvector Database<br/>• audio_embeddings table<br/>• IVFFlat indexes for fast similarity search")]
+
+    agent --> mcp
+    mcp --> ragsys
+    ragsys --> db
 ```
 
 ### Embedding Features

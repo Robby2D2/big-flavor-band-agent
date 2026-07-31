@@ -6,18 +6,14 @@ The Search MCP Server (`rag_mcp_server.py`) was **unnecessary complexity**. Sinc
 
 ## ✅ Correct Simplified Architecture
 
-```
-┌────────────────────────────────────┐
-│       Claude AI Agent              │
-│  (claude_dual_mcp_agent.py)        │
-└──────┬──────────────────┬──────────┘
-       │                  │
-       │ (import)         │ (MCP call)
-       ▼                  ▼
-┌─────────────┐     ┌──────────────┐
-│ RAG System  │     │Production MCP│
-│  (Library)  │     │   Server     │
-└─────────────┘     └──────────────┘
+```mermaid
+flowchart TD
+    agent["Claude AI Agent<br/>(claude_dual_mcp_agent.py)"]
+    rag["RAG System<br/>(Library)"]
+    prod["Production MCP Server"]
+
+    agent -->|import| rag
+    agent -->|MCP call| prod
 ```
 
 ### Components
