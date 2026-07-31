@@ -20,6 +20,8 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         song_id: body.song_id,
         source_version_id: body.source_version_id ?? null,
+        start_s: body.start_s ?? null,
+        end_s: body.end_s ?? null,
       }),
     });
 

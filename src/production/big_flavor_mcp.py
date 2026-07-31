@@ -598,6 +598,14 @@ class BigFlavorMCPServer:
                             "file_path": {
                                 "type": "string",
                                 "description": "Path to the audio file to analyze"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional region start (seconds); scopes analysis to a span instead of the whole file"
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional region end (seconds)"
                             }
                         },
                         "required": ["file_path"]
@@ -624,6 +632,22 @@ class BigFlavorMCPServer:
                             "keep_intermediates": {
                                 "type": "boolean",
                                 "description": "Save intermediate processing steps for review (default: false)"
+                            },
+                            "steps_override": {
+                                "type": "object",
+                                "description": "Optional per-step on/off map keyed by trim/noise_reduction/eq/normalize/master"
+                            },
+                            "step_params": {
+                                "type": "object",
+                                "description": "Optional per-step raw-parameter overrides (e.g. {'master': {'target_lufs': -12}}); an explicit value always wins over the aggressiveness-scaled recommendation"
+                            },
+                            "start_s": {
+                                "type": "number",
+                                "description": "Optional region start (seconds); scopes the clean to a span. Normalize/Master are always skipped in this mode (whole-track operations)."
+                            },
+                            "end_s": {
+                                "type": "number",
+                                "description": "Optional region end (seconds)"
                             }
                         },
                         "required": ["file_path", "output_path"]
@@ -968,14 +992,21 @@ class BigFlavorMCPServer:
             if name == "analyze_audio":
                 result = await self.analyze_audio(arguments["file_path"])
             elif name == "analyze_and_recommend_processing":
-                result = await self.analyze_and_recommend_processing(arguments["file_path"])
+                result = await self.analyze_and_recommend_processing(
+                    arguments["file_path"],
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s")
+                )
             elif name == "auto_clean_recording":
                 result = await self.auto_clean_recording(
                     arguments["file_path"],
                     arguments["output_path"],
                     arguments.get("aggressiveness", "moderate"),
                     arguments.get("keep_intermediates", False),
-                    arguments.get("steps_override")
+                    arguments.get("steps_override"),
+                    step_params=arguments.get("step_params"),
+                    start_s=arguments.get("start_s"),
+                    end_s=arguments.get("end_s")
                 )
             elif name == "match_tempo":
                 result = await self.match_tempo(
@@ -1785,10 +1816,15 @@ class BigFlavorMCPServer:
     
     # ==================== INTELLIGENT AUTO-PROCESSING ====================
     
-    async def analyze_and_recommend_processing(self, file_path: str) -> dict:
+    async def analyze_and_recommend_processing(
+        self,
+        file_path: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None
+    ) -> dict:
         """
         Analyze audio comprehensively and recommend optimal processing settings.
-        
+
         Detects:
         - Leading/trailing noise and optimal trim points
         - Background noise levels and recommended reduction
@@ -1796,10 +1832,16 @@ class BigFlavorMCPServer:
         - Dynamic range and compression needs
         - Pitch/tuning issues
         - Overall loudness and mastering requirements
-        
+
         Args:
             file_path: Path to audio file to analyze
-            
+            start_s / end_s: Optional time range (seconds) to scope the analysis
+                to — e.g. a user-selected region. Omitting both analyzes the
+                whole file exactly as before. All returned time positions
+                (trim points, region echo) are in absolute file coordinates,
+                not relative to the analyzed span, so callers can feed them
+                straight back into the region-aware processing tools.
+
         Returns:
             Comprehensive analysis with specific processing recommendations
         """
@@ -1807,11 +1849,19 @@ class BigFlavorMCPServer:
             import librosa
             import numpy as np
             from scipy import signal, stats
-            
+
             logger.info(f"Performing comprehensive analysis on: {file_path}")
-            
+
             # Load audio
-            y, sr = librosa.load(file_path, sr=None)
+            y_full, sr = librosa.load(file_path, sr=None)
+
+            # Scope analysis to the requested span (issue #77 follow-up: region
+            # selection reuses the same analyze-and-clean pipeline as whole-song).
+            # Everything below analyzes only this slice; absolute-time fields are
+            # restored when the recommendations are compiled.
+            region_start_sample, region_end_sample = resolve_region(y_full, sr, start_s, end_s)
+            region_offset_s = region_start_sample / sr
+            y = y_full[region_start_sample:region_end_sample]
             duration = len(y) / sr
             
             # ===== 1. ANALYZE LEADING/TRAILING CONTENT =====
@@ -1985,14 +2035,33 @@ class BigFlavorMCPServer:
                 recommended_lufs = -14
                 recommended_gain = min(estimated_lufs + 14, 12)  # Cap gain
             
+            # Per-step intensity labels the UI pre-fills a gentle/moderate/
+            # aggressive control with, derived from the same measurements
+            # above rather than any new analysis (issue #77 follow-up).
+            eq_intensity = (
+                "gentle" if len(eq_recommendations) <= 1
+                else "moderate" if len(eq_recommendations) == 2
+                else "aggressive"
+            )
+            mastering_gain_abs = abs(float(recommended_gain))
+            mastering_intensity = (
+                "gentle" if mastering_gain_abs < 4
+                else "moderate" if mastering_gain_abs < 8
+                else "aggressive"
+            )
+
             # ===== COMPILE RECOMMENDATIONS =====
+            # detected_music_start/end and the trim region are restored to
+            # absolute file-time here so a scoped (region) analysis returns
+            # coordinates a caller can feed straight back into the
+            # region-aware processing tools (issue #77 follow-up).
             recommendations = {
                 "trim": {
                     "recommended": bool(trim_from_start > 0.5 or trim_from_end > 0.5),
                     "trim_start_seconds": round(float(trim_from_start), 2),
                     "trim_end_seconds": round(float(trim_from_end), 2),
-                    "detected_music_start": round(float(trim_start_time), 2),
-                    "detected_music_end": round(float(trim_end_time), 2),
+                    "detected_music_start": round(float(trim_start_time) + region_offset_s, 2),
+                    "detected_music_end": round(float(trim_end_time) + region_offset_s, 2),
                     "reason": "Non-musical content detected before/after main audio"
                 },
                 "noise_reduction": {
@@ -2000,6 +2069,11 @@ class BigFlavorMCPServer:
                     "noise_level_db": round(float(noise_level_db), 1),
                     "recommended_strength": float(recommended_noise_reduction),
                     "recommended_profile_duration": 1.0,
+                    "recommended_intensity": (
+                        "aggressive" if recommended_noise_reduction >= 0.8
+                        else "moderate" if recommended_noise_reduction >= 0.6
+                        else "gentle"
+                    ),
                     "reason": f"Background noise at {noise_level_db:.1f} dB"
                 },
                 "hum": {
@@ -2016,6 +2090,7 @@ class BigFlavorMCPServer:
                 "eq": {
                     "recommended": len(eq_recommendations) > 0,
                     "adjustments": eq_recommendations,
+                    "recommended_intensity": eq_intensity,
                     "frequency_balance": {
                         "bass_percent": round(float(bass_pct), 1),
                         "mid_percent": round(float(mid_pct), 1),
@@ -2033,13 +2108,15 @@ class BigFlavorMCPServer:
                     "recommended": bool(peak_db < -6 or peak_db > -1),
                     "current_peak_db": round(float(peak_db), 1),
                     "target_peak_db": -3.0,
+                    "recommended_intensity": recommended_compression,
                     "reason": "Level optimization needed"
                 },
                 "mastering": {
                     "recommended": True,
                     "current_lufs_measured": round(float(estimated_lufs), 1),
                     "target_lufs": float(recommended_lufs),
-                    "estimated_gain_db": round(float(recommended_gain), 1)
+                    "estimated_gain_db": round(float(recommended_gain), 1),
+                    "recommended_intensity": mastering_intensity
                 },
                 "warnings": []
             }
@@ -2067,6 +2144,7 @@ class BigFlavorMCPServer:
                 # feeding it to trim_silence's trim-to-selection mode (issue #66).
                 "detected_music_start": recommendations["trim"]["detected_music_start"],
                 "detected_music_end": recommendations["trim"]["detected_music_end"],
+                "region": {"start_s": start_s, "end_s": end_s},
                 "recommendations": recommendations,
                 "processing_order": [
                     "1. Trim non-musical content" if recommendations["trim"]["recommended"] else None,
@@ -2124,7 +2202,10 @@ class BigFlavorMCPServer:
         output_path: str,
         aggressiveness: str = "moderate",
         keep_intermediates: bool = False,
-        steps_override: dict = None
+        steps_override: dict = None,
+        step_params: Optional[dict] = None,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None
     ) -> dict:
         """
         Automatically analyze and clean a raw recording with intelligent settings.
@@ -2136,7 +2217,9 @@ class BigFlavorMCPServer:
         Args:
             file_path: Path to raw recording
             output_path: Path for final cleaned output
-            aggressiveness: 'gentle', 'moderate', or 'aggressive'
+            aggressiveness: 'gentle', 'moderate', or 'aggressive' — the global
+                fallback used for any step/param not given an explicit
+                ``step_params`` override.
             keep_intermediates: Save intermediate processing steps
             steps_override: Optional per-step on/off map keyed by
                 'trim', 'noise_reduction', 'eq', 'normalize', 'master'. A value
@@ -2147,6 +2230,27 @@ class BigFlavorMCPServer:
                 "fade_ms": ..}`` to keep only a chosen span (with fades at the
                 cut points) instead of the auto-detected music-vs-silence trim
                 (issue #66).
+            step_params: Optional per-step raw-parameter overrides, e.g.
+                ``{"noise_reduction": {"reduction_strength": 0.5}, "master":
+                {"target_lufs": -12}}``. An explicit value here always wins
+                over the analysis recommendation (as scaled by
+                ``aggressiveness``); unspecified params fall back to that
+                existing behavior (issue #77 follow-up). Recognized keys:
+                ``trim.threshold_db`` (region mode only); ``noise_reduction.
+                {reduction_strength, noise_profile_duration, non_stationary}``;
+                ``eq.{high_pass_freq, low_pass_freq, bands}`` (``bands`` is a
+                list of ``{"frequency", "gain_db"}``, replacing the
+                analysis-derived bands entirely when given);
+                ``normalize.{target_peak_db, apply_compression,
+                compression_ratio}``; ``master.target_lufs``.
+            start_s / end_s: Optional time range (seconds) scoping the whole
+                clean to a region instead of the whole file. Trim/hum/noise/EQ
+                are confined to that span (audio outside it is untouched);
+                Normalize and Master are whole-track operations (peak
+                normalization / integrated loudness) and are always skipped
+                when a region is set, regardless of ``steps_override`` — even
+                out-of-region audio's peak/loudness would shift ("out-of-band"
+                caveat, issue #77 follow-up).
 
         Returns:
             Processing results with steps taken
@@ -2160,8 +2264,13 @@ class BigFlavorMCPServer:
 
             logger.info(f"Auto-cleaning recording: {file_path} (aggressiveness: {aggressiveness})")
 
-            # Step 1: Analyze to get recommendations
-            analysis = await self.analyze_and_recommend_processing(file_path)
+            has_region = start_s is not None or end_s is not None
+
+            # Step 1: Analyze to get recommendations, scoped to the region when set
+            # so "detected issues" reflect only the selected span (issue #77 follow-up).
+            analysis = await self.analyze_and_recommend_processing(
+                file_path, start_s=start_s, end_s=end_s
+            )
 
             if analysis.get("status") != "success":
                 return analysis
@@ -2174,14 +2283,16 @@ class BigFlavorMCPServer:
             # turned off.
             overrides = steps_override or {}
             # A dict 'trim' override carries a trim-to-selection request; a bool
-            # just toggles the step (issue #66).
+            # just toggles the step (issue #66). Not meaningful in region mode,
+            # which uses the region itself for trim's scope instead.
             trim_override = overrides.get("trim")
             trim_selection = trim_override if isinstance(trim_override, dict) else None
             for _step in ("trim", "hum", "noise_reduction", "eq"):
                 if _step in overrides:
                     recommendations[_step]["recommended"] = bool(overrides[_step])
-            do_normalize = bool(overrides.get("normalize", True))
-            do_master = bool(overrides.get("master", True))
+            # Normalize/master are whole-track operations — never run on a region.
+            do_normalize = False if has_region else bool(overrides.get("normalize", True))
+            do_master = False if has_region else bool(overrides.get("master", True))
 
             # Adjust recommendations based on aggressiveness
             aggressiveness_multipliers = {
@@ -2190,7 +2301,14 @@ class BigFlavorMCPServer:
                 "aggressive": 1.3
             }
             mult = aggressiveness_multipliers.get(aggressiveness, 1.0)
-            
+
+            # Per-step raw-parameter overrides (issue #77 follow-up): an explicit
+            # value here always wins over the aggressiveness-scaled recommendation.
+            sp = step_params or {}
+
+            def step_param(step: str, param: str, default):
+                return (sp.get(step) or {}).get(param, default)
+
             # Track processing steps
             steps_taken = []
             current_file = file_path
@@ -2203,51 +2321,72 @@ class BigFlavorMCPServer:
             # Step 2: Intelligent trimming (not just silence - detect music vs noise/speech)
             if recommendations["trim"]["recommended"]:
                 logger.info("Step 1: Intelligent trimming...")
-                
-                # Load audio (channel count preserved)
-                y, sr = _load_audio(current_file)
 
-                if trim_selection and (
-                    trim_selection.get("start_s") is not None
-                    or trim_selection.get("end_s") is not None
-                ):
-                    # Keep only the caller-chosen span, with fades at the cut
-                    # points, instead of the auto-detected music trim (issue #66).
-                    trim_start, trim_end = resolve_region(
-                        y, sr, trim_selection.get("start_s"), trim_selection.get("end_s")
-                    )
-                    y_trimmed = np.array(y[..., trim_start:trim_end], copy=True)
-                    y_trimmed = fade_in_out(y_trimmed, sr, trim_selection.get("fade_ms", 10.0))
-                else:
-                    # Calculate trim points from analysis
-                    trim_start_samples = int(recommendations["trim"]["detected_music_start"] * sr)
-                    detected_end = recommendations["trim"]["detected_music_end"]
-                    trim_end_samples = int(detected_end * sr)
-
-                    # Add small buffer
-                    buffer_samples = int(0.1 * sr)
-                    trim_start = max(0, trim_start_samples - buffer_samples)
-                    trim_end = min(y.shape[-1], trim_end_samples + buffer_samples)
-
-                    # Trim
-                    y_trimmed = y[..., trim_start:trim_end]
-
-                # Save
                 if keep_intermediates:
                     trim_output = intermediate_dir / "01_trimmed.wav"
                 else:
                     import tempfile
                     trim_output = Path(tempfile.mktemp(suffix=".wav"))
 
-                _write_audio(str(trim_output), y_trimmed, sr, subtype=INTERMEDIATE_WAV_SUBTYPE)
-                current_file = str(trim_output)
+                if has_region:
+                    # Region mode: trim only within the selected span via
+                    # trim_silence's own scoped silence-trim — audio outside
+                    # start_s..end_s stays bit-identical. The whole-file
+                    # crop-to-detected-span path below would otherwise delete
+                    # everything outside the region (issue #77 follow-up).
+                    threshold_db = step_param("trim", "threshold_db", -40.0)
+                    result = await self.trim_silence(
+                        current_file, threshold_db, str(trim_output),
+                        start_s=start_s, end_s=end_s
+                    )
+                    if result.get("status") == "success":
+                        current_file = str(trim_output)
+                        steps_taken.append({
+                            "step": "trim",
+                            "region": {"start_s": start_s, "end_s": end_s},
+                            "removed_seconds": result.get("removed_seconds"),
+                            "output": str(trim_output) if keep_intermediates else "temp"
+                        })
+                    # No non-silent audio found in the span is a benign no-op,
+                    # not a failure — nothing to trim.
+                else:
+                    # Load audio (channel count preserved)
+                    y, sr = _load_audio(current_file)
 
-                steps_taken.append({
-                    "step": "trim",
-                    "trimmed_start_seconds": round(trim_start / sr, 2),
-                    "trimmed_end_seconds": round((y.shape[-1] - trim_end) / sr, 2),
-                    "output": str(trim_output) if keep_intermediates else "temp"
-                })
+                    if trim_selection and (
+                        trim_selection.get("start_s") is not None
+                        or trim_selection.get("end_s") is not None
+                    ):
+                        # Keep only the caller-chosen span, with fades at the cut
+                        # points, instead of the auto-detected music trim (issue #66).
+                        trim_start, trim_end = resolve_region(
+                            y, sr, trim_selection.get("start_s"), trim_selection.get("end_s")
+                        )
+                        y_trimmed = np.array(y[..., trim_start:trim_end], copy=True)
+                        y_trimmed = fade_in_out(y_trimmed, sr, trim_selection.get("fade_ms", 10.0))
+                    else:
+                        # Calculate trim points from analysis
+                        trim_start_samples = int(recommendations["trim"]["detected_music_start"] * sr)
+                        detected_end = recommendations["trim"]["detected_music_end"]
+                        trim_end_samples = int(detected_end * sr)
+
+                        # Add small buffer
+                        buffer_samples = int(0.1 * sr)
+                        trim_start = max(0, trim_start_samples - buffer_samples)
+                        trim_end = min(y.shape[-1], trim_end_samples + buffer_samples)
+
+                        # Trim
+                        y_trimmed = y[..., trim_start:trim_end]
+
+                    _write_audio(str(trim_output), y_trimmed, sr, subtype=INTERMEDIATE_WAV_SUBTYPE)
+                    current_file = str(trim_output)
+
+                    steps_taken.append({
+                        "step": "trim",
+                        "trimmed_start_seconds": round(trim_start / sr, 2),
+                        "trimmed_end_seconds": round((y.shape[-1] - trim_end) / sr, 2),
+                        "output": str(trim_output) if keep_intermediates else "temp"
+                    })
 
             # Step 2b: Mains-hum removal — before broadband noise reduction so
             # the narrow notches handle hum the spectral gate can't (issue #57).
@@ -2263,7 +2402,9 @@ class BigFlavorMCPServer:
                 result = await self.remove_hum(
                     current_file,
                     str(hum_output),
-                    fundamental_hz=recommendations["hum"]["fundamental_hz"]
+                    fundamental_hz=recommendations["hum"]["fundamental_hz"],
+                    start_s=start_s,
+                    end_s=end_s
                 )
 
                 if result.get("status") == "success" and result.get("hum_detected"):
@@ -2278,24 +2419,33 @@ class BigFlavorMCPServer:
             # Step 3: Noise reduction
             if recommendations["noise_reduction"]["recommended"]:
                 logger.info("Step 2: Noise reduction...")
-                
-                strength = recommendations["noise_reduction"]["recommended_strength"] * mult
-                strength = min(1.0, strength)
-                
+
+                recommended_strength = recommendations["noise_reduction"]["recommended_strength"]
+                strength = step_param("noise_reduction", "reduction_strength", recommended_strength * mult)
+                strength = min(1.0, max(0.0, strength))
+                profile_duration = step_param(
+                    "noise_reduction", "noise_profile_duration",
+                    recommendations["noise_reduction"]["recommended_profile_duration"]
+                )
+                non_stationary = step_param("noise_reduction", "non_stationary", False)
+
                 if keep_intermediates:
                     noise_output = intermediate_dir / "02_denoised.wav"
                 else:
                     import tempfile
                     noise_output = Path(tempfile.mktemp(suffix=".wav"))
-                
+
                 result = await self.reduce_noise(
                     current_file,
-                    recommendations["noise_reduction"]["recommended_profile_duration"],
+                    profile_duration,
                     strength,
                     str(noise_output),
-                    subtype=INTERMEDIATE_WAV_SUBTYPE
+                    subtype=INTERMEDIATE_WAV_SUBTYPE,
+                    start_s=start_s,
+                    end_s=end_s,
+                    non_stationary=non_stationary
                 )
-                
+
                 if result.get("status") == "success":
                     current_file = str(noise_output)
                     steps_taken.append({
@@ -2331,6 +2481,14 @@ class BigFlavorMCPServer:
                             "gain_db": adj["amount"] * mult
                         })
 
+                # Explicit overrides win outright: high_pass/low_pass replace the
+                # analysis-derived cutoff, and a "bands" list replaces the
+                # derived bands entirely (not merged) so a caller can hand-tune
+                # each detected imbalance's gain (issue #77 follow-up).
+                high_pass_freq = step_param("eq", "high_pass_freq", high_pass_freq)
+                low_pass_freq = step_param("eq", "low_pass_freq", low_pass_freq)
+                eq_bands = step_param("eq", "bands", eq_bands)
+
                 if keep_intermediates:
                     eq_output = intermediate_dir / "03_eq.wav"
                 else:
@@ -2345,14 +2503,19 @@ class BigFlavorMCPServer:
                     0,
                     str(eq_output),
                     eq_bands=eq_bands or None,
-                    subtype=INTERMEDIATE_WAV_SUBTYPE
+                    subtype=INTERMEDIATE_WAV_SUBTYPE,
+                    start_s=start_s,
+                    end_s=end_s
                 )
-                
+
                 if result.get("status") == "success":
                     current_file = str(eq_output)
                     steps_taken.append({
                         "step": "eq",
                         "adjustments": eq_adjustments,
+                        "high_pass_freq": high_pass_freq,
+                        "low_pass_freq": low_pass_freq,
+                        "bands": eq_bands,
                         "output": str(eq_output) if keep_intermediates else "temp"
                     })
             
@@ -2365,6 +2528,9 @@ class BigFlavorMCPServer:
                     comp_ratio *= 1.2
                 elif aggressiveness == "gentle":
                     comp_ratio *= 0.8
+                comp_ratio = step_param("normalize", "compression_ratio", comp_ratio)
+                target_peak_db = step_param("normalize", "target_peak_db", -3.0)
+                apply_compression = step_param("normalize", "apply_compression", True)
 
                 if keep_intermediates:
                     norm_output = intermediate_dir / "04_normalized.wav"
@@ -2374,17 +2540,19 @@ class BigFlavorMCPServer:
 
                 result = await self.normalize_audio(
                     current_file,
-                    -3.0,
-                    True,
+                    target_peak_db,
+                    apply_compression,
                     str(norm_output),
-                    subtype=INTERMEDIATE_WAV_SUBTYPE
+                    subtype=INTERMEDIATE_WAV_SUBTYPE,
+                    compression_ratio=comp_ratio
                 )
 
                 if result.get("status") == "success":
                     current_file = str(norm_output)
                     steps_taken.append({
                         "step": "normalize",
-                        "target_peak_db": -3.0,
+                        "target_peak_db": target_peak_db,
+                        "compression_ratio": comp_ratio if apply_compression else None,
                         "gain_applied_db": result.get("gain_applied_db"),
                         "output": str(norm_output) if keep_intermediates else "temp"
                     })
@@ -2395,7 +2563,7 @@ class BigFlavorMCPServer:
             if do_master:
                 logger.info("Step 5: Mastering...")
 
-                target_lufs = recommendations["mastering"]["target_lufs"]
+                target_lufs = step_param("master", "target_lufs", recommendations["mastering"]["target_lufs"])
 
                 result = await self.apply_mastering(
                     current_file,
@@ -2435,6 +2603,7 @@ class BigFlavorMCPServer:
                 "input_file": file_path,
                 "output_file": output_path,
                 "aggressiveness": aggressiveness,
+                "region": {"start_s": start_s, "end_s": end_s} if has_region else None,
                 "analysis_summary": analysis.get("summary"),
                 "steps_applied": steps_taken,
                 "intermediate_files": str(intermediate_dir) if keep_intermediates else None,
@@ -3180,7 +3349,8 @@ class BigFlavorMCPServer:
         target_level_db: float,
         apply_compression: bool,
         output_path: str,
-        subtype: Optional[str] = None
+        subtype: Optional[str] = None,
+        compression_ratio: Optional[float] = None
     ) -> dict:
         """
         Normalize audio levels and optionally apply compression.
@@ -3192,6 +3362,10 @@ class BigFlavorMCPServer:
             output_path: Path for output file
             subtype: Optional soundfile subtype for the output (e.g. 'FLOAT'
                 for lossless chain intermediates); None keeps the format default
+            compression_ratio: Optional override for the compressor's ratio
+                (default: 2.5, the value used when omitted). Lets a caller tune
+                how hard the compression stage leans in independent of the
+                target level.
 
         Returns:
             Operation result
@@ -3230,7 +3404,7 @@ class BigFlavorMCPServer:
                 
                 # Gentle compression parameters
                 threshold_db = -20.0
-                ratio = 2.5
+                ratio = float(compression_ratio) if compression_ratio is not None else 2.5
                 knee_width = 10.0
                 
                 # Convert to dB
@@ -3307,7 +3481,8 @@ class BigFlavorMCPServer:
                 "target_peak_db": float(target_level_db),
                 "final_peak_db": round(float(final_peak_db), 1),
                 "gain_applied_db": round(float(gain_applied_db), 1),
-                "compression_applied": apply_compression
+                "compression_applied": apply_compression,
+                "compression_ratio": ratio if apply_compression else None
             }
             
         except Exception as e:

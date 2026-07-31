@@ -9,6 +9,40 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-31 — Per-step tunable cleaning params + unified whole-song/region flow (issue #77 follow-up)
+Addressed user confusion that the `/produce` editor's global Intensity dropdown didn't visibly relate
+to the "target" shown in Detected Issues (Normalize's target was hardcoded −3dB, Master's target came
+from analysis — neither moved with Intensity, which only scaled noise/EQ/compression-ratio). Also
+unified "Whole song" and "Region" selection: Region used to be a separate single-tool
+preview/apply flow with no analysis; it now drives the *same* analyze → detected-issues → per-step
+controls → Preview/Clean pipeline as whole-song, just scoped to `start_s`/`end_s`.
+- **Backend** (`src/production/big_flavor_mcp.py`): `analyze_and_recommend_processing` takes an
+  optional region and returns absolute-file-time results plus a `recommended_intensity` per step
+  (noise/EQ/normalize/master), derived from existing measurements. `auto_clean_recording` gains
+  `step_params` (explicit per-step raw-parameter overrides — target_lufs, reduction_strength,
+  compression_ratio, EQ bands, etc. — that always win over the `aggressiveness`-scaled
+  recommendation) and region bounds; a region always skips Normalize/Master (whole-track ops) and
+  routes Trim through `trim_silence`'s own scoped silence-trim instead of the whole-file
+  crop-to-detected-span path, so a mid-track selection can't delete audio outside it. `normalize_audio`
+  gained a real `compression_ratio` param — previously computed but silently dropped before reaching
+  it. Also fixed `dispatch_tool` (the actual `execute_tool` call path) to forward `start_s`/`end_s`/
+  `step_params`, which the JSON tool-schema declarations don't enforce.
+- **API** (`src/api/routers/produce.py`): `ProduceRequest` gained `step_params`, `start_s`/`end_s`,
+  `preview`; `/api/produce/auto-clean` writes a non-versioned preview candidate when `preview=true`
+  (mirroring the old region-tool preview/apply split); the dedup key folds in `step_params`/region.
+- **Frontend** (`MultitrackEditor.tsx`): replaced the single global Intensity dropdown with per-step
+  cards (Reduce noise/EQ/Normalize/Master), each pre-filled from the analysis's suggested intensity
+  and expandable to raw parameters; Region mode hides Normalize/Master and only shows
+  Trim/Noise/EQ. Old single-tool `/region/preview` + `/region/apply` endpoints/routes left in place
+  (unused by the UI now) — flagged for later removal.
+- 12 new tests in `tests/test_auto_clean_region_params.py` (synthetic audio, no DB), including a
+  region-trim safety test proving audio outside a selected span survives cleaning. Verified via
+  `pytest` (12 new + 19 pre-existing passing, unrelated DB-requiring tests skipped — no local
+  Postgres) and `npm run build` (`next lint` itself errors in this environment regardless of this
+  change — pre-existing CLI quirk, not investigated).
+- **Housekeeping note:** this file is now well past the ~200-line pruning threshold in AGENTS.md —
+  next session doing memory upkeep should move older entries into `.agents/memory/`.
+
 ### 2026-07-30 — Release `v0.16.1` (release-manager)
 Cut **`v0.16.1`** from `main` (HEAD `adefdb8`), a **patch** bump from `v0.16.0` — the 3-commit range
 has no new feature: the only product change is a `fix:` (`8f62529`, keep radio Now Playing/Up Next in

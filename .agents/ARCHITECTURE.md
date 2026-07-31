@@ -123,6 +123,23 @@ the Model Context Protocol (analyze tempo/key/beats via librosa, tempo-match/tim
 beat-matched transitions, mastering). It runs as a separate process so heavy audio work is isolated
 from the API event loop.
 
+**Region scoping** (`src/production/region.py`): `resolve_region`/`apply_to_region` let a cleanup
+tool (trim, hum, noise, EQ) confine itself to a `start_s`/`end_s` span, splicing the processed region
+back in with a short crossfade so audio outside it is untouched (bit-identical). Normalize and
+Master are **whole-track** operations (peak normalization / integrated LUFS) and never take a region.
+
+**Unified analyze-and-clean pipeline** (`analyze_and_recommend_processing` → `auto_clean_recording`,
+`src/api/routers/produce.py`'s `/api/produce/analyze` + `/api/produce/auto-clean`): the `/produce`
+editor's "Whole song" and "Region" selection modes both drive this one pipeline — a region is a scope
+passed to `start_s`/`end_s`, not a different tool. Analysis returns a per-step
+`recommended_intensity` (gentle/moderate/aggressive) derived from its own measurements (noise floor,
+crest factor, EQ correction count); the UI pre-fills each step's raw parameters from that suggestion
+and lets the user hand-tune any of them via `step_params` (e.g. `{"master": {"target_lufs": -12}}`),
+which always wins over the `aggressiveness`-scaled recommendation. A region request forces
+Normalize/Master off regardless of `steps_override`, and region-mode Trim routes through
+`trim_silence`'s own scoped silence-trim (not the whole-file crop-to-detected-span path) so it can
+never delete audio outside the selected span.
+
 ---
 
 ## Database
@@ -188,4 +205,6 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2025-12 | Production Docker environment + nginx SSL (`c633d34`, `00a73fa`) | Make the stack deployable to a real host, not just localhost. |
 | 2025-12 | Frontend shows raw results, not the agent's prose (`eb3a032`) | Surfacing structured search results is clearer for music discovery than an LLM narration. |
 | 2026-06 | Radio state externalized to PostgreSQL via `RadioStateStore` (migration `06`, issue #2) | In-memory per-process radio state was wiped on every backend restart and diverged across replicas; backing it with Postgres (no new infra) makes the radio restart-tolerant and stateless (OKR O3.3 / O4.3). |
+| 2026-07 | `/produce`'s Region mode reuses the whole-song analyze-and-clean pipeline instead of a separate single-tool flow (issue #77 follow-up) | A region is just a scope (`start_s`/`end_s`), not a different tool — users expect the same "detected issues → tunable steps" experience either way. Region-mode Trim goes through `trim_silence`'s own scoped silence-trim, not the whole-file crop-to-detected-span path, so a mid-track selection can never delete audio outside it. |
+| 2026-07 | Per-step `step_params` override wins over `aggressiveness`-scaled recommendations, not a per-step multiplier (issue #77 follow-up) | Keeps one resolution rule (explicit value → else `aggressiveness`-scaled recommendation → else default) instead of the backend tracking five independent intensity dials; the per-step Intensity presets in the UI are computed client-side with the same multiplier formula and sent as explicit overrides. |
 | 2026-07 | Agent pipeline made concurrency-safe + runnable in GitHub Actions (`.github/workflows/fix-issue.yml`) | Ported soccer-assistant-coach's standards: AGENTS.md Concurrency rules (re-check before write; races are benign; dev claims via `dev-agent:claim`; never touch dirty human trees) so local scheduled, interactive, and CI sweeps can overlap safely. CI sweeps trigger on human activity only (marker-filtered `issue_comment`), agents detect CI via `$GITHUB_ACTIONS` and honestly skip Docker-dependent checks. |
