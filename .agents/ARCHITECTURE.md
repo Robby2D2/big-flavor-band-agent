@@ -11,24 +11,28 @@ An AI music assistant over the Big Flavor Band catalog. A Next.js frontend talks
 backend, which orchestrates an LLM agent, a RAG search system, and a production MCP server over a
 PostgreSQL/pgvector database. A separate Icecast + Liquidsoap pair provides the live radio stream.
 
-```
-┌──────────────┐   HTTP    ┌─────────────────────────────────────────────┐
-│  Next.js     │──────────▶│  FastAPI backend  (backend_api.py)          │
-│  frontend/   │  /api/*    │  ┌───────────────┐  ┌────────────────────┐ │
-│  (app router)│◀──────────│  │ BigFlavorAgent │  │ SongRAGSystem      │ │
-└──────┬───────┘  stream   │  │ src/agent/     │  │ src/rag/  (search) │ │
-       │                   │  └──────┬────────┘   └─────────┬──────────┘ │
-       │ <audio>/stream    │         │ tool calls           │ pgvector   │
-       ▼                   │  ┌──────▼─────────┐   ┌─────────▼──────────┐ │
-┌──────────────┐           │  │ Production MCP │   │ DatabaseManager    │ │
-│ Icecast +    │◀──────────│  │ src/production/│   │ database/          │ │
-│ Liquidsoap   │  playlist │  └────────────────┘   └─────────┬──────────┘ │
-│ (radio)      │   .m3u    └────────────────────────────────┬┘            │
-└──────────────┘                                            ▼             │
-                                              ┌─────────────────────────┐ │
-                                              │ PostgreSQL + pgvector    │◀┘
-                                              │ (songs, lyrics, embeds)  │
-                                              └─────────────────────────┘
+```mermaid
+flowchart TD
+    frontend["Next.js frontend/<br/>(app router)"]
+
+    subgraph backend["FastAPI backend (backend_api.py)"]
+        agent["BigFlavorAgent<br/>src/agent/"]
+        rag["SongRAGSystem<br/>src/rag/ (search)"]
+        mcp["Production MCP<br/>src/production/"]
+        db["DatabaseManager<br/>database/"]
+    end
+
+    radio["Icecast + Liquidsoap<br/>(radio)"]
+    postgres[("PostgreSQL + pgvector<br/>(songs, lyrics, embeds)")]
+
+    frontend -->|"HTTP /api/*"| backend
+    backend -->|stream| frontend
+    frontend -->|"&lt;audio&gt; /stream"| radio
+    backend -->|"playlist .m3u"| radio
+
+    agent -->|tool calls| mcp
+    rag -->|pgvector| db
+    db --> postgres
 ```
 
 ### Directory layout

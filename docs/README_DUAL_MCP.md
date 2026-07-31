@@ -6,20 +6,14 @@ The Big Flavor Band Agent now uses a **dual MCP server architecture** that clean
 
 ## 🏗️ Architecture Overview
 
-```
-┌─────────────────────────────────┐
-│      Claude AI Agent            │
-│  (Natural Language Interface)   │
-└──────────┬──────────────────────┘
-           │
-    ┌──────┴──────┐
-    │             │
-    ▼             ▼
-┌───────┐    ┌────────┐
-│ RAG   │    │  MCP   │
-│Server │    │ Server │
-└───────┘    └────────┘
-   READ         WRITE
+```mermaid
+flowchart TD
+    agent["Claude AI Agent<br/>(Natural Language Interface)"]
+    rag["RAG Server<br/>(READ)"]
+    mcp["MCP Server<br/>(WRITE)"]
+
+    agent --> rag
+    agent --> mcp
   SEARCH      PRODUCE
 ```
 

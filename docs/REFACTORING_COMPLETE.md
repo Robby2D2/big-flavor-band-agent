@@ -160,26 +160,20 @@ To use the new architecture:
 
 ## Architecture Diagram
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Claude AI Agent                    │
-│            (claude_dual_mcp_agent.py)               │
-└──────────────────┬──────────────────┬───────────────┘
-                   │                  │
-        ┌──────────▼──────────┐  ┌───▼──────────────┐
-        │   RAG MCP Server    │  │ Production Server│
-        │ (rag_mcp_server.py) │  │(mcp_server_new.py│
-        └──────────┬──────────┘  └───┬──────────────┘
-                   │                  │
-        ┌──────────▼──────────┐  ┌───▼──────────────┐
-        │   RAG System        │  │ Audio Analysis   │
-        │  (rag_system.py)    │  │     Cache        │
-        └──────────┬──────────┘  └──────────────────┘
-                   │
-        ┌──────────▼──────────┐
-        │  PostgreSQL + Vec   │
-        │    (Database)       │
-        └─────────────────────┘
+```mermaid
+flowchart TD
+    agent["Claude AI Agent<br/>(claude_dual_mcp_agent.py)"]
+    ragmcp["RAG MCP Server<br/>(rag_mcp_server.py)"]
+    prodmcp["Production Server<br/>(mcp_server_new.py)"]
+    ragsys["RAG System<br/>(rag_system.py)"]
+    cache["Audio Analysis Cache"]
+    db[("PostgreSQL + Vec<br/>(Database)")]
+
+    agent --> ragmcp
+    agent --> prodmcp
+    ragmcp --> ragsys
+    prodmcp --> cache
+    ragsys --> db
 ```
 
 ## Example Usage

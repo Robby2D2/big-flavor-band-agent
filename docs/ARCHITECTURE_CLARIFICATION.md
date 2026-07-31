@@ -6,21 +6,18 @@ You're absolutely right to question this! The correct architecture is:
 
 ### ✅ Correct Architecture
 
-```
-┌──────────────────────────────────────┐
-│        Claude AI Agent               │
-└──────────┬───────────────────────┬───┘
-           │                       │
-    ┌──────▼──────┐         ┌──────▼──────┐
-    │Search MCP   │         │Production   │
-    │   Server    │         │ MCP Server  │
-    └──────┬──────┘         └──────┬──────┘
-           │                       │
-           ▼                       ▼
-    ┌──────────────┐        ┌─────────────┐
-    │ RAG System   │        │Audio Tools  │
-    │  (Library)   │        │  (Library)  │
-    └──────────────┘        └─────────────┘
+```mermaid
+flowchart TD
+    agent["Claude AI Agent"]
+    searchmcp["Search MCP Server"]
+    prodmcp["Production MCP Server"]
+    rag["RAG System<br/>(Library)"]
+    audio["Audio Tools<br/>(Library)"]
+
+    agent --> searchmcp
+    agent --> prodmcp
+    searchmcp --> rag
+    prodmcp --> audio
 ```
 
 ### Key Points

@@ -10,35 +10,16 @@ This RAG (Retrieval-Augmented Generation) system enables semantic search over yo
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Audio Files (.mp3)                       │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│           AudioEmbeddingExtractor                            │
-│  • Librosa: MFCCs, spectrograms, tempo, key, chroma         │
-│  • CLAP: 512-dim deep learning audio embeddings             │
-│  • Combined: 549-dim vector (37 librosa + 512 CLAP)         │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│              PostgreSQL + pgvector                           │
-│  • audio_embeddings table (549-dim vectors)                 │
-│  • text_embeddings table (1536-dim vectors)                 │
-│  • IVFFlat indexes for fast similarity search               │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    SongRAGSystem                             │
-│  • Audio similarity search                                   │
-│  • Text similarity search                                    │
-│  • Hybrid search (audio + text)                              │
-│  • Tempo-based search with audio similarity                  │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    audio["Audio Files (.mp3)"]
+    extractor["AudioEmbeddingExtractor<br/>• Librosa: MFCCs, spectrograms, tempo, key, chroma<br/>• CLAP: 512-dim deep learning audio embeddings<br/>• Combined: 549-dim vector (37 librosa + 512 CLAP)"]
+    db[("PostgreSQL + pgvector<br/>• audio_embeddings table (549-dim vectors)<br/>• text_embeddings table (1536-dim vectors)<br/>• IVFFlat indexes for fast similarity search")]
+    ragsys["SongRAGSystem<br/>• Audio similarity search<br/>• Text similarity search<br/>• Hybrid search (audio + text)<br/>• Tempo-based search with audio similarity"]
+
+    audio --> extractor
+    extractor --> db
+    db --> ragsys
 ```
 
 ## 📊 What's Extracted
