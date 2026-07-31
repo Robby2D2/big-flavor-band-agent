@@ -138,7 +138,11 @@ and lets the user hand-tune any of them via `step_params` (e.g. `{"master": {"ta
 which always wins over the `aggressiveness`-scaled recommendation. A region request forces
 Normalize/Master off regardless of `steps_override`, and region-mode Trim routes through
 `trim_silence`'s own scoped silence-trim (not the whole-file crop-to-detected-span path) so it can
-never delete audio outside the selected span.
+never delete audio outside the selected span. Two further steps, `pitch` and `tempo`, are opt-in only
+(no analysis measurement recommends either): `pitch` calls the existing `correct_pitch` tool
+(auto-tune, key-aware) and is region-scoped like trim/noise/EQ; `tempo` calls the existing
+`match_tempo` tool (whole-track time-stretch to an explicit target BPM) and is forced off under a
+region exactly like Normalize/Master, since it has no region parameter (issue #82).
 
 ---
 
@@ -207,4 +211,5 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-06 | Radio state externalized to PostgreSQL via `RadioStateStore` (migration `06`, issue #2) | In-memory per-process radio state was wiped on every backend restart and diverged across replicas; backing it with Postgres (no new infra) makes the radio restart-tolerant and stateless (OKR O3.3 / O4.3). |
 | 2026-07 | `/produce`'s Region mode reuses the whole-song analyze-and-clean pipeline instead of a separate single-tool flow (issue #77 follow-up) | A region is just a scope (`start_s`/`end_s`), not a different tool — users expect the same "detected issues → tunable steps" experience either way. Region-mode Trim goes through `trim_silence`'s own scoped silence-trim, not the whole-file crop-to-detected-span path, so a mid-track selection can never delete audio outside it. |
 | 2026-07 | Per-step `step_params` override wins over `aggressiveness`-scaled recommendations, not a per-step multiplier (issue #77 follow-up) | Keeps one resolution rule (explicit value → else `aggressiveness`-scaled recommendation → else default) instead of the backend tracking five independent intensity dials; the per-step Intensity presets in the UI are computed client-side with the same multiplier formula and sent as explicit overrides. |
+| 2026-07 | Pitch correction and Tempo/beat correction restored as opt-in steps inside `auto_clean_recording`, not a separate tool/UI path (issue #82) | PR #81's per-step rework dropped both from the `/produce` UI. Rather than resurrect the old standalone region-tool flow, they're added as two more steps in the one unified pipeline, each with its own controls (no shared Intensity) since no analysis measurement backs either — `pitch` (`correct_pitch`, region-scoped) and `tempo` (`match_tempo`, whole-track only, forced off under a region like Normalize/Master). |
 | 2026-07 | Agent pipeline made concurrency-safe + runnable in GitHub Actions (`.github/workflows/fix-issue.yml`) | Ported soccer-assistant-coach's standards: AGENTS.md Concurrency rules (re-check before write; races are benign; dev claims via `dev-agent:claim`; never touch dirty human trees) so local scheduled, interactive, and CI sweeps can overlap safely. CI sweeps trigger on human activity only (marker-filtered `issue_comment`), agents detect CI via `$GITHUB_ACTIONS` and honestly skip Docker-dependent checks. |

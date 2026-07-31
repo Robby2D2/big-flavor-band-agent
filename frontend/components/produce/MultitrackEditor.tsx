@@ -22,7 +22,7 @@ interface MultitrackEditorProps {
 
 type SelectionMode = 'whole' | 'region';
 type Intensity = 'gentle' | 'moderate' | 'aggressive';
-type StepKey = 'trim' | 'noise_reduction' | 'eq' | 'normalize' | 'master';
+type StepKey = 'trim' | 'noise_reduction' | 'eq' | 'pitch' | 'tempo' | 'normalize' | 'master';
 
 interface EqBand {
   frequency: number;
@@ -50,11 +50,21 @@ interface NormalizeParams {
 interface MasterParams {
   target_lufs: number;
 }
+interface PitchParams {
+  correction_strength: number;
+  key?: string;
+  chromatic: boolean;
+}
+interface TempoParams {
+  target_bpm?: number;
+}
 
 interface StepParamsState {
   trim: TrimParams;
   noise_reduction: NoiseParams;
   eq: EqParams;
+  pitch: PitchParams;
+  tempo: TempoParams;
   normalize: NormalizeParams;
   master: MasterParams;
 }
@@ -63,6 +73,8 @@ const DEFAULT_STEP_PARAMS: StepParamsState = {
   trim: { threshold_db: -40 },
   noise_reduction: { reduction_strength: 0.6, noise_profile_duration: 1.0, non_stationary: false },
   eq: { bands: [] },
+  pitch: { correction_strength: 1.0, chromatic: false },
+  tempo: {},
   normalize: { target_peak_db: -3, apply_compression: true, compression_ratio: 2.5 },
   master: { target_lufs: -14 },
 };
@@ -98,6 +110,20 @@ const STEP_DEFS: {
     help: 'Balances the frequencies: filters out low rumble, tames a boomy or muddy low end, and adds clarity (or softens harsh highs).',
     hasIntensity: true,
     wholeSongOnly: false,
+  },
+  {
+    key: 'pitch',
+    label: 'Pitch correction',
+    help: 'Key-aware auto-tune over the selection: detects (or uses a chosen) key and nudges off-key notes back toward it. Has its own retune strength, separate from Intensity.',
+    hasIntensity: false,
+    wholeSongOnly: false,
+  },
+  {
+    key: 'tempo',
+    label: 'Tempo / beat correction',
+    help: 'Time-stretches the whole track to a target tempo without changing pitch. Whole-track only, so it only appears in Whole song mode.',
+    hasIntensity: false,
+    wholeSongOnly: true,
   },
   {
     key: 'normalize',
@@ -292,10 +318,13 @@ function meterForIssueRow(text: string, recs: any, stepParams: StepParamsState) 
  * starting-version picker, a shared waveform, and a "Whole song" / "Region"
  * selection mode — both drive the *same* analyze -> detected issues ->
  * per-step controls -> Preview/Clean pipeline. A region is a scope, not a
- * different tool: Trim/Reduce noise/EQ confine themselves to it; Normalize
- * and Master (whole-track operations) only appear in Whole song mode. Every
- * step's controls are agent-prefilled from the analysis and individually
- * tunable, down to the raw parameter. A "Clean this version" shortcut runs
+ * different tool: Trim/Reduce noise/EQ/Pitch correction confine themselves to
+ * it; Normalize, Master, and Tempo/beat correction (whole-track operations)
+ * only appear in Whole song mode. Every step's controls are agent-prefilled
+ * from the analysis where a measurement backs them, and individually tunable
+ * down to the raw parameter — Pitch and Tempo have no analysis measurement
+ * behind them (issue #82) so they render with sensible defaults instead,
+ * fully manual. A "Clean this version" shortcut runs
  * the whole-song analyze+clean in one action for non-power users. Per-stem
  * rows remain available underneath.
  */
@@ -428,6 +457,10 @@ export default function MultitrackEditor({
         trim: { threshold_db: -40 },
         noise_reduction: noiseParamsForIntensity(recs, intensity.noise_reduction ?? 'moderate'),
         eq: eqParamsForIntensity(recs, intensity.eq ?? 'moderate'),
+        // No analysis measurement backs pitch/tempo — sensible defaults only
+        // (issue #82), fully manually tunable below.
+        pitch: DEFAULT_STEP_PARAMS.pitch,
+        tempo: DEFAULT_STEP_PARAMS.tempo,
         normalize: normalizeParamsForIntensity(recs, intensity.normalize ?? 'moderate'),
         master: masterParamsFromAnalysis(recs),
       });
@@ -480,9 +513,19 @@ export default function MultitrackEditor({
         bands: stepParams.eq.bands,
       };
     }
+    if (stepEnabled.pitch) {
+      out.pitch = {
+        correction_strength: stepParams.pitch.correction_strength,
+        chromatic: stepParams.pitch.chromatic,
+        ...(stepParams.pitch.key ? { key: stepParams.pitch.key } : {}),
+      };
+    }
     if (selectionMode === 'whole') {
       out.normalize = stepParams.normalize;
       out.master = stepParams.master;
+      if (stepEnabled.tempo && stepParams.tempo.target_bpm) {
+        out.tempo = { target_bpm: stepParams.tempo.target_bpm };
+      }
     }
     return out;
   }, [selectionMode, stepEnabled, stepParams]);
@@ -574,11 +617,15 @@ export default function MultitrackEditor({
     }
   };
 
+  const tempoMissingTarget =
+    selectionMode === 'whole' && !!stepEnabled.tempo && !stepParams.tempo.target_bpm;
+
   const canRun =
     sourceVersionId != null &&
     analysisOk &&
     busy == null &&
-    (selectionMode === 'whole' || hasRegion);
+    (selectionMode === 'whole' || hasRegion) &&
+    !tempoMissingTarget;
 
   if (versions.length === 0) {
     return (
@@ -739,7 +786,7 @@ export default function MultitrackEditor({
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
               {selectionMode === 'whole'
                 ? 'Analyze the whole song, then review and clean it. Cleaning produces a new version — the version you start from is never overwritten, so you can re-clean an already-cleaned version with different options.'
-                : 'Analyze the selected region, then review and clean it. Only Trim, Reduce noise, and EQ can be scoped to a region — Normalize and Master always look at the whole track, so they only appear in Whole song mode.'}
+                : 'Analyze the selected region, then review and clean it. Only Trim, Reduce noise, EQ, and Pitch correction can be scoped to a region — Normalize, Master, and Tempo/beat correction always look at the whole track, so they only appear in Whole song mode.'}
             </p>
 
             <button
@@ -859,6 +906,48 @@ export default function MultitrackEditor({
                               className="w-24 px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                             />
                           </label>
+                        )}
+
+                        {step.key === 'pitch' && (
+                          <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                            Retune strength (0–1)
+                            <input
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={stepParams.pitch.correction_strength}
+                              onChange={(e) =>
+                                patchStepParams('pitch', { correction_strength: Number(e.target.value) })
+                              }
+                              className="w-24 px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                            />
+                          </label>
+                        )}
+
+                        {step.key === 'tempo' && (
+                          <>
+                            <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                              Target BPM
+                              <input
+                                type="number"
+                                min={40}
+                                max={240}
+                                value={stepParams.tempo.target_bpm ?? ''}
+                                onChange={(e) =>
+                                  patchStepParams('tempo', {
+                                    target_bpm: e.target.value ? Number(e.target.value) : undefined,
+                                  })
+                                }
+                                className="w-24 px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                              />
+                            </label>
+                            {!stepParams.tempo.target_bpm && (
+                              <span className="text-xs text-amber-600 dark:text-amber-400">
+                                Enter a target BPM to run this step.
+                              </span>
+                            )}
+                          </>
                         )}
 
                         <details className="text-xs">
@@ -988,6 +1077,33 @@ export default function MultitrackEditor({
                                     No frequency imbalance detected — high-pass/low-pass only.
                                   </span>
                                 )}
+                              </>
+                            )}
+
+                            {step.key === 'pitch' && (
+                              <>
+                                <label className="text-gray-600 dark:text-gray-400">
+                                  Key override (optional)
+                                  <input
+                                    type="text"
+                                    placeholder="e.g. A minor"
+                                    value={stepParams.pitch.key ?? ''}
+                                    onChange={(e) =>
+                                      patchStepParams('pitch', { key: e.target.value || undefined })
+                                    }
+                                    className={inputClass}
+                                  />
+                                </label>
+                                <label className="flex items-center gap-2 text-gray-600 dark:text-gray-400 sm:col-span-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={stepParams.pitch.chromatic}
+                                    onChange={(e) =>
+                                      patchStepParams('pitch', { chromatic: e.target.checked })
+                                    }
+                                  />
+                                  Chromatic (snap to nearest semitone instead of the detected key)
+                                </label>
                               </>
                             )}
 

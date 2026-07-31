@@ -2222,9 +2222,12 @@ class BigFlavorMCPServer:
                 ``step_params`` override.
             keep_intermediates: Save intermediate processing steps
             steps_override: Optional per-step on/off map keyed by
-                'trim', 'noise_reduction', 'eq', 'normalize', 'master'. A value
-                forces that step on (True) or off (False), overriding the
-                analysis recommendation; unspecified steps follow the analysis.
+                'trim', 'noise_reduction', 'eq', 'normalize', 'master', 'pitch',
+                'tempo'. A value forces that step on (True) or off (False),
+                overriding the analysis recommendation; unspecified steps
+                follow the analysis. 'pitch' and 'tempo' have no analysis
+                recommendation backing them (opt-in only — default off unless
+                explicitly set True; issue #82).
                 The 'trim' value may instead be a dict
                 ``{"trim_to_selection": True, "start_s": .., "end_s": ..,
                 "fade_ms": ..}`` to keep only a chosen span (with fades at the
@@ -2242,15 +2245,20 @@ class BigFlavorMCPServer:
                 list of ``{"frequency", "gain_db"}``, replacing the
                 analysis-derived bands entirely when given);
                 ``normalize.{target_peak_db, apply_compression,
-                compression_ratio}``; ``master.target_lufs``.
+                compression_ratio}``; ``master.target_lufs``; ``pitch.
+                {correction_strength, key, chromatic, semitones, auto_tune}``
+                (auto-tune, key-aware — same `correct_pitch` tool the old
+                region editor used); ``tempo.target_bpm`` (whole-track
+                time-stretch via `match_tempo`; issue #82).
             start_s / end_s: Optional time range (seconds) scoping the whole
-                clean to a region instead of the whole file. Trim/hum/noise/EQ
-                are confined to that span (audio outside it is untouched);
-                Normalize and Master are whole-track operations (peak
-                normalization / integrated loudness) and are always skipped
-                when a region is set, regardless of ``steps_override`` — even
-                out-of-region audio's peak/loudness would shift ("out-of-band"
-                caveat, issue #77 follow-up).
+                clean to a region instead of the whole file. Trim/hum/noise/EQ/
+                pitch are confined to that span (audio outside it is
+                untouched); Normalize, Master, and Tempo are whole-track
+                operations (peak normalization / integrated loudness /
+                time-stretch) and are always skipped when a region is set,
+                regardless of ``steps_override`` — even out-of-region audio's
+                peak/loudness/duration would shift ("out-of-band" caveat,
+                issue #77 follow-up, extended to Tempo in issue #82).
 
         Returns:
             Processing results with steps taken
@@ -2293,6 +2301,12 @@ class BigFlavorMCPServer:
             # Normalize/master are whole-track operations — never run on a region.
             do_normalize = False if has_region else bool(overrides.get("normalize", True))
             do_master = False if has_region else bool(overrides.get("master", True))
+            # Pitch/tempo (issue #82): no analysis recommendation backs either,
+            # so both are opt-in only (default off). Pitch is region-scoped like
+            # trim/noise/EQ; tempo is a whole-track time-stretch, so it's forced
+            # off under a region exactly like normalize/master above.
+            do_pitch = bool(overrides.get("pitch", False))
+            do_tempo = False if has_region else bool(overrides.get("tempo", False))
 
             # Adjust recommendations based on aggressiveness
             aggressiveness_multipliers = {
@@ -2518,7 +2532,74 @@ class BigFlavorMCPServer:
                         "bands": eq_bands,
                         "output": str(eq_output) if keep_intermediates else "temp"
                     })
-            
+
+            # Step 4b: Pitch correction (issue #82 — restored to the /produce
+            # editor as a step in the unified pipeline). Auto-tune, key-aware,
+            # region-scoped like trim/noise/EQ via correct_pitch's own
+            # start_s/end_s + splice-back. No manual whole-file transpose
+            # control is exposed here; semitones defaults to 0 (no extra shift
+            # on top of the auto-tune correction).
+            if do_pitch:
+                logger.info("Step 4b: Pitch correction...")
+
+                if keep_intermediates:
+                    pitch_output = intermediate_dir / "04b_pitch.wav"
+                else:
+                    import tempfile
+                    pitch_output = Path(tempfile.mktemp(suffix=".wav"))
+
+                result = await self.correct_pitch(
+                    current_file,
+                    step_param("pitch", "semitones", 0),
+                    step_param("pitch", "auto_tune", True),
+                    str(pitch_output),
+                    correction_strength=step_param("pitch", "correction_strength", 1.0),
+                    key=step_param("pitch", "key", None),
+                    chromatic=step_param("pitch", "chromatic", False),
+                    start_s=start_s,
+                    end_s=end_s,
+                )
+
+                if result.get("status") == "success":
+                    current_file = str(pitch_output)
+                    steps_taken.append({
+                        "step": "pitch",
+                        "mode": result.get("mode"),
+                        "key": result.get("key"),
+                        "notes_corrected": result.get("notes_corrected"),
+                        "correction_strength": result.get("correction_strength"),
+                        "output": str(pitch_output) if keep_intermediates else "temp"
+                    })
+
+            # Step 4c: Tempo / beat correction (issue #82 — restored). Whole-
+            # track time-stretch to an explicit target BPM via match_tempo; no
+            # analysis recommends a target, so this only runs when the caller
+            # supplies one. Always skipped under a region (do_tempo above).
+            if do_tempo:
+                target_bpm = step_param("tempo", "target_bpm", None)
+                if target_bpm:
+                    logger.info("Step 4c: Tempo correction...")
+
+                    if keep_intermediates:
+                        tempo_output = intermediate_dir / "04c_tempo.wav"
+                    else:
+                        import tempfile
+                        tempo_output = Path(tempfile.mktemp(suffix=".wav"))
+
+                    result = await self.match_tempo(
+                        current_file, float(target_bpm), str(tempo_output)
+                    )
+
+                    if result.get("status") == "success":
+                        current_file = str(tempo_output)
+                        steps_taken.append({
+                            "step": "tempo",
+                            "original_bpm": result.get("original_bpm"),
+                            "target_bpm": result.get("target_bpm"),
+                            "stretch_ratio": result.get("stretch_ratio"),
+                            "output": str(tempo_output) if keep_intermediates else "temp"
+                        })
+
             # Step 5: Normalize with compression
             if do_normalize:
                 logger.info("Step 4: Normalization...")
@@ -2614,6 +2695,8 @@ class BigFlavorMCPServer:
                     "hum_removal": any(s["step"] == "hum_removal" for s in steps_taken),
                     "noise_reduction": any(s["step"] == "noise_reduction" for s in steps_taken),
                     "eq": any(s["step"] == "eq" for s in steps_taken),
+                    "pitch": any(s["step"] == "pitch" for s in steps_taken),
+                    "tempo": any(s["step"] == "tempo" for s in steps_taken),
                     "normalize": any(s["step"] == "normalize" for s in steps_taken),
                     "mastering": any(s["step"] == "mastering" for s in steps_taken)
                 }

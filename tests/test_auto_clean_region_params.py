@@ -41,6 +41,29 @@ def _band_mag_db(y: np.ndarray, sr: int, freq: float) -> float:
     return 20 * np.log10(spectrum[idx] + 1e-12)
 
 
+def _click_track(times, dur, sr=SR):
+    """A mono click track: a short decaying blip at each beat time (seconds).
+
+    match_tempo's beat detection needs rhythmic content — a steady sine tone has
+    no beat_track-detectable pulse and yields a 0 BPM (division by zero). Mirrors
+    test_beat_correction.py's fixture.
+    """
+    n = int(dur * sr)
+    y = np.zeros(n, dtype=np.float32)
+    blip_len = int(0.02 * sr)
+    env = np.exp(-np.linspace(0, 8, blip_len))
+    tone = np.sin(2 * np.pi * 1500 * np.arange(blip_len) / sr) * env
+    for t in times:
+        s = int(t * sr)
+        e = min(n, s + blip_len)
+        if s < n:
+            y[s:e] += tone[: e - s]
+    peak = np.max(np.abs(y))
+    if peak > 0:
+        y = (y / peak * 0.9).astype(np.float32)
+    return y
+
+
 @pytest.fixture
 def server():
     return BigFlavorMCPServer(enable_audio_analysis=True)
@@ -287,6 +310,181 @@ async def test_auto_clean_step_params_normalize_target_and_ratio_override(server
     norm_step = next(s for s in result["steps_applied"] if s["step"] == "normalize")
     assert norm_step["target_peak_db"] == -6.0
     assert norm_step["compression_ratio"] == 8.0
+
+
+@pytest.mark.asyncio
+async def test_auto_clean_pitch_step_off_by_default(server, tmp_path):
+    """No steps_override entry for 'pitch' must leave it off (opt-in only,
+    no analysis recommendation backs it — issue #82)."""
+    in_path = tmp_path / "in.wav"
+    out_path = tmp_path / "out.wav"
+    sf.write(in_path, _tone(2.0, 440.0, 0.3), SR)
+
+    result = await server.auto_clean_recording(
+        str(in_path),
+        str(out_path),
+        steps_override={"trim": False, "noise_reduction": False, "eq": False, "normalize": False, "master": False},
+    )
+
+    assert result["status"] == "success"
+    step_names = {s["step"] for s in result["steps_applied"]}
+    assert "pitch" not in step_names
+    assert result["recommendations_followed"]["pitch"] is False
+
+
+@pytest.mark.asyncio
+async def test_auto_clean_pitch_step_applies_correction_when_enabled(server, tmp_path):
+    """A monophonic tone shifted off-key gets pulled back toward the key when
+    the pitch step is explicitly enabled (issue #82)."""
+    in_path = tmp_path / "in.wav"
+    out_path = tmp_path / "out.wav"
+    # A held tone a bit sharp of A4 (440 Hz) — auto-tune (key C major, chromatic
+    # snap) should nudge it back toward the nearest in-scale/chromatic pitch.
+    sf.write(in_path, _tone(2.0, 453.0, 0.3), SR)
+
+    result = await server.auto_clean_recording(
+        str(in_path),
+        str(out_path),
+        steps_override={
+            "trim": False, "noise_reduction": False, "eq": False,
+            "normalize": False, "master": False, "pitch": True,
+        },
+        step_params={"pitch": {"correction_strength": 1.0, "chromatic": True}},
+    )
+
+    assert result["status"] == "success"
+    pitch_step = next(s for s in result["steps_applied"] if s["step"] == "pitch")
+    assert pitch_step["mode"] in ("per_note", "global_fallback")
+
+
+@pytest.mark.asyncio
+async def test_auto_clean_pitch_step_region_scoped_leaves_audio_outside_untouched(server, tmp_path):
+    """Pitch correction confined to a region must not alter audio outside it,
+    the same safety property region scoping gives trim/noise/EQ (issue #82)."""
+    in_path = tmp_path / "in.wav"
+    out_path = tmp_path / "out.wav"
+    before = _tone(1.0, 300.0, 0.2)
+    inside = _tone(2.0, 453.0, 0.3)
+    after = _tone(1.0, 300.0, 0.2)
+    y = np.concatenate([before, inside, after])
+    sf.write(in_path, y, SR)
+
+    result = await server.auto_clean_recording(
+        str(in_path),
+        str(out_path),
+        steps_override={
+            "trim": False, "noise_reduction": False, "eq": False,
+            "normalize": False, "master": False, "pitch": True,
+        },
+        step_params={"pitch": {"correction_strength": 1.0, "chromatic": True}},
+        start_s=1.0,
+        end_s=3.0,
+    )
+
+    assert result["status"] == "success"
+    y_out, sr = sf.read(out_path, dtype="float32")
+    assert len(y_out) == len(y)
+
+    n_before = len(before)
+    n_after = len(after)
+    np.testing.assert_allclose(y_out[:n_before], before, atol=1e-3)
+    np.testing.assert_allclose(y_out[-n_after:], after, atol=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_auto_clean_tempo_step_off_by_default(server, tmp_path):
+    """No steps_override entry for 'tempo' must leave it off (opt-in only,
+    no analysis recommendation backs it — issue #82)."""
+    in_path = tmp_path / "in.wav"
+    out_path = tmp_path / "out.wav"
+    sf.write(in_path, _tone(2.0, 440.0, 0.3), SR)
+
+    result = await server.auto_clean_recording(
+        str(in_path),
+        str(out_path),
+        steps_override={"trim": False, "noise_reduction": False, "eq": False, "normalize": False, "master": False},
+    )
+
+    assert result["status"] == "success"
+    step_names = {s["step"] for s in result["steps_applied"]}
+    assert "tempo" not in step_names
+    assert result["recommendations_followed"]["tempo"] is False
+
+
+@pytest.mark.asyncio
+async def test_auto_clean_tempo_step_time_stretches_to_target_bpm(server, tmp_path):
+    in_path = tmp_path / "in.wav"
+    out_path = tmp_path / "out.wav"
+    beats = np.arange(8) * 0.5 + 0.3  # a steady ~120 BPM click track
+    sf.write(in_path, _click_track(beats, dur=4.5), SR)
+
+    result = await server.auto_clean_recording(
+        str(in_path),
+        str(out_path),
+        steps_override={
+            "trim": False, "noise_reduction": False, "eq": False,
+            "normalize": False, "master": False, "tempo": True,
+        },
+        step_params={"tempo": {"target_bpm": 140.0}},
+    )
+
+    assert result["status"] == "success"
+    tempo_step = next(s for s in result["steps_applied"] if s["step"] == "tempo")
+    assert tempo_step["target_bpm"] == 140.0
+    assert tempo_step["stretch_ratio"] is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_clean_tempo_step_skipped_without_target_bpm(server, tmp_path):
+    """Enabling 'tempo' with no target_bpm supplied must be a benign no-op,
+    not an error — match_tempo has no default target to fall back to."""
+    in_path = tmp_path / "in.wav"
+    out_path = tmp_path / "out.wav"
+    sf.write(in_path, _tone(2.0, 440.0, 0.3), SR)
+
+    result = await server.auto_clean_recording(
+        str(in_path),
+        str(out_path),
+        steps_override={
+            "trim": False, "noise_reduction": False, "eq": False,
+            "normalize": False, "master": False, "tempo": True,
+        },
+    )
+
+    assert result["status"] == "success"
+    step_names = {s["step"] for s in result["steps_applied"]}
+    assert "tempo" not in step_names
+
+
+@pytest.mark.asyncio
+async def test_auto_clean_tempo_step_always_skipped_under_a_region(server, tmp_path):
+    """Tempo is a whole-track operation, so a region must force it off exactly
+    like normalize/master, regardless of steps_override (issue #82)."""
+    in_path = tmp_path / "in.wav"
+    out_path = tmp_path / "out.wav"
+    y = np.concatenate([
+        _tone(1.0, 300.0, 0.2),
+        _tone(2.0, 440.0, 0.3),
+        _tone(1.0, 300.0, 0.2),
+    ])
+    sf.write(in_path, y, SR)
+
+    result = await server.auto_clean_recording(
+        str(in_path),
+        str(out_path),
+        steps_override={
+            "trim": False, "noise_reduction": False, "eq": False,
+            "normalize": True, "master": True, "tempo": True,
+        },
+        step_params={"tempo": {"target_bpm": 140.0}},
+        start_s=1.0,
+        end_s=3.0,
+    )
+
+    assert result["status"] == "success"
+    step_names = {s["step"] for s in result["steps_applied"]}
+    assert "tempo" not in step_names
+    assert result["recommendations_followed"]["tempo"] is False
 
 
 @pytest.mark.asyncio

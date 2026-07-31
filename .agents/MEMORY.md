@@ -9,6 +9,36 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-31 — Restore Pitch correction & Tempo/beat correction to the per-step `/produce` editor (issue #82)
+QA on PR #81 (per-step tunable cleaning) flagged that its `StepKey`/`STEP_DEFS` rework silently
+dropped Pitch correction and Tempo/beat correction from the UI, even though the backing tools
+(`correct_pitch`, `match_tempo`) still worked — a straight regression, filed as issue #82 (also
+serving as PR #81's missing linked issue). Fixed by pushing a new commit onto PR #81's branch
+(`feat/per-step-tunable-cleaning-region-unification`) rather than branching off `main`, since #82's
+spec builds directly on that branch's not-yet-merged `step_params`/`StepDefs` pattern.
+- **Backend** (`src/production/big_flavor_mcp.py`): `auto_clean_recording` gained two opt-in steps
+  (no analysis recommends either, so both default off) run between EQ and Normalize: `pitch` calls
+  the existing `correct_pitch` (auto-tune, key-aware, region-scoped like trim/noise/EQ) and `tempo`
+  calls the existing `match_tempo` (whole-track time-stretch to an explicit `target_bpm`, forced off
+  under a region exactly like Normalize/Master — it has no region parameter). Neither tool's own
+  algorithm changed; this is orchestration-only. No `src/api/routers/produce.py` changes needed —
+  `step_params`/`steps_override` were already untyped pass-throughs.
+- **Frontend** (`MultitrackEditor.tsx`): added `pitch`/`tempo` to `StepKey`/`STEP_DEFS`, each with its
+  own controls (no shared Intensity, per the spec) — Pitch: retune strength, key override, chromatic
+  toggle (available in both Whole song and Region mode); Tempo: target BPM (Whole song only, gated by
+  `wholeSongOnly` like Normalize/Master). `canRun` now blocks running when Tempo is enabled with no
+  target BPM set.
+- 7 new tests in `tests/test_auto_clean_region_params.py` (off-by-default, applies-when-enabled,
+  region-scoping safety for pitch; time-stretch, no-target-bpm no-op, and region-forced-off for
+  tempo) — the tempo fixture needed a synthesized click track (`_click_track`, mirroring
+  `test_beat_correction.py`), since `match_tempo`'s `librosa.beat.beat_track` can't detect a tempo
+  from a steady sine tone (divide-by-zero). Verified via `pytest` (7 new + 12 pre-existing in that
+  file, plus 29 other pre-existing MCP tests, all passing) and `npm run build` (`next lint` still has
+  the same pre-existing environmental CLI-parsing failure QA noted on PR #81, unrelated to this
+  change). Docker daemon was down locally so the backend-boot check was skipped (infra, not code).
+- Pushed straight to PR #81 (no new PR) and edited its body to add `Closes #82`, resolving both of
+  QA's required changes on that PR in one pass.
+
 ### 2026-07-31 — Per-step tunable cleaning params + unified whole-song/region flow (issue #77 follow-up)
 Addressed user confusion that the `/produce` editor's global Intensity dropdown didn't visibly relate
 to the "target" shown in Detected Issues (Normalize's target was hardcoded −3dB, Master's target came
