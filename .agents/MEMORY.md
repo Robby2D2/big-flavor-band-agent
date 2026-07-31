@@ -72,6 +72,18 @@ controls → Preview/Clean pipeline as whole-song, just scoped to `start_s`/`end
   change — pre-existing CLI quirk, not investigated).
 - **Housekeeping note:** this file is now well past the ~200-line pruning threshold in AGENTS.md —
   next session doing memory upkeep should move older entries into `.agents/memory/`.
+### 2026-07-31 — Release `v0.16.2` (release-manager)
+Cut **`v0.16.2`** from `main` (HEAD `b8894a1`), a **patch** bump from `v0.16.1` — the 3-commit range
+has no new feature: it's a docs-only change (`ddb2f82`, convert ASCII architecture diagrams to
+Mermaid) merged via a direct merge commit (`b8894a1`, no PR reference), plus the v0.16.1 memory
+chore (`07fc8d6`). No `#NN` PR references in the commit subjects, so no linked closed issues to
+notify. Published GitHub Release with auto-generated notes anchored to `v0.16.1`:
+https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.16.2. Sanity gate: Docker was up;
+backend restart booted clean (RAG system ready, MCP production server loaded, DB pool created,
+CLAP model warm-up hit HF as expected on cold start) — the only log error was the same pre-existing
+`PermissionError` on `/app/streaming/playlist/radio.m3u` in the radio loop noted since v0.14.0
+(local volume-mount permission issue, unrelated to this docs-only range). Frontend `npm run build`
+**passed**. Proceeded per Step 4.5.
 
 ### 2026-07-30 — Release `v0.16.1` (release-manager)
 Cut **`v0.16.1`** from `main` (HEAD `adefdb8`), a **patch** bump from `v0.16.0` — the 3-commit range
