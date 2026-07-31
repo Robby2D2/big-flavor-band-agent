@@ -4,6 +4,7 @@ import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import MultitrackEditor from '@/components/produce/MultitrackEditor';
+import ToolPanel from '@/components/produce/ToolPanel';
 
 interface CatalogSong {
   id: number;
@@ -236,6 +237,25 @@ export default function ProduceSongPage({
             / gain.
           </p>
           <MultitrackEditor
+            songId={songId}
+            versions={versions}
+            onApplied={loadVersions}
+          />
+        </div>
+
+        {/* Per-tool controls: tweak each tool's params, Analyze to see what it
+            found, then Apply — each Apply creates a new candidate version. */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-6">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+            Per-tool controls
+          </h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            Work one effect at a time: adjust its settings, run <strong>Analyze</strong> to
+            see what it detected (and optionally adopt the suggested values), then
+            <strong> Apply</strong>. Set an optional region to limit an effect to a span.
+            Every Apply produces a new candidate version below — nothing is overwritten.
+          </p>
+          <ToolPanel
             songId={songId}
             versions={versions}
             onApplied={loadVersions}

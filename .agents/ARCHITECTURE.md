@@ -47,7 +47,13 @@ src/
     lyrics_extractor.py       # Whisper lyric transcription
     index_lyrics.py           # batch lyric indexing
   llm/llm_provider.py         # LLMProvider abstraction (AnthropicProvider, OllamaProvider)
-  production/big_flavor_mcp.py # MCP server — audio production / write tools
+  production/
+    big_flavor_mcp.py         # MCP server host — advertises + dispatches the tool registry
+    toolkit.py                # AudioTool base, Param schema, ToolContext, REGISTRY, @register
+    audio_io.py               # shared load/write/per-channel helpers + WAV subtypes
+    analysis.py               # shared DSP analysis (key/beat/pitch/hum/LUFS + per-tool loaders)
+    region.py                 # region scoping (resolve_region/apply_to_region/blend_strength)
+    tools/                    # ONE FILE PER TOOL (trim_silence.py, reduce_noise.py, apply_eq.py, …)
 database/
   database.py                 # DatabaseManager (asyncpg) — the single DB access point
   apply_schema.py             # schema bootstrap
@@ -123,13 +129,30 @@ the Model Context Protocol (analyze tempo/key/beats via librosa, tempo-match/tim
 beat-matched transitions, mastering). It runs as a separate process so heavy audio work is isolated
 from the API event loop.
 
+**Per-tool registry (2026-07):** each tool is a self-contained `AudioTool` subclass in its own file
+under `src/production/tools/` (one file per tool — adding a tool = adding a file), registered into
+`toolkit.REGISTRY` via `@register`. A tool declares `params` (a list of `Param` with
+default/min/max/label/choices that renders as both a JSON inputSchema and a UI control) and implements
+`analyze(ctx, …)` (inspect-only: returns `{recommended, params, findings, reason}`) and
+`apply(ctx, …)` (the processing). `BigFlavorMCPServer` is a thin host: `list_tools()` and
+`dispatch_tool()` are generic loops over the registry, `analyze_tool()` runs the read side, and a
+`__getattr__` shim resolves `server.<tool>(…)` to the tool's `apply` (bound to a shared `ToolContext`)
+so legacy positional-arg call sites and the auto-clean orchestrator keep working. Shared DSP lives in
+`audio_io.py`/`analysis.py`, re-exported from `big_flavor_mcp` so older imports (e.g. `_detect_beats`
+in `produce.py`) still resolve. The **per-tool HTTP surface** is `GET /api/produce/tools` +
+`POST /api/produce/tools/{tool}/{analyze,apply}` (`src/api/routers/produce.py`), driving the produce
+editor's **ToolPanel** (`frontend/components/produce/ToolPanel.tsx`): adjust a tool's params →
+Analyze (see findings, optionally adopt suggested values) → Apply (saves a candidate version).
+
 **Region scoping** (`src/production/region.py`): `resolve_region`/`apply_to_region` let a cleanup
 tool (trim, hum, noise, EQ) confine itself to a `start_s`/`end_s` span, splicing the processed region
 back in with a short crossfade so audio outside it is untouched (bit-identical). Normalize and
 Master are **whole-track** operations (peak normalization / integrated LUFS) and never take a region.
 
 **Unified analyze-and-clean pipeline** (`analyze_and_recommend_processing` → `auto_clean_recording`,
-`src/api/routers/produce.py`'s `/api/produce/analyze` + `/api/produce/auto-clean`): the `/produce`
+now registry tools in `tools/analyze_recommend.py` + `tools/auto_clean.py` — the latter orchestrates
+the other tools via `REGISTRY`; reached over `src/api/routers/produce.py`'s `/api/produce/analyze` +
+`/api/produce/auto-clean`): the `/produce`
 editor's "Whole song" and "Region" selection modes both drive this one pipeline — a region is a scope
 passed to `start_s`/`end_s`, not a different tool. Analysis returns a per-step
 `recommended_intensity` (gentle/moderate/aggressive) derived from its own measurements (noise floor,
@@ -207,6 +230,7 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2025-11 | `mksafe()` wrapper on Liquidsoap sources | Without it `fallback` picks `blank()` even with valid playlists (sources look "not ready" at init). |
 | 2025-12 | Auth0/Google OAuth with multiple callback URLs (`6718150`) | One OAuth app serves both dev and prod redirect URLs. |
 | 2025-12 | Production Docker environment + nginx SSL (`c633d34`, `00a73fa`) | Make the stack deployable to a real host, not just localhost. |
+| 2026-07 | Per-tool audio registry: one file per tool + `analyze`/`apply` contract | The 3,900-line MCP monolith made adding a tool a 3-place edit and the analyze step all-or-nothing. Every tool — single effects *and* the whole-song `analyze_and_recommend_processing`/`auto_clean_recording` orchestrators — is now a self-contained `AudioTool` under `tools/` with declared params; the server dropped to ~190 lines as a generic host over `REGISTRY` (no audio logic). New `/api/produce/tools/{tool}/{analyze,apply}` surface + ToolPanel give a per-tool "adjust params → analyze → apply" flow; the whole-song one-click clean is preserved, now registry-backed. `region_tools.py`'s param whitelist is derived from the registry. |
 | 2025-12 | Frontend shows raw results, not the agent's prose (`eb3a032`) | Surfacing structured search results is clearer for music discovery than an LLM narration. |
 | 2026-06 | Radio state externalized to PostgreSQL via `RadioStateStore` (migration `06`, issue #2) | In-memory per-process radio state was wiped on every backend restart and diverged across replicas; backing it with Postgres (no new infra) makes the radio restart-tolerant and stateless (OKR O3.3 / O4.3). |
 | 2026-07 | `/produce`'s Region mode reuses the whole-song analyze-and-clean pipeline instead of a separate single-tool flow (issue #77 follow-up) | A region is just a scope (`start_s`/`end_s`), not a different tool — users expect the same "detected issues → tunable steps" experience either way. Region-mode Trim goes through `trim_silence`'s own scoped silence-trim, not the whole-file crop-to-detected-span path, so a mid-track selection can never delete audio outside it. |

@@ -1,8 +1,8 @@
 """
 Assert-based tests for the EQ/mastering correctness fixes (issue #59).
 
-These exercise BigFlavorMCPServer's pure audio-processing methods
-(apply_eq, apply_mastering, _measure_integrated_lufs) directly against
+These exercise the per-tool audio processing (apply_eq, apply_mastering) and
+the shared loudness helper (analysis.measure_integrated_lufs) directly against
 synthetic sine-wave WAV fixtures — no live DB, no LLM, no MCP transport.
 """
 
@@ -17,6 +17,7 @@ import soundfile as sf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.production.big_flavor_mcp import BigFlavorMCPServer
+from src.production.analysis import measure_integrated_lufs
 
 SR = 22050
 DURATION_S = 2.0
@@ -127,11 +128,11 @@ async def test_apply_eq_peaking_gain_matches_request(server, tmp_path, freq, gai
 
 
 def test_measure_integrated_lufs_is_a_real_measurement(server):
-    """_measure_integrated_lufs returns a finite BS.1770 figure, not the old rms_db - 15 guess."""
+    """measure_integrated_lufs returns a finite BS.1770 figure, not the old rms_db - 15 guess."""
     t = np.arange(0, 3.0, 1 / SR)
     y = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float64)
 
-    measured = server._measure_integrated_lufs(y, SR)
+    measured = measure_integrated_lufs(y, SR)
 
     assert np.isfinite(measured)
     # A half-scale 1kHz tone should land in a plausible loudness range, not

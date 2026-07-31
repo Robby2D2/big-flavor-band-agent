@@ -9,6 +9,46 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-31 — Per-tool audio API: one file per tool + declare-params → analyze → apply
+Refactored the ~3,900-line `src/production/big_flavor_mcp.py` monolith (where every tool's schema,
+routing, and implementation lived in three separate places) into a **per-tool registry** so adding a
+tool is "add one file", and gave each tool a two-phase **analyze → apply** contract the producer can
+drive per tool. User-approved plan, class-per-tool + full-stack + independent per-tool analyze.
+- **New modules:** `src/production/toolkit.py` (`AudioTool` base, `Param` schema, `ToolContext`,
+  `REGISTRY`, `@register`), `audio_io.py` (load/write/per-channel + WAV subtypes), `analysis.py`
+  (key/beat/pitch/hum/LUFS helpers + `load_for_analysis`/`detect_hum`/`measure_integrated_lufs`/
+  `perform_audio_analysis`), and `tools/*.py` — 13 one-file tools (trim_silence, reduce_noise,
+  remove_hum, apply_eq, remove_artifacts, correct_pitch, correct_beats, match_tempo,
+  normalize_audio, apply_mastering, create_transition, analyze_audio, get_audio_cache_stats).
+- **Server is now a thin host:** `list_tools()`/`dispatch_tool()` are generic loops over `REGISTRY`;
+  `analyze_tool()` runs the read side; a `__getattr__` shim maps `server.<tool>(...)` → the tool's
+  `apply` bound to a shared `ToolContext`, so existing tests + `auto_clean_recording` (which now
+  orchestrates the registry via the shim) keep working unchanged. Moved helpers are re-exported from
+  `big_flavor_mcp` so `from ...big_flavor_mcp import _detect_beats` etc. still resolve.
+- **Dual import** (`from ..x` / `from x`) in every new module because the agent loads
+  `big_flavor_mcp` flat while tests import `src.production.big_flavor_mcp`.
+- **Per-tool `analyze()`** (independent, not a shared bundle): trim/noise/hum/eq/normalize/master/
+  beats each inspect only their own concern and return `{recommended, params, findings, reason}`;
+  others inherit the base stub.
+- **API + UI:** `GET /api/produce/tools`, `POST /api/produce/tools/{tool}/{analyze,apply}` in
+  `produce.py`; new `frontend/components/produce/ToolPanel.tsx` (+ `app/api/produce/tools/**` proxies)
+  renders each tool's params as controls → Analyze (adopt suggested values) → Apply (saves a candidate
+  version). Mounted as a "Per-tool controls" card on `/produce/[songId]`.
+- **Monolith retired (per follow-up "retire and branch"):** `analyze_and_recommend_processing` and
+  `auto_clean_recording` are no longer server methods — they're registry tools
+  (`tools/analyze_recommend.py`, `tools/auto_clean.py`, both `hidden_from_editor=True`). `AutoClean`
+  orchestrates the other tools via `REGISTRY[...].apply(ctx, …)` (no hard-coded methods). The server
+  class dropped from ~3,900 to ~190 lines and carries no audio logic. The whole-song one-click/batch
+  clean feature is preserved (same endpoints, same output shape) — it's just registry-backed now.
+- **Region whitelist folded** onto the registry: `region_tools.py` derives each friendly tool's
+  forwardable params from the target tool's declared `Param`s (single source of truth), with the
+  old hardcoded map kept only as a lean-CI fallback (preserves its dependency-free import property).
+- **Tests:** new `tests/test_toolkit_registry.py`; full production suite **143 passed, 1 skipped, 1
+  pre-existing failure** (`test_produce_router::test_list_catalog_songs_returns_id_title` — `FakeDB`
+  missing `get_song_ids_with_cleaned_versions`, fails identically on original `produce.py`, unrelated).
+  `npm run build` clean (note: `npm run lint`/`next lint` broken repo-wide under Next 16, pre-existing).
+  Not run: live HTTP smoke against the Docker stack (no local DB/agent in this env).
+
 ### 2026-07-31 — Restore Pitch correction & Tempo/beat correction to the per-step `/produce` editor (issue #82)
 QA on PR #81 (per-step tunable cleaning) flagged that its `StepKey`/`STEP_DEFS` rework silently
 dropped Pitch correction and Tempo/beat correction from the UI, even though the backing tools
