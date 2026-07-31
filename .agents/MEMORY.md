@@ -9,6 +9,69 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-07-31 — Restore Pitch correction & Tempo/beat correction to the per-step `/produce` editor (issue #82)
+QA on PR #81 (per-step tunable cleaning) flagged that its `StepKey`/`STEP_DEFS` rework silently
+dropped Pitch correction and Tempo/beat correction from the UI, even though the backing tools
+(`correct_pitch`, `match_tempo`) still worked — a straight regression, filed as issue #82 (also
+serving as PR #81's missing linked issue). Fixed by pushing a new commit onto PR #81's branch
+(`feat/per-step-tunable-cleaning-region-unification`) rather than branching off `main`, since #82's
+spec builds directly on that branch's not-yet-merged `step_params`/`StepDefs` pattern.
+- **Backend** (`src/production/big_flavor_mcp.py`): `auto_clean_recording` gained two opt-in steps
+  (no analysis recommends either, so both default off) run between EQ and Normalize: `pitch` calls
+  the existing `correct_pitch` (auto-tune, key-aware, region-scoped like trim/noise/EQ) and `tempo`
+  calls the existing `match_tempo` (whole-track time-stretch to an explicit `target_bpm`, forced off
+  under a region exactly like Normalize/Master — it has no region parameter). Neither tool's own
+  algorithm changed; this is orchestration-only. No `src/api/routers/produce.py` changes needed —
+  `step_params`/`steps_override` were already untyped pass-throughs.
+- **Frontend** (`MultitrackEditor.tsx`): added `pitch`/`tempo` to `StepKey`/`STEP_DEFS`, each with its
+  own controls (no shared Intensity, per the spec) — Pitch: retune strength, key override, chromatic
+  toggle (available in both Whole song and Region mode); Tempo: target BPM (Whole song only, gated by
+  `wholeSongOnly` like Normalize/Master). `canRun` now blocks running when Tempo is enabled with no
+  target BPM set.
+- 7 new tests in `tests/test_auto_clean_region_params.py` (off-by-default, applies-when-enabled,
+  region-scoping safety for pitch; time-stretch, no-target-bpm no-op, and region-forced-off for
+  tempo) — the tempo fixture needed a synthesized click track (`_click_track`, mirroring
+  `test_beat_correction.py`), since `match_tempo`'s `librosa.beat.beat_track` can't detect a tempo
+  from a steady sine tone (divide-by-zero). Verified via `pytest` (7 new + 12 pre-existing in that
+  file, plus 29 other pre-existing MCP tests, all passing) and `npm run build` (`next lint` still has
+  the same pre-existing environmental CLI-parsing failure QA noted on PR #81, unrelated to this
+  change). Docker daemon was down locally so the backend-boot check was skipped (infra, not code).
+- Pushed straight to PR #81 (no new PR) and edited its body to add `Closes #82`, resolving both of
+  QA's required changes on that PR in one pass.
+
+### 2026-07-31 — Per-step tunable cleaning params + unified whole-song/region flow (issue #77 follow-up)
+Addressed user confusion that the `/produce` editor's global Intensity dropdown didn't visibly relate
+to the "target" shown in Detected Issues (Normalize's target was hardcoded −3dB, Master's target came
+from analysis — neither moved with Intensity, which only scaled noise/EQ/compression-ratio). Also
+unified "Whole song" and "Region" selection: Region used to be a separate single-tool
+preview/apply flow with no analysis; it now drives the *same* analyze → detected-issues → per-step
+controls → Preview/Clean pipeline as whole-song, just scoped to `start_s`/`end_s`.
+- **Backend** (`src/production/big_flavor_mcp.py`): `analyze_and_recommend_processing` takes an
+  optional region and returns absolute-file-time results plus a `recommended_intensity` per step
+  (noise/EQ/normalize/master), derived from existing measurements. `auto_clean_recording` gains
+  `step_params` (explicit per-step raw-parameter overrides — target_lufs, reduction_strength,
+  compression_ratio, EQ bands, etc. — that always win over the `aggressiveness`-scaled
+  recommendation) and region bounds; a region always skips Normalize/Master (whole-track ops) and
+  routes Trim through `trim_silence`'s own scoped silence-trim instead of the whole-file
+  crop-to-detected-span path, so a mid-track selection can't delete audio outside it. `normalize_audio`
+  gained a real `compression_ratio` param — previously computed but silently dropped before reaching
+  it. Also fixed `dispatch_tool` (the actual `execute_tool` call path) to forward `start_s`/`end_s`/
+  `step_params`, which the JSON tool-schema declarations don't enforce.
+- **API** (`src/api/routers/produce.py`): `ProduceRequest` gained `step_params`, `start_s`/`end_s`,
+  `preview`; `/api/produce/auto-clean` writes a non-versioned preview candidate when `preview=true`
+  (mirroring the old region-tool preview/apply split); the dedup key folds in `step_params`/region.
+- **Frontend** (`MultitrackEditor.tsx`): replaced the single global Intensity dropdown with per-step
+  cards (Reduce noise/EQ/Normalize/Master), each pre-filled from the analysis's suggested intensity
+  and expandable to raw parameters; Region mode hides Normalize/Master and only shows
+  Trim/Noise/EQ. Old single-tool `/region/preview` + `/region/apply` endpoints/routes left in place
+  (unused by the UI now) — flagged for later removal.
+- 12 new tests in `tests/test_auto_clean_region_params.py` (synthetic audio, no DB), including a
+  region-trim safety test proving audio outside a selected span survives cleaning. Verified via
+  `pytest` (12 new + 19 pre-existing passing, unrelated DB-requiring tests skipped — no local
+  Postgres) and `npm run build` (`next lint` itself errors in this environment regardless of this
+  change — pre-existing CLI quirk, not investigated).
+- **Housekeeping note:** this file is now well past the ~200-line pruning threshold in AGENTS.md —
+  next session doing memory upkeep should move older entries into `.agents/memory/`.
 ### 2026-07-31 — Release `v0.16.2` (release-manager)
 Cut **`v0.16.2`** from `main` (HEAD `b8894a1`), a **patch** bump from `v0.16.1` — the 3-commit range
 has no new feature: it's a docs-only change (`ddb2f82`, convert ASCII architecture diagrams to

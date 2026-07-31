@@ -22,6 +22,10 @@ export async function POST(request: NextRequest) {
         aggressiveness: body.aggressiveness || 'moderate',
         steps_override: body.steps_override ?? null,
         source_version_id: body.source_version_id ?? null,
+        step_params: body.step_params ?? null,
+        start_s: body.start_s ?? null,
+        end_s: body.end_s ?? null,
+        preview: body.preview ?? false,
       }),
     });
 

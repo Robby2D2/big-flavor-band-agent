@@ -19,6 +19,7 @@ never leave the server and a cleanup run can never overwrite the original catalo
 audio or trigger a re-index of the original. Editor-gated, consistent with the
 existing tools endpoint (issue #1).
 """
+import json
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -54,6 +55,19 @@ class ProduceRequest(BaseModel):
     # original), so an already-cleaned version can be re-cleaned with different
     # options into a new version (issue #49). The version must belong to the song.
     source_version_id: Optional[int] = None
+    # Per-step raw-parameter overrides (issue #77 follow-up), e.g.
+    # {"master": {"target_lufs": -12}}. An explicit value always wins over the
+    # analysis recommendation as scaled by aggressiveness.
+    step_params: Optional[Dict[str, Dict[str, Any]]] = None
+    # Optional region (seconds) scoping analyze/auto-clean to a selected span of
+    # the waveform instead of the whole song. Normalize/Master are always
+    # skipped when a region is set (whole-track operations).
+    start_s: Optional[float] = None
+    end_s: Optional[float] = None
+    # When true, auto-clean writes a not-yet-saved preview file (streamable via
+    # GET /api/produce/preview) and creates no version, mirroring the old
+    # region-tool preview/apply split for audition before committing.
+    preview: bool = False
 
 
 class CleanRequest(BaseModel):
@@ -364,19 +378,30 @@ async def analyze_song(
     """Analyze a catalog song and return detected issues + recommended steps.
 
     Analyzes the catalog original by default, or a chosen version's audio when
-    ``source_version_id`` is set (issue #49).
+    ``source_version_id`` is set (issue #49). When ``start_s``/``end_s`` are
+    set, scopes the analysis to that region so "detected issues" reflect only
+    the selected span (issue #77 follow-up) — the same analyze-and-clean
+    pipeline the whole-song flow uses, just narrowed to a region.
     """
     source_path = await _resolve_clean_source_path(
         request.song_id, request.source_version_id, db
     )
     result = await agent.execute_tool(
-        "analyze_and_recommend_processing", {"file_path": str(source_path)}
+        "analyze_and_recommend_processing",
+        {
+            "file_path": str(source_path),
+            "start_s": request.start_s,
+            "end_s": request.end_s,
+        },
     )
     return {"result": result}
 
 
 def _autoclean_dedup_key(
-    cleanup_result: Dict[str, Any], source_version_id: Optional[int] = None
+    cleanup_result: Dict[str, Any],
+    source_version_id: Optional[int] = None,
+    step_params: Optional[Dict[str, Any]] = None,
+    region: Optional[Dict[str, Any]] = None,
 ) -> str:
     """A stable key identifying an auto-clean candidate by its inputs (issue #47).
 
@@ -386,6 +411,11 @@ def _autoclean_dedup_key(
     of applied step names. A re-run producing the same key replaces the prior
     candidate instead of appending an indistinguishable duplicate; re-cleaning a
     *different* version with the same steps gets a distinct key (issue #49).
+
+    ``step_params`` (per-step raw-parameter overrides) and ``region`` are folded
+    in too, so a hand-tuned or region-scoped run never collides with a plain
+    aggressiveness-only run that happens to touch the same steps (issue #77
+    follow-up).
     """
     steps = sorted(
         {
@@ -396,7 +426,9 @@ def _autoclean_dedup_key(
     )
     aggressiveness = cleanup_result.get("aggressiveness") or ""
     source = "original" if source_version_id is None else f"v{source_version_id}"
-    return f"{source}|{aggressiveness}|{','.join(steps)}"
+    params_key = json.dumps(step_params, sort_keys=True) if step_params else ""
+    region_key = json.dumps(region, sort_keys=True) if region else ""
+    return f"{source}|{aggressiveness}|{','.join(steps)}|{params_key}|{region_key}"
 
 
 async def save_autoclean_candidate(
@@ -405,6 +437,7 @@ async def save_autoclean_candidate(
     cleanup_result: Dict[str, Any],
     db: DatabaseManager,
     source_version_id: Optional[int] = None,
+    step_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Save a completed auto-clean run as a new candidate version (issue #47).
 
@@ -419,10 +452,13 @@ async def save_autoclean_candidate(
     await db.ensure_original_version(song_id, str(source_path))
 
     after = await run_in_threadpool(_measure_audio, output_path)
-    dedup_key = _autoclean_dedup_key(cleanup_result, source_version_id)
+    region = cleanup_result.get("region")
+    dedup_key = _autoclean_dedup_key(cleanup_result, source_version_id, step_params, region)
     metrics: Dict[str, Any] = {
         "steps_applied": cleanup_result.get("steps_applied", []),
         "aggressiveness": cleanup_result.get("aggressiveness"),
+        "step_params": step_params,
+        "region": region,
         "after": after,
         "produced_at": time.time(),
         "dedup_key": dedup_key,
@@ -466,11 +502,22 @@ async def auto_clean_song(
     Cleans the catalog original by default, or re-cleans a chosen version's audio
     when ``source_version_id`` is set, producing a new version either way — the
     source version is never overwritten (issue #49).
+
+    ``start_s``/``end_s`` scope the clean to a region — the same analyze-and-clean
+    pipeline as whole-song, just narrowed to a span (Normalize/Master are always
+    skipped in that mode, being whole-track operations). ``preview`` writes a
+    not-yet-saved candidate for audition (streamable via ``GET
+    /api/produce/preview``) instead of creating a version, mirroring the old
+    region-tool preview/apply split (issue #77 follow-up).
     """
     source_path = await _resolve_clean_source_path(
         request.song_id, request.source_version_id, db
     )
-    output_path = _build_output_path(request.song_id)
+    output_path = (
+        _produced_dir() / f"{request.song_id}_preview_{int(time.time())}.wav"
+        if request.preview
+        else _build_output_path(request.song_id)
+    )
 
     parameters: Dict[str, Any] = {
         "file_path": str(source_path),
@@ -479,18 +526,31 @@ async def auto_clean_song(
     }
     if request.steps_override is not None:
         parameters["steps_override"] = request.steps_override
+    if request.step_params is not None:
+        parameters["step_params"] = request.step_params
+    if request.start_s is not None or request.end_s is not None:
+        parameters["start_s"] = request.start_s
+        parameters["end_s"] = request.end_s
 
     result = await agent.execute_tool("auto_clean_recording", parameters)
 
-    # Only a successful run produces a file worth versioning; a failure must leave
-    # the versions list and default untouched (issue #47).
-    if result.get("status") == "success":
-        version = await save_autoclean_candidate(
-            request.song_id, str(output_path), result, db, request.source_version_id
-        )
-        return {"result": result, "version": version}
+    if result.get("status") != "success":
+        # A failure must leave the versions list and default untouched (issue #47).
+        return {"result": result}
 
-    return {"result": result}
+    if request.preview:
+        # Non-destructive audition: no version created (issue #77 follow-up).
+        return {"result": result, "candidate_path": str(output_path)}
+
+    version = await save_autoclean_candidate(
+        request.song_id,
+        str(output_path),
+        result,
+        db,
+        request.source_version_id,
+        request.step_params,
+    )
+    return {"result": result, "version": version}
 
 
 # ---- issue #30: versions, audition, approve/discard ----
