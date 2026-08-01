@@ -437,6 +437,10 @@ export default function MultitrackEditor({
   const [playhead, setPlayhead] = useState<number | null>(null);
   const originalAudioRef = useRef<HTMLAudioElement>(null);
 
+  // Stems section stays collapsed until the user opens it, so StemMixer only
+  // fetches/loads existing stems (or lets the user kick off separation) on demand.
+  const [stemsExpanded, setStemsExpanded] = useState(false);
+
   // Default the working source to the published version, else the first one,
   // and keep it if it's still present after a version list refresh.
   useEffect(() => {
@@ -1292,12 +1296,21 @@ export default function MultitrackEditor({
             )}
           </div>
 
-          {/* Per-stem rows (only render once stems exist for the song). */}
+          {/* Stems section stays collapsed until opened, so it never loads or
+              separates anything without the user asking for it. */}
           <div className="mt-6 border-t border-gray-200 dark:border-gray-700 pt-4">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">
+            <button
+              onClick={() => setStemsExpanded((v) => !v)}
+              className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white mb-3"
+            >
+              <span
+                className={`inline-block transition-transform ${stemsExpanded ? 'rotate-90' : ''}`}
+              >
+                ▶
+              </span>
               Stems
-            </h3>
-            <StemMixer songId={songId} onApplied={onApplied} />
+            </button>
+            {stemsExpanded && <StemMixer songId={songId} onApplied={onApplied} />}
           </div>
         </>
       )}
