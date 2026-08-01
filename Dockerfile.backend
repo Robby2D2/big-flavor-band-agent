@@ -22,6 +22,16 @@ COPY requirements-ml.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements-ml.txt
 
+# faster-whisper's backend (ctranslate2) is a precompiled wheel that dlopens
+# CUDA 12's cuBLAS/cuDNN by name at runtime, independent of whatever CUDA
+# version torch itself resolved to (nvidia-cublas-cu12/nvidia-cudnn-cu12 in
+# requirements-ml.txt install those cu12-named .so files, but pip drops them
+# in site-packages without registering them with ldconfig). Without this on
+# LD_LIBRARY_PATH, GPU transcription fails at runtime with "Library
+# libcublas.so.12 is not found or cannot be loaded" even though
+# torch.cuda.is_available() is True.
+ENV LD_LIBRARY_PATH="/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib"
+
 # Copy remaining (lighter, more frequently changed) requirements
 COPY requirements-api.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \

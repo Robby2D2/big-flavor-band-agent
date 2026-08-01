@@ -1,8 +1,9 @@
 # Heavy ML/RAG stack — split out from requirements-api.txt so changes to
 # lightweight deps there don't force Docker to reinstall this large,
-# rarely-changing stack. Installed from the PyTorch CPU wheel index in
-# Dockerfile.backend (the backend container has no GPU — only
-# bigflavor-ollama does) to avoid pulling multi-GB CUDA wheels.
+# rarely-changing stack. This container shares the host GPU with
+# bigflavor-ollama (see docker-compose.yml), so we install PyPI's default
+# CUDA-enabled torch/torchaudio wheels here — do not add a CPU-only
+# --extra-index-url, that silently strips GPU support.
 
 # RAG and Embeddings
 torch>=2.0.0
@@ -15,3 +16,13 @@ torchcodec>=0.15.0  # For audio encoding/decoding in torch
 # guitar/other. torch/torchaudio (above) are the heavy deps; demucs adds the
 # pretrained models and separation pipeline. MIT-licensed.
 demucs>=4.0.0
+
+# faster-whisper's backend (ctranslate2) is a precompiled wheel linked against
+# CUDA 12's cuBLAS/cuDNN specifically, regardless of the CUDA version torch
+# itself resolves to (currently CUDA 13 — see Dockerfile.backend's
+# LD_LIBRARY_PATH). Without these, GPU transcription fails at runtime with
+# "Library libcublas.so.12 is not found or cannot be loaded" even though
+# torch.cuda.is_available() is True. Pinned per faster-whisper's own install
+# docs.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*
