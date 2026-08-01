@@ -13,9 +13,31 @@ from typing import Any, Dict, Optional, Tuple
 # editor never touches the DSP — it only supplies the region and parameters.
 REGION_TOOLS = ("trim", "noise_reduction", "pitch", "tempo", "eq")
 
-# Per-tool params the editor may forward. Whitelisted so a client can never inject
-# an arbitrary MCP argument; unknown keys are dropped.
-_REGION_TOOL_PARAMS = {
+# Friendly editor tool name -> the registered MCP tool whose declared params it
+# forwards. The per-tool param whitelist below is *derived* from each tool's own
+# ``Param`` declarations (single source of truth), so adding a knob to a tool
+# exposes it to the region editor automatically.
+_FRIENDLY_TO_MCP = {
+    "trim": "trim_silence",
+    "noise_reduction": "reduce_noise",
+    "pitch": "correct_pitch",
+    "tempo": "correct_beats",
+    "eq": "apply_eq",
+}
+
+# Params the editor manages itself (source/output paths, region bounds, the
+# wet/dry strength, and the ones ``build_region_tool_args`` sets from the
+# region/strength below) — excluded from the client-forwardable set so a client
+# can't override the editor's own wiring.
+_MANAGED_PARAMS = {
+    "file_path", "output_path", "start_s", "end_s", "strength",
+    "correction_strength", "trim_to_selection",
+}
+
+# Hardcoded fallback, used only where the production tool package can't be
+# imported (a lean CI runner without librosa/mcp). Kept in sync with the derived
+# set; the derived set is authoritative when available.
+_FALLBACK_REGION_TOOL_PARAMS = {
     "trim": ("fade_ms", "threshold_db"),
     "noise_reduction": (
         "reduction_strength", "non_stationary", "noise_start_s",
@@ -25,6 +47,28 @@ _REGION_TOOL_PARAMS = {
     "tempo": ("target_bpm",),
     "eq": ("high_pass_freq", "low_pass_freq", "boost_freq", "boost_db", "eq_bands"),
 }
+
+
+def _derive_region_tool_params():
+    """Whitelist of forwardable params per friendly tool, from the registry."""
+    try:
+        from src.production import REGISTRY
+    except Exception:  # pragma: no cover - lean env without the production stack
+        return dict(_FALLBACK_REGION_TOOL_PARAMS)
+
+    derived = {}
+    for friendly, mcp_name in _FRIENDLY_TO_MCP.items():
+        tool = REGISTRY.get(mcp_name)
+        if tool is None:
+            derived[friendly] = _FALLBACK_REGION_TOOL_PARAMS.get(friendly, ())
+            continue
+        derived[friendly] = tuple(
+            p.name for p in tool.all_params() if p.name not in _MANAGED_PARAMS
+        )
+    return derived
+
+
+_REGION_TOOL_PARAMS = _derive_region_tool_params()
 
 
 def build_region_tool_args(

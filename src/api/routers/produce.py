@@ -1150,6 +1150,129 @@ async def apply_region(
     return {"status": "success", "result": result, "version": version}
 
 
+# ---------------------------------------------------------------------------
+# Per-tool audio API (declare params -> analyze -> apply).
+#
+# The registry-backed surface behind the produce editor's per-tool panels: list
+# every tool + its adjustable params, run one tool's analyze to reveal what it
+# found, then apply it (saving an auditionable candidate version). Distinct from
+# the friendly-name region editor above (build_region_tool_args) — these drive
+# each tool by its real name with its own declared params.
+# ---------------------------------------------------------------------------
+
+
+class ToolRunRequest(BaseModel):
+    """Analyze or apply one registered audio tool for a song (per-tool API).
+
+    The browser passes the catalog ``song_id`` (optionally a
+    ``source_version_id`` to work from a specific version's audio), an optional
+    region, and the tool's own ``params`` as declared by ``GET /api/produce/tools``.
+    Apply writes a produced file and saves it as an unpublished candidate
+    version; analyze processes nothing.
+    """
+    song_id: int
+    source_version_id: Optional[int] = None
+    start_s: Optional[float] = None
+    end_s: Optional[float] = None
+    params: Dict[str, Any] = {}
+
+
+def _get_registry():
+    """The audio-tool registry (imported lazily so the router loads without the
+    optional ``mcp``/DSP stack installed)."""
+    from src.production import REGISTRY
+    return REGISTRY
+
+
+@router.get("/api/produce/tools")
+async def list_produce_tools(_role: str = Depends(require_role("editor"))):
+    """List every audio tool and its adjustable params (drives the UI panels)."""
+    registry = _get_registry()
+    return {"tools": [tool.tool_info() for tool in registry.values()]}
+
+
+@router.post("/api/produce/tools/{tool}/analyze")
+async def analyze_with_tool(
+    tool: str,
+    request: ToolRunRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Run one tool's analyze pass — findings + recommended params, no processing."""
+    registry = _get_registry()
+    if tool not in registry:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool}")
+    if not agent.production_server:
+        raise HTTPException(status_code=503, detail="Production tools not available")
+
+    source_path = await _resolve_clean_source_path(
+        request.song_id, request.source_version_id, db
+    )
+    args = {
+        "file_path": str(source_path),
+        "start_s": request.start_s,
+        "end_s": request.end_s,
+        **(request.params or {}),
+    }
+    result = await agent.production_server.analyze_tool(tool, args)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return {"tool": tool, "result": result}
+
+
+@router.post("/api/produce/tools/{tool}/apply")
+async def apply_with_tool(
+    tool: str,
+    request: ToolRunRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Apply one tool and save the result as a new candidate version.
+
+    Restricted to tools that transform a single file into an output (they take a
+    ``file_path`` + ``output_path``); analysis-only / multi-input tools are not
+    valid here.
+    """
+    registry = _get_registry()
+    spec = registry.get(tool)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool}")
+    if not (spec.takes_file and spec.takes_output):
+        raise HTTPException(
+            status_code=400, detail=f"Tool '{tool}' cannot be applied to a single file"
+        )
+
+    source_path = await _resolve_clean_source_path(
+        request.song_id, request.source_version_id, db
+    )
+    output_path = _build_output_path(request.song_id)
+    args = {
+        "file_path": str(source_path),
+        "output_path": str(output_path),
+        "start_s": request.start_s,
+        "end_s": request.end_s,
+        **(request.params or {}),
+    }
+    result = await agent.execute_tool(tool, args)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=502, detail=result.get("error", f"{tool} failed"))
+
+    after = await run_in_threadpool(_measure_audio, str(output_path))
+    metrics = {
+        "steps_applied": [{"step": tool}],
+        "region": {"start_s": request.start_s, "end_s": request.end_s},
+        "params": request.params or {},
+        "after": after,
+        "produced_at": time.time(),
+    }
+    version = await save_candidate_version(
+        request.song_id, str(output_path), metrics, db
+    )
+    return {"status": "success", "result": result, "version": version}
+
+
 def _detect_song_beats(path: str) -> list:
     """Detect beat times (seconds) for a source file, reusing #69's detector.
 
