@@ -366,6 +366,75 @@ async def get_catalog_song(
     return {"song": _catalog_song_view(song, cleaned_ids)}
 
 
+# ---- Lyrics: view / edit / re-extract ----
+
+
+class LyricsUpdate(BaseModel):
+    """Edited lyrics to persist for a song."""
+    lyrics: str = ""
+
+
+@router.get("/api/produce/songs/{song_id}/lyrics")
+async def get_song_lyrics_endpoint(
+    song_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Return a song's stored lyrics (empty string when none)."""
+    lyrics = await db.get_song_lyrics(song_id)
+    return {"song_id": song_id, "lyrics": lyrics or ""}
+
+
+@router.put("/api/produce/songs/{song_id}/lyrics")
+async def save_song_lyrics(
+    song_id: int,
+    request: LyricsUpdate,
+    rag: SongRAGSystem = Depends(get_rag),
+    _role: str = Depends(require_role("editor")),
+):
+    """Persist hand-edited lyrics, re-embedding so lyric search stays consistent."""
+    from src.api import lyrics_jobs
+
+    text = (request.lyrics or "").strip()
+    await lyrics_jobs.index_lyrics_text(rag, song_id, text)
+    return {"song_id": song_id, "lyrics": text, "status": "saved"}
+
+
+@router.post("/api/produce/songs/{song_id}/lyrics/extract")
+async def extract_song_lyrics(
+    song_id: int,
+    db: DatabaseManager = Depends(get_db),
+    rag: SongRAGSystem = Depends(get_rag),
+    _role: str = Depends(require_role("editor")),
+):
+    """Start a background Whisper transcription of the song's original audio.
+
+    Returns immediately; poll the status endpoint. On success the extracted
+    lyrics are stored + embedded (same path as a manual save).
+    """
+    from src.api import lyrics_jobs
+
+    source_path = await _resolve_clean_source_path(song_id, None, db)
+    started = lyrics_jobs.manager.start(song_id, str(source_path), rag)
+    if not started:
+        return {"song_id": song_id, "status": "running", "message": "Extraction already in progress"}
+    return {"song_id": song_id, "status": "running"}
+
+
+@router.get("/api/produce/songs/{song_id}/lyrics/extract/status")
+async def extract_song_lyrics_status(
+    song_id: int,
+    _role: str = Depends(require_role("editor")),
+):
+    """Report the current lyric-extraction job status for a song."""
+    from src.api import lyrics_jobs
+
+    status = lyrics_jobs.manager.status(song_id)
+    if status is None:
+        return {"song_id": song_id, "status": "idle", "error": None}
+    return {"song_id": song_id, **status}
+
+
 # ---- issue #28: quick analyze + auto-clean ----
 
 @router.post("/api/produce/analyze")

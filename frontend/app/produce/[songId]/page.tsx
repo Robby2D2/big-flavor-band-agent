@@ -4,7 +4,7 @@ import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import MultitrackEditor from '@/components/produce/MultitrackEditor';
-import ToolPanel from '@/components/produce/ToolPanel';
+import LyricsPanel from '@/components/produce/LyricsPanel';
 
 interface CatalogSong {
   id: number;
@@ -39,6 +39,8 @@ export default function ProduceSongPage({
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [versionBusyId, setVersionBusyId] = useState<number | null>(null);
+
+  const [activeTab, setActiveTab] = useState<'versions' | 'lyrics' | 'audio'>('versions');
 
   useEffect(() => {
     if (Number.isNaN(songId)) {
@@ -222,47 +224,60 @@ export default function ProduceSongPage({
           {song?.title}
         </h1>
 
-        {/* Audio processing (unified whole-song + region editor, issue #77) */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-            Audio processing
-          </h2>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-            Pick a starting version, then either clean the whole song
-            (analyze → recommended steps/intensity → clean) or drag-select a
-            region on the waveform and run a tool with Preview/Apply.
-            Cleaning/Applying always produces a new version below — the
-            version you start from is never overwritten. If the song has been
-            separated into stems, each part appears with its own mute / solo
-            / gain.
-          </p>
-          <MultitrackEditor
-            songId={songId}
-            versions={versions}
-            onApplied={loadVersions}
-          />
+        {/* Tabs: Versions | Lyrics | Audio processing */}
+        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 mb-6">
+          {([
+            ['versions', 'Versions'],
+            ['lyrics', 'Lyrics'],
+            ['audio', 'Audio processing'],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key)}
+              className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 ${
+                activeTab === key
+                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
-        {/* Per-tool controls: tweak each tool's params, Analyze to see what it
-            found, then Apply — each Apply creates a new candidate version. */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-            Per-tool controls
-          </h2>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-            Work one effect at a time: adjust its settings, run <strong>Analyze</strong> to
-            see what it detected (and optionally adopt the suggested values), then
-            <strong> Apply</strong>. Set an optional region to limit an effect to a span.
-            Every Apply produces a new candidate version below — nothing is overwritten.
-          </p>
-          <ToolPanel
-            songId={songId}
-            versions={versions}
-            onApplied={loadVersions}
-          />
-        </div>
+        {/* Lyrics tab */}
+        {activeTab === 'lyrics' && (
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              Lyrics
+            </h2>
+            <LyricsPanel songId={songId} />
+          </div>
+        )}
 
-        {/* Manage versions */}
+        {/* Audio processing tab */}
+        {activeTab === 'audio' && (
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              Audio processing
+            </h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Pick a starting version, then drag-select a region on the waveform
+              (or leave it on the whole song) and run tools. Analyze prepopulates
+              every tool with recommended settings; each Apply — or a full Clean —
+              produces a new version, so the version you start from is never
+              overwritten. Separated stems appear with their own mute / solo / gain.
+            </p>
+            <MultitrackEditor
+              songId={songId}
+              versions={versions}
+              onApplied={loadVersions}
+            />
+          </div>
+        )}
+
+        {/* Versions tab */}
+        {activeTab === 'versions' && (
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
@@ -384,6 +399,7 @@ export default function ProduceSongPage({
             </div>
           )}
         </div>
+        )}
       </main>
     </div>
   );

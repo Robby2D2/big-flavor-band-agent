@@ -228,6 +228,58 @@ function masterParamsFromAnalysis(recs: any): MasterParams {
   return { target_lufs: recs?.mastering?.target_lufs ?? -14 };
 }
 
+// Maps a UI step to its registry tool + the params payload the per-tool
+// /api/produce/tools/{tool}/apply endpoint expects (param NAMES must match the
+// tool's declared Params). Returns null when a required value is missing (e.g.
+// tempo with no target BPM). Region bounds are sent separately by the caller.
+const STEP_TO_TOOL: Record<StepKey, string> = {
+  trim: 'trim_silence',
+  noise_reduction: 'reduce_noise',
+  eq: 'apply_eq',
+  pitch: 'correct_pitch',
+  tempo: 'match_tempo',
+  normalize: 'normalize_audio',
+  master: 'apply_mastering',
+};
+
+function paramsForStep(stepKey: StepKey, sp: StepParamsState): Record<string, any> | null {
+  switch (stepKey) {
+    case 'trim':
+      return { threshold_db: sp.trim.threshold_db };
+    case 'noise_reduction':
+      return {
+        reduction_strength: sp.noise_reduction.reduction_strength,
+        noise_profile_duration: sp.noise_reduction.noise_profile_duration,
+        non_stationary: sp.noise_reduction.non_stationary,
+      };
+    case 'eq':
+      return {
+        ...(sp.eq.high_pass_freq != null ? { high_pass_freq: sp.eq.high_pass_freq } : {}),
+        ...(sp.eq.low_pass_freq != null ? { low_pass_freq: sp.eq.low_pass_freq } : {}),
+        eq_bands: sp.eq.bands,
+      };
+    case 'pitch':
+      return {
+        auto_tune: true,
+        correction_strength: sp.pitch.correction_strength,
+        chromatic: sp.pitch.chromatic,
+        ...(sp.pitch.key ? { key: sp.pitch.key } : {}),
+      };
+    case 'tempo':
+      return sp.tempo.target_bpm ? { target_bpm: sp.tempo.target_bpm } : null;
+    case 'normalize':
+      return {
+        target_level_db: sp.normalize.target_peak_db,
+        apply_compression: sp.normalize.apply_compression,
+        compression_ratio: sp.normalize.compression_ratio,
+      };
+    case 'master':
+      return { target_loudness: sp.master.target_lufs };
+    default:
+      return {};
+  }
+}
+
 function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x));
 }
@@ -275,42 +327,58 @@ function masteringMeterProps(recs: any, targetOverride?: number) {
   };
 }
 
-// Renders the small visual for a "Detected issues" row, matched by the
-// step's processing_order text. Target-bearing meters read the *current*
-// edited target (not just the recommendation), so the tick moves live as the
-// user tunes Normalize/Master below. Trim has no meter here — it's drawn as
-// the red zones directly on the waveform instead.
-function meterForIssueRow(text: string, recs: any, stepParams: StepParamsState) {
-  if (text.includes('Reduce noise')) {
-    const m = noiseMeterProps(recs);
-    return m ? <Meter valueLabel={m.valueLabel} fraction={m.fraction} tone={m.tone} /> : null;
-  }
-  if (text.includes('Apply EQ corrections')) {
-    const fb = recs?.eq?.frequency_balance;
-    return fb ? (
-      <BalanceBar bass={fb.bass_percent} mid={fb.mid_percent} treble={fb.treble_percent} />
-    ) : null;
-  }
-  if (text.includes('Normalize with compression')) {
-    const m = normalizationMeterProps(recs, stepParams.normalize.target_peak_db);
-    return m ? (
-      <Meter valueLabel={m.valueLabel} fraction={m.fraction} target={m.target} tone={m.tone} />
-    ) : null;
-  }
-  if (text.includes('Apply mastering')) {
-    const m = masteringMeterProps(recs, stepParams.master.target_lufs);
-    return m ? (
-      <Meter valueLabel={m.valueLabel} fraction={m.fraction} target={m.target} tone={m.tone} />
-    ) : null;
-  }
-  if (text.includes('Trim non-musical content')) {
+// The inline finding shown inside each tool's card — the analysis reason plus
+// that tool's small graph — folded in from the old standalone "Detected issues"
+// list so each detection lives with the control that acts on it. Target-bearing
+// meters read the *current* edited target so the tick moves live as the user
+// tunes Normalize/Master. Trim's detection is the red zones on the waveform.
+function stepFindingNode(stepKey: StepKey, recs: any, stepParams: StepParamsState) {
+  if (!recs) return null;
+  if (stepKey === 'trim') {
+    if (!recs.trim?.recommended) return null;
     return (
-      <span className="text-xs text-gray-500 dark:text-gray-400">
-        Shown as the red zones on the waveform above.
-      </span>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        {recs.trim.reason} — shown as the red zones on the waveform above.
+      </p>
     );
   }
-  return null;
+  if (stepKey === 'noise_reduction') {
+    const m = noiseMeterProps(recs);
+    return (
+      <div className="text-xs text-gray-500 dark:text-gray-400">
+        {recs.noise_reduction?.reason}
+        {m && <Meter valueLabel={m.valueLabel} fraction={m.fraction} tone={m.tone} />}
+      </div>
+    );
+  }
+  if (stepKey === 'eq') {
+    const fb = recs.eq?.frequency_balance;
+    const n = recs.eq?.adjustments?.length ?? 0;
+    return (
+      <div className="text-xs text-gray-500 dark:text-gray-400">
+        {recs.eq?.recommended ? `${n} frequency imbalance(s) detected` : 'Frequency balance looks fine'}
+        {fb && <BalanceBar bass={fb.bass_percent} mid={fb.mid_percent} treble={fb.treble_percent} />}
+      </div>
+    );
+  }
+  if (stepKey === 'normalize') {
+    const m = normalizationMeterProps(recs, stepParams.normalize.target_peak_db);
+    return (
+      <div className="text-xs text-gray-500 dark:text-gray-400">
+        {recs.normalization?.reason}
+        {m && <Meter valueLabel={m.valueLabel} fraction={m.fraction} target={m.target} tone={m.tone} />}
+      </div>
+    );
+  }
+  if (stepKey === 'master') {
+    const m = masteringMeterProps(recs, stepParams.master.target_lufs);
+    return m ? (
+      <div className="text-xs text-gray-500 dark:text-gray-400">
+        <Meter valueLabel={m.valueLabel} fraction={m.fraction} target={m.target} tone={m.tone} />
+      </div>
+    ) : null;
+  }
+  return null; // pitch / tempo have no analysis-backed finding
 }
 
 /**
@@ -334,7 +402,9 @@ export default function MultitrackEditor({
   onApplied,
 }: MultitrackEditorProps) {
   const [sourceVersionId, setSourceVersionId] = useState<number | null>(null);
-  const [selectionMode, setSelectionMode] = useState<SelectionMode>('whole');
+  // Region is implicit: a non-empty waveform selection *is* the region; with no
+  // selection the tools act on the whole song. `selectionMode` is derived from
+  // that (below) so the existing whole/region logic keeps working unchanged.
 
   const [buffer, setBuffer] = useState<AudioBuffer | null>(null);
   const [duration, setDuration] = useState(0);
@@ -353,6 +423,12 @@ export default function MultitrackEditor({
   const [busy, setBusy] = useState<'preview' | 'clean' | null>(null);
   const [runResult, setRunResult] = useState<any>(null);
   const [previewCandidatePath, setPreviewCandidatePath] = useState<string | null>(null);
+
+  // Per-tool Apply (one tool -> one new version), independent of the global Clean.
+  const [stepApply, setStepApply] = useState<Partial<Record<StepKey, 'busy' | null>>>({});
+  const [stepApplyMsg, setStepApplyMsg] = useState<
+    Partial<Record<StepKey, { kind: 'ok' | 'err'; text: string } | null>>
+  >({});
 
   // One-click shortcut state — independent of the manual flow above.
   const [quickCleaning, setQuickCleaning] = useState(false);
@@ -423,6 +499,7 @@ export default function MultitrackEditor({
   }, [songId, sourceVersionId]);
 
   const hasRegion = region != null && region.end - region.start > 0.01;
+  const selectionMode: SelectionMode = hasRegion ? 'region' : 'whole';
   const visibleSteps = STEP_DEFS.filter((s) => selectionMode === 'whole' || !s.wholeSongOnly);
   const analysisOk = analysis && analysis.status === 'success';
 
@@ -570,6 +647,40 @@ export default function MultitrackEditor({
     }
   };
 
+  // Apply a single tool (with its current params + the implicit region) as its
+  // own new version, via the per-tool endpoint — distinct from the global Clean.
+  const applyStep = async (stepKey: StepKey) => {
+    if (sourceVersionId == null) return;
+    const params = paramsForStep(stepKey, stepParams);
+    if (params == null) {
+      setStepApplyMsg((m) => ({ ...m, [stepKey]: { kind: 'err', text: 'Set a target BPM first.' } }));
+      return;
+    }
+    setStepApply((s) => ({ ...s, [stepKey]: 'busy' }));
+    setStepApplyMsg((m) => ({ ...m, [stepKey]: null }));
+    try {
+      const res = await fetch(`/api/produce/tools/${STEP_TO_TOOL[stepKey]}/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          song_id: songId,
+          source_version_id: sourceVersionId,
+          start_s: hasRegion ? region?.start ?? null : null,
+          end_s: hasRegion ? region?.end ?? null : null,
+          params,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Apply failed');
+      setStepApplyMsg((m) => ({ ...m, [stepKey]: { kind: 'ok', text: 'Applied — new version created.' } }));
+      onApplied();
+    } catch (err: any) {
+      setStepApplyMsg((m) => ({ ...m, [stepKey]: { kind: 'err', text: err.message } }));
+    } finally {
+      setStepApply((s) => ({ ...s, [stepKey]: null }));
+    }
+  };
+
   // One-click shortcut: analyze then clean the whole song with the
   // recommended steps at moderate intensity, without touching the manual
   // flow's picker state.
@@ -683,37 +794,6 @@ export default function MultitrackEditor({
             )}
           </div>
 
-          {/* Selection mode */}
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-              Selection
-            </span>
-            <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-sm">
-              <button
-                type="button"
-                onClick={() => setSelectionMode('whole')}
-                className={`px-3 py-1.5 ${
-                  selectionMode === 'whole'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
-                }`}
-              >
-                Whole song
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectionMode('region')}
-                className={`px-3 py-1.5 border-l border-gray-300 dark:border-gray-600 ${
-                  selectionMode === 'region'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
-                }`}
-              >
-                Region
-              </button>
-            </div>
-          </div>
-
           {loading && (
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">Loading waveform…</p>
           )}
@@ -724,9 +804,9 @@ export default function MultitrackEditor({
           <WaveformView
             buffer={buffer}
             duration={duration}
-            selectable={selectionMode === 'region'}
-            region={selectionMode === 'region' ? region : null}
-            onRegionChange={selectionMode === 'region' ? setRegion : undefined}
+            selectable
+            region={region}
+            onRegionChange={setRegion}
             trimRegion={
               selectionMode === 'whole' && analysisOk
                 ? {
@@ -745,28 +825,29 @@ export default function MultitrackEditor({
             </p>
           )}
 
-          {selectionMode === 'region' && (
-            <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-gray-600 dark:text-gray-400">
-              <span>
-                {region
-                  ? `Selection: ${formatTime(region.start)} – ${formatTime(region.end)}`
-                  : 'Drag on the waveform to select a region.'}
-              </span>
-              {region && (
+          {/* Region is implicit: drag selects it, "Whole song" clears it. */}
+          <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-gray-600 dark:text-gray-400">
+            {hasRegion ? (
+              <>
+                <span>
+                  Selection: {formatTime(region!.start)} – {formatTime(region!.end)}
+                </span>
                 <button
                   onClick={() => setRegion(null)}
                   className="text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
                 >
-                  Clear selection
+                  Whole song
                 </button>
-              )}
-              {beats.length > 0 && (
-                <span className="text-xs text-yellow-600 dark:text-yellow-400">
-                  {beats.length} beat markers
-                </span>
-              )}
-            </div>
-          )}
+              </>
+            ) : (
+              <span>Whole song — drag on the waveform to limit tools to a region.</span>
+            )}
+            {beats.length > 0 && (
+              <span className="text-xs text-yellow-600 dark:text-yellow-400">
+                {beats.length} beat markers
+              </span>
+            )}
+          </div>
 
           {/* Original playback drives the waveform playhead. */}
           {sourceAudioUrl && (
@@ -784,56 +865,26 @@ export default function MultitrackEditor({
 
           <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
             <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              {selectionMode === 'whole'
-                ? 'Analyze the whole song, then review and clean it. Cleaning produces a new version — the version you start from is never overwritten, so you can re-clean an already-cleaned version with different options.'
-                : 'Analyze the selected region, then review and clean it. Only Trim, Reduce noise, EQ, and Pitch correction can be scoped to a region — Normalize, Master, and Tempo/beat correction always look at the whole track, so they only appear in Whole song mode.'}
+              {hasRegion
+                ? 'Analyzing the selected region. Trim, Reduce noise, EQ, and Pitch correction scope to it; Normalize, Master, and Tempo are whole-track and hidden while a region is selected.'
+                : 'Analyze inspects every tool and prepopulates each with recommended settings. Then tune and Clean all enabled tools into one version, or Apply a single tool.'}
             </p>
 
             <button
               onClick={handleAnalyze}
-              disabled={analyzing || sourceVersionId == null || (selectionMode === 'region' && !hasRegion)}
+              disabled={analyzing || sourceVersionId == null}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
-              {analyzing ? 'Analyzing...' : 'Analyze'}
+              {analyzing ? 'Analyzing...' : 'Analyze all tools'}
             </button>
-            {selectionMode === 'region' && !hasRegion && (
-              <span className="ml-3 text-xs text-amber-600 dark:text-amber-400">
-                Drag on the waveform to select a region first.
-              </span>
-            )}
 
-            {analysis && (
-              <div className="mt-6">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-                  Detected issues
-                </h3>
-                {analysis.status === 'error' ? (
-                  <div className="p-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg">
-                    {analysis.error}
-                  </div>
-                ) : (
-                  <>
-                    <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">
-                      {analysis.summary}
-                    </p>
-                    <ul className="text-sm text-gray-600 dark:text-gray-400 list-disc list-inside space-y-3">
-                      {(analysis.processing_order || [])
-                        .filter((s: string | null) => s)
-                        .filter(
-                          (s: string) =>
-                            selectionMode === 'whole' ||
-                            (!s.includes('Normalize') && !s.includes('mastering'))
-                        )
-                        .map((s: string) => (
-                          <li key={s}>
-                            {s}
-                            {meterForIssueRow(s, analysis.recommendations, stepParams)}
-                          </li>
-                        ))}
-                    </ul>
-                  </>
-                )}
+            {analysis && analysis.status === 'error' && (
+              <div className="mt-4 p-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg">
+                {analysis.error}
               </div>
+            )}
+            {analysisOk && analysis.summary && (
+              <p className="mt-4 text-sm text-gray-700 dark:text-gray-300">{analysis.summary}</p>
             )}
 
             {analysisOk && (
@@ -853,6 +904,34 @@ export default function MultitrackEditor({
                       {step.label}
                       <InfoTip text={step.help} label={step.label} />
                     </label>
+
+                    {/* Folded-in detection for this tool (was the separate
+                        "Detected issues" list). */}
+                    <div className="mt-1 pl-6">
+                      {stepFindingNode(step.key, analysis.recommendations, stepParams)}
+                    </div>
+
+                    {/* Apply just this tool as its own version. */}
+                    <div className="mt-2 pl-6 flex flex-wrap items-center gap-3">
+                      <button
+                        onClick={() => applyStep(step.key)}
+                        disabled={stepApply[step.key] === 'busy' || busy != null}
+                        className="text-xs px-3 py-1 border border-blue-300 dark:border-blue-700 rounded text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-50"
+                      >
+                        {stepApply[step.key] === 'busy' ? 'Applying…' : 'Apply just this'}
+                      </button>
+                      {stepApplyMsg[step.key] && (
+                        <span
+                          className={`text-xs ${
+                            stepApplyMsg[step.key]!.kind === 'ok'
+                              ? 'text-green-600 dark:text-green-400'
+                              : 'text-red-600 dark:text-red-400'
+                          }`}
+                        >
+                          {stepApplyMsg[step.key]!.text}
+                        </span>
+                      )}
+                    </div>
 
                     {stepEnabled[step.key] && (
                       <div className="mt-2 pl-6 space-y-2">
