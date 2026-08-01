@@ -64,9 +64,16 @@ class FakeAgent:
 class FakeRag:
     def __init__(self):
         self.indexed = []
+        self.text_embeddings = []
+        # None exercises the zero-vector fallback in lyrics_jobs._embed_text.
+        self.text_embedding_model = None
 
     async def index_audio_file(self, audio_path, song_id):
         self.indexed.append((audio_path, song_id))
+        return True
+
+    async def store_text_embedding(self, song_id, content_type, content, embedding):
+        self.text_embeddings.append((song_id, content_type, content, embedding))
         return True
 
 
@@ -76,9 +83,18 @@ class FakeDB:
     def __init__(self):
         self._versions = {}
         self._next_id = 1
+        self._lyrics = {}
 
     async def get_all_songs(self):
         return [{"id": 5, "title": "Test Track"}]
+
+    async def get_song_ids_with_cleaned_versions(self):
+        return {
+            v["song_id"] for v in self._versions.values() if v["label"] != "original"
+        }
+
+    async def get_song_lyrics(self, song_id):
+        return self._lyrics.get(song_id)
 
     async def ensure_original_version(self, song_id, audio_path):
         for v in self._versions.values():
@@ -186,7 +202,10 @@ def test_list_catalog_songs_returns_id_title(produce_client, monkeypatch):
     client, *_ = produce_client
     resp = client.get("/api/produce/songs", headers=_editor_headers(monkeypatch))
     assert resp.status_code == 200
-    assert resp.json() == {"songs": [{"id": 5, "title": "Test Track"}]}
+    songs = resp.json()["songs"]
+    assert len(songs) == 1
+    assert songs[0]["id"] == 5
+    assert songs[0]["title"] == "Test Track"
 
 
 def test_analyze_routes_to_tool_with_resolved_source(produce_client, monkeypatch):
@@ -445,3 +464,60 @@ def test_approve_rejects_path_outside_produced(produce_client, monkeypatch):
         headers=_editor_headers(monkeypatch),
     )
     assert resp.status_code == 400
+
+
+# ---- Lyrics endpoints ----
+
+
+def test_get_song_lyrics_returns_stored(produce_client, monkeypatch):
+    client, _agent, _rag, db, _lib = produce_client
+    db._lyrics[5] = "line one\nline two"
+    resp = client.get("/api/produce/songs/5/lyrics", headers=_editor_headers(monkeypatch))
+    assert resp.status_code == 200
+    assert resp.json()["lyrics"] == "line one\nline two"
+
+
+def test_get_song_lyrics_empty_when_none(produce_client, monkeypatch):
+    client, *_ = produce_client
+    resp = client.get("/api/produce/songs/5/lyrics", headers=_editor_headers(monkeypatch))
+    assert resp.status_code == 200
+    assert resp.json()["lyrics"] == ""
+
+
+def test_save_song_lyrics_embeds_and_stores(produce_client, monkeypatch):
+    client, _agent, rag, _db, _lib = produce_client
+    resp = client.put(
+        "/api/produce/songs/5/lyrics",
+        json={"lyrics": "  new words  "},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["lyrics"] == "new words"  # trimmed
+    assert len(rag.text_embeddings) == 1
+    song_id, ctype, content, embedding = rag.text_embeddings[0]
+    assert (song_id, ctype, content) == (5, "lyrics", "new words")
+    assert len(embedding) == 384  # zero-vector fallback when no text model
+
+
+def test_extract_lyrics_starts_job_and_reports_status(produce_client, monkeypatch):
+    client, _agent, _rag, _db, _lib = produce_client
+    from src.api import lyrics_jobs
+
+    calls = []
+    # Stub the manager so the test never loads Whisper.
+    monkeypatch.setattr(
+        lyrics_jobs.manager, "start",
+        lambda song_id, path, rag: (calls.append((song_id, path)), True)[1],
+    )
+
+    status0 = client.get(
+        "/api/produce/songs/5/lyrics/extract/status", headers=_editor_headers(monkeypatch)
+    )
+    assert status0.status_code == 200 and status0.json()["status"] == "idle"
+
+    started = client.post(
+        "/api/produce/songs/5/lyrics/extract", headers=_editor_headers(monkeypatch)
+    )
+    assert started.status_code == 200 and started.json()["status"] == "running"
+    assert len(calls) == 1
+    assert calls[0][0] == 5 and calls[0][1].endswith(".mp3")
