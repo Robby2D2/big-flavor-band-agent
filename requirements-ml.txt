@@ -1,0 +1,17 @@
+# Heavy ML/RAG stack — split out from requirements-api.txt so changes to
+# lightweight deps there don't force Docker to reinstall this large,
+# rarely-changing stack. Installed from the PyTorch CPU wheel index in
+# Dockerfile.backend (the backend container has no GPU — only
+# bigflavor-ollama does) to avoid pulling multi-GB CUDA wheels.
+
+# RAG and Embeddings
+torch>=2.0.0
+transformers>=4.30.0
+torchaudio>=2.0.0
+sentence-transformers>=2.2.0
+torchcodec>=0.15.0  # For audio encoding/decoding in torch
+
+# Stem separation (issue #67) — Demucs splits a song into vocals/drums/bass/
+# guitar/other. torch/torchaudio (above) are the heavy deps; demucs adds the
+# pretrained models and separation pipeline. MIT-licensed.
+demucs>=4.0.0

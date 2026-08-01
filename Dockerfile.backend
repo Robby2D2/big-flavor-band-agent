@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Backend Dockerfile - Python FastAPI Service
 FROM python:3.12-slim as base
 
@@ -9,9 +10,22 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy requirements first for better caching
+# Heavy ML stack (torch/transformers/demucs) in its own layer, copied and
+# installed first so it only reinstalls when requirements-ml.txt itself
+# changes — not on every unrelated requirements-api.txt edit. This container
+# shares the host GPU with bigflavor-ollama (see docker-compose.yml), so we
+# keep PyPI's default CUDA-enabled torch/torchaudio wheels here (do not add
+# a CPU-only --extra-index-url — that silently strips GPU support). The pip
+# cache mount lets BuildKit reuse downloaded wheels across builds instead of
+# re-fetching them every time.
+COPY requirements-ml.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-ml.txt
+
+# Copy remaining (lighter, more frequently changed) requirements
 COPY requirements-api.txt .
-RUN pip install --no-cache-dir -r requirements-api.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-api.txt
 
 # Copy application code
 COPY backend_api.py .
