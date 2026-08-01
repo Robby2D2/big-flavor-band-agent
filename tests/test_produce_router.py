@@ -139,11 +139,14 @@ class FakeDB:
         return None
 
     async def replace_song_version_audio(self, version_id, audio_path, metrics=None):
+        import datetime
+
         row = self._versions.get(version_id)
         if row is None:
             return None
         row["audio_path"] = audio_path
         row["metrics"] = metrics
+        row["created_at"] = datetime.datetime.now()
         return row
 
     async def publish_song_version(self, song_id, version_id):
@@ -302,18 +305,25 @@ def test_auto_clean_identical_rerun_replaces_candidate(produce_client, monkeypat
         json={"song_id": 5, "aggressiveness": "moderate"},
         headers=_editor_headers(monkeypatch),
     )
+    assert first.status_code == 200
+    version_id = first.json()["version"]["version_id"]
+    created_at_after_first = db._versions[version_id]["created_at"]
+
     second = client.post(
         "/api/produce/auto-clean",
         json={"song_id": 5, "aggressiveness": "moderate"},
         headers=_editor_headers(monkeypatch),
     )
-    assert first.status_code == 200
     assert second.status_code == 200
 
     cleaned = [v for v in db._versions.values() if v["label"] == "cleaned"]
     assert len(cleaned) == 1, "identical re-run should replace, not append"
     # Same version row id reused across the two runs.
     assert first.json()["version"]["version_id"] == second.json()["version"]["version_id"]
+    # The versions list is sorted/displayed by created_at, so a replace must bump
+    # it — otherwise the re-run looks like a no-op to the producer even though the
+    # file was regenerated (the bug this test guards against).
+    assert cleaned[0]["created_at"] > created_at_after_first
 
 
 def test_auto_clean_different_intensity_adds_distinct_candidate(produce_client, monkeypatch):

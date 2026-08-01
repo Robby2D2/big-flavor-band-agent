@@ -492,12 +492,16 @@ class DatabaseManager:
         """Point an existing version at a freshly rendered file + refreshed metrics.
 
         Replaces an identical auto-clean candidate in place (issue #47): keeps the
-        row id and publish state, only swapping its audio path and metrics. Returns
-        the updated row, or None if the version no longer exists.
+        row id and publish state, only swapping its audio path and metrics. Also
+        bumps ``created_at`` to now, since the versions list is sorted and displayed
+        by that column — without this a replace is invisible to the producer (same
+        row, same position, same "Produced" timestamp), looking like the re-run did
+        nothing even though the file was regenerated. Returns the updated row, or
+        None if the version no longer exists.
         """
         query = """
             UPDATE song_versions
-            SET audio_path = $2, metrics = $3
+            SET audio_path = $2, metrics = $3, created_at = CURRENT_TIMESTAMP
             WHERE id = $1
             RETURNING *
         """
