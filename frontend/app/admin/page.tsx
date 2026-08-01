@@ -80,18 +80,18 @@ export default function AdminPage() {
       case 'editor':
         return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200';
       case 'listener':
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200';
+        return 'bg-white/8 text-text/70';
       default:
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200';
+        return 'bg-white/8 text-text/70';
     }
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading users...</p>
+          <p className="mt-4 text-text/55">Loading users...</p>
         </div>
       </div>
     );
@@ -99,14 +99,14 @@ export default function AdminPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
-        <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
+        <div className="max-w-md w-full bg-panel rounded-lg shadow-lg p-8">
           <div className="text-red-600 dark:text-red-400 text-center">
             <svg className="w-16 h-16 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <h2 className="text-2xl font-bold mb-2">Access Denied</h2>
-            <p className="text-gray-600 dark:text-gray-400">{error}</p>
+            <p className="text-text/55">{error}</p>
             <a
               href="/"
               className="mt-6 inline-block px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -120,7 +120,7 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-canvas">
       <Header
         title="Admin Panel"
         subtitle="User management and role assignment"
@@ -134,52 +134,52 @@ export default function AdminPage() {
           >
             Open Producer Studio
           </a>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
+          <p className="text-sm text-text/55 mt-2">
             Audition, diff, and publish cleaned audio versions of catalog songs.
           </p>
         </div>
 
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+        <div className="bg-panel rounded-lg shadow-lg overflow-hidden">
+          <div className="px-6 py-4 border-b border-white/8">
+            <h2 className="text-xl font-semibold text-text">
               User Management
             </h2>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+            <p className="text-sm text-text/55 mt-1">
               Manage user roles and permissions
             </p>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 dark:bg-gray-900">
+              <thead className="bg-well">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
                     User
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
                     Email
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
                     Current Role
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
                     Change Role
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
                     Joined
                   </th>
                 </tr>
               </thead>
-              <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+              <tbody className="bg-panel divide-y divide-white/8">
                 {users.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-6 py-4 text-center text-gray-500 dark:text-gray-400">
+                    <td colSpan={5} className="px-6 py-4 text-center text-text/45">
                       No users found
                     </td>
                   </tr>
                 ) : (
                   users.map((user) => (
-                    <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                    <tr key={user.id} className="hover:bg-white/5">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           {user.picture && (
@@ -189,13 +189,13 @@ export default function AdminPage() {
                               alt={user.name}
                             />
                           )}
-                          <div className="text-sm font-medium text-gray-900 dark:text-white">
+                          <div className="text-sm font-medium text-text">
                             {user.name}
                           </div>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                        <div className="text-sm text-text/45">
                           {user.email}
                         </div>
                       </td>
@@ -209,14 +209,14 @@ export default function AdminPage() {
                           value={user.role}
                           onChange={(e) => updateUserRole(user.id, e.target.value)}
                           disabled={updating === user.id}
-                          className="text-sm border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="text-sm border border-white/14 rounded-lg px-3 py-1 bg-well text-text focus:outline-none focus:border-signal disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <option value="listener">Listener</option>
                           <option value="editor">Editor</option>
                           <option value="admin">Admin</option>
                         </select>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-text/45">
                         {new Date(user.created_at).toLocaleDateString()}
                       </td>
                     </tr>

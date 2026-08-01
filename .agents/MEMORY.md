@@ -4,10 +4,97 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
-> This memory was **reconstructed from git history** on 2026-06-19 (43 commits, 2025-11-05 →
-> 2025-11-24, branch `front_end`). Dates below are the commit dates of the work described.
+> Pruned 2026-08-01: routine release-manager version-bump entries moved to
+> [memory/releases.md](memory/releases.md); the 2025-11 project-genesis timeline and two older one-off
+> incident writeups moved to [memory/history_2025_2026.md](memory/history_2025_2026.md). This file now
+> holds only the recent, still-load-bearing entries.
 
 ---
+
+### 2026-08-01 — Claude Design "Console" redesign of the Audio Processing tab: dark theme + per-stem review queue
+Implemented a full Claude Design mockup (imported as a `claude.ai/design` canvas export, `claudedesign.zip`)
+that replaced the `/produce/[songId]` Audio processing tab's "checkbox list of tools + Gentle/Moderate/
+Aggressive intensity dial" with a dark "Console" studio theme and a **review-queue** workflow: one
+analysis pass produces one card per detected fix, each pre-filled with the tool's own real measured
+numbers (not an intensity bucket), grouped by stem, with per-card Accept/Adjust/Skip and a single
+"Accept all & save version." User explicitly chose the larger scope on both open questions: build
+real **per-stem** analyze/apply (not whole-song-only), and a **whole-app** dark theme (not just this
+tab). Delivered in four phases, each independently verified.
+- **Phase A (theme foundation):** `frontend/tailwind.config.ts` → `darkMode: 'class'` + Console color
+  tokens (`canvas/panel/raised/well/signal/confirm/attention/text` + `stem.{vocals,drums,bass,other,
+  guitar,piano}`); `app/layout.tsx` loads IBM Plex Sans/Mono via `next/font/google` and sets a
+  permanent `className="dark"` on `<html>` (no light/dark toggle — the mockup has no light variant);
+  `globals.css` simplified to unconditional dark `--background`/`--foreground`; deleted the dead,
+  unimported `app/tailwind.css` (leftover Tailwind v4 file). `Header.tsx`/`UserButton.tsx` restyled
+  onto the tokens. Flipping `darkMode:'class'` also makes every pre-existing `dark:gray-900`-style
+  class elsewhere in the app activate unconditionally (previously gated on OS `prefers-color-scheme`).
+- **Phase B (backend, no DSP changes needed):** `AudioTool.analyze()`/`apply()`
+  (`src/production/toolkit.py`) turned out to already be file-path-agnostic — they only ever see a
+  `file_path`, never "the song." So per-stem support was pure router work in
+  `src/api/routers/produce.py`: `ToolRunRequest` gained `stem_id`; new `_resolve_tool_source_path`
+  resolves a stem's own audio file (via `db.get_stem`→`db.get_stem_set`, 404 on song-ownership
+  mismatch) ahead of the existing version-based resolution; stem-scoped `apply` is always a
+  preview-only render (never creates a version). New `StemFixSpec` + `_chain_apply_tools` sequentially
+  chain-apply a list of fixes (step N's output feeds step N+1); new routes
+  `POST /api/produce/stems/{stem_id}/preview-chain` (audition one stem's enabled fix chain) and
+  `POST /api/produce/accept-fixes` (chain-apply every stem's fixes, remix at unity gain via the
+  existing `stem_separation.remix_stems`, then chain-apply master-bucket fixes — `preview=true` for
+  "Preview full mix first," `preview=false` to save a version, matching the existing
+  `save_candidate_version` seam). New `AudioTool.confidence_tier(value, high, worth, higher_is_worse)`
+  static helper buckets a tool's own measured magnitude into `"high"`/`"worth_a_listen"`/`None`; added
+  a `confidence` key to the 7 tools with real `analyze()` overrides (reduce_noise, apply_eq,
+  remove_hum, trim_silence, normalize_audio, apply_mastering, correct_beats — thresholds tuned
+  per-tool, e.g. noise floor dB, EQ adjustment count, beat-detection's own `mean_confidence`).
+  `correct_pitch`/`match_tempo`/`remove_artifacts` still have no `analyze()` override (always
+  `recommended: False`) and so never produce a fix card — unchanged, pre-existing, out of scope.
+  New `tests/test_produce_stem_tools.py` (7 tests: confidence tiering both directions, stem-ownership
+  404, chain-apply empty-passthrough and output-feeds-next-input wiring) — all pass, plus the existing
+  30 production tests unaffected.
+- **Phase C (frontend, new component tree):** Retired `MultitrackEditor.tsx` (1319 lines) and
+  `StemMixer.tsx` (524 lines) — deleted outright, no remaining imports — since the review-queue
+  interaction model is different enough that patching in place would have compounded complexity.
+  New tree under `frontend/components/produce/audio/`: `VersionBar`, `StemConsole` (per-stem
+  sparkline + chain-of-pills + mute/solo/gain), `StemDetailPanel` (A/B waveform, region drag-select),
+  `FixQueue`/`FixCard` (one card per fix, confidence tag, Hear it/Adjust/on-off), `AdvancedDrawer`
+  (per-param sliders driven by `GET /api/produce/tools`' declared param metadata), `ResultSidebar`
+  ("fixes on" count, Accept all & save version, Preview full mix first), `LyricsCard` (thin restyled
+  wrapper — `LyricsPanel`'s fetch/save/re-extract logic reused verbatim, lyrics folded into the
+  sidebar instead of a separate top-level tab), `fixCopy.ts` (tool+findings → plain-English card
+  copy), `stemColors.ts`. `useStemPlayback.ts` extracts `StemMixer`'s sample-synced group-playback
+  engine verbatim (genuinely reusable Web Audio sync logic). `WaveformView.tsx` gained an additive
+  `overlays` prop (colored spans per fix location) alongside its existing `region`/`trimRegion`.
+  New `frontend/hooks/useProcessingQueue.ts` is the data-flow hub: fans out per-stem × per-tool +
+  master-bucket `analyze` calls (capped at 3 concurrent), assembles one `FixEntry` per
+  `recommended:true` result, and drives accept/preview. **Caught and fixed one real bug during
+  self-review:** the "Re-separate" button initially just re-ran analysis against whatever stem set
+  already existed (`waitForStemSet` short-circuited to the latest *complete* set even after kicking
+  off a fresh Demucs job) — fixed by parameterizing it with a `forceNew` flag that polls for the
+  *newest* set by id instead, exposed as a distinct `reseparateAndAnalyze`.
+  Every `POST /api/produce/*` call goes through a Next.js BFF proxy route
+  (`frontend/app/api/produce/**/route.ts`, each whitelisting which body fields it forwards + attaching
+  `backendAuthHeaders`) — **the existing `tools/{tool}/analyze` and `.../apply` proxies did not forward
+  the new `stem_id` field** and had to be updated, and two new proxy routes
+  (`accept-fixes/route.ts`, `stems/[stemId]/preview-chain/route.ts`) had to be created; the candidate-
+  audio streaming URL is `/api/produce/clean/preview?path=` (not `/api/produce/preview`, which has no
+  frontend proxy — a naming trap the old `MultitrackEditor` code had already worked around).
+- **Phase D (sweep + cleanup):** Migrated the remaining light-themed pages
+  (`app/{page,search,radio,edit,admin,admin/produce,produce,produce/[songId]}.tsx`) from ad-hoc
+  `bg-white dark:bg-gray-800`-style pairs onto the Phase A tokens via systematic `replace_all`
+  substitutions of the handful of recurring patterns (`bg-white dark:bg-gray-800`→`bg-panel`,
+  `text-gray-900 dark:text-white`→`text-text`, etc.); left accent-colored elements (blue/green/red
+  buttons and badges) as-is — they already read fine against the dark canvas, and pixel-matching every
+  one wasn't worth the churn this pass.
+- **Verification:** `npm run build` clean after every phase (TypeScript catches prop-shape drift
+  across the new component tree — no runtime type errors slipped through); `next lint`/`npm run lint`
+  is broken repo-wide under Next 16 (`next lint` was removed upstream) — pre-existing, confirmed via
+  `git stash` before this work, not something this change caused. **Docker Desktop was not running in
+  this environment** (`docker ps` failed to connect throughout), so the full interactive workflow
+  (real stem separation, real analyze results, a real Accept-all render) was **not** manually exercised
+  end-to-end — verification leaned on `npm run build`/TypeScript, `pytest` (37 passing: 7 new + 30
+  existing, no regressions), reading the OpenAPI schema to confirm new routes registered, and a
+  careful manual code-flow review (which is what caught the re-separate bug above). A human should do
+  one real walkthrough (pick a version → Start analysis → toggle a few fixes → Accept all) before
+  trusting this in production.
 
 ### 2026-07-31 — Per-tool audio API: one file per tool + declare-params → analyze → apply
 Refactored the ~3,900-line `src/production/big_flavor_mcp.py` monolith (where every tool's schema,
@@ -23,439 +110,45 @@ drive per tool. User-approved plan, class-per-tool + full-stack + independent pe
 - **Server is now a thin host:** `list_tools()`/`dispatch_tool()` are generic loops over `REGISTRY`;
   `analyze_tool()` runs the read side; a `__getattr__` shim maps `server.<tool>(...)` → the tool's
   `apply` bound to a shared `ToolContext`, so existing tests + `auto_clean_recording` (which now
-  orchestrates the registry via the shim) keep working unchanged. Moved helpers are re-exported from
-  `big_flavor_mcp` so `from ...big_flavor_mcp import _detect_beats` etc. still resolve.
-- **Dual import** (`from ..x` / `from x`) in every new module because the agent loads
-  `big_flavor_mcp` flat while tests import `src.production.big_flavor_mcp`.
+  orchestrates the registry via the shim) keep working unchanged.
 - **Per-tool `analyze()`** (independent, not a shared bundle): trim/noise/hum/eq/normalize/master/
-  beats each inspect only their own concern and return `{recommended, params, findings, reason}`;
-  others inherit the base stub.
-- **API + UI:** `GET /api/produce/tools`, `POST /api/produce/tools/{tool}/{analyze,apply}` in
-  `produce.py`; new `frontend/components/produce/ToolPanel.tsx` (+ `app/api/produce/tools/**` proxies)
-  renders each tool's params as controls → Analyze (adopt suggested values) → Apply (saves a candidate
-  version). Mounted as a "Per-tool controls" card on `/produce/[songId]`.
-- **Monolith retired (per follow-up "retire and branch"):** `analyze_and_recommend_processing` and
-  `auto_clean_recording` are no longer server methods — they're registry tools
-  (`tools/analyze_recommend.py`, `tools/auto_clean.py`, both `hidden_from_editor=True`). `AutoClean`
-  orchestrates the other tools via `REGISTRY[...].apply(ctx, …)` (no hard-coded methods). The server
-  class dropped from ~3,900 to ~190 lines and carries no audio logic. The whole-song one-click/batch
-  clean feature is preserved (same endpoints, same output shape) — it's just registry-backed now.
+  beats each inspect only their own concern and return `{recommended, params, findings, reason}`
+  (as of 2026-08-01, also `confidence` — see the entry above); others inherit the base stub.
+- **Monolith retired:** `analyze_and_recommend_processing` and `auto_clean_recording` are registry
+  tools now (`tools/analyze_recommend.py`, `tools/auto_clean.py`, both `hidden_from_editor=True`).
+  The server class dropped from ~3,900 to ~190 lines and carries no audio logic.
 - **Region whitelist folded** onto the registry: `region_tools.py` derives each friendly tool's
-  forwardable params from the target tool's declared `Param`s (single source of truth), with the
-  old hardcoded map kept only as a lean-CI fallback (preserves its dependency-free import property).
-- **Tests:** new `tests/test_toolkit_registry.py`; full production suite **143 passed, 1 skipped, 1
-  pre-existing failure** (`test_produce_router::test_list_catalog_songs_returns_id_title` — `FakeDB`
-  missing `get_song_ids_with_cleaned_versions`, fails identically on original `produce.py`, unrelated).
-  `npm run build` clean (note: `npm run lint`/`next lint` broken repo-wide under Next 16, pre-existing).
-  Not run: live HTTP smoke against the Docker stack (no local DB/agent in this env).
+  forwardable params from the target tool's declared `Param`s (single source of truth).
+- Full production test suite passing at the time (143 passed, 1 skipped, 1 pre-existing unrelated
+  failure).
 
 ### 2026-07-31 — Restore Pitch correction & Tempo/beat correction to the per-step `/produce` editor (issue #82)
-QA on PR #81 (per-step tunable cleaning) flagged that its `StepKey`/`STEP_DEFS` rework silently
-dropped Pitch correction and Tempo/beat correction from the UI, even though the backing tools
-(`correct_pitch`, `match_tempo`) still worked — a straight regression, filed as issue #82 (also
-serving as PR #81's missing linked issue). Fixed by pushing a new commit onto PR #81's branch
-(`feat/per-step-tunable-cleaning-region-unification`) rather than branching off `main`, since #82's
-spec builds directly on that branch's not-yet-merged `step_params`/`StepDefs` pattern.
-- **Backend** (`src/production/big_flavor_mcp.py`): `auto_clean_recording` gained two opt-in steps
-  (no analysis recommends either, so both default off) run between EQ and Normalize: `pitch` calls
-  the existing `correct_pitch` (auto-tune, key-aware, region-scoped like trim/noise/EQ) and `tempo`
-  calls the existing `match_tempo` (whole-track time-stretch to an explicit `target_bpm`, forced off
-  under a region exactly like Normalize/Master — it has no region parameter). Neither tool's own
-  algorithm changed; this is orchestration-only. No `src/api/routers/produce.py` changes needed —
-  `step_params`/`steps_override` were already untyped pass-throughs.
-- **Frontend** (`MultitrackEditor.tsx`): added `pitch`/`tempo` to `StepKey`/`STEP_DEFS`, each with its
-  own controls (no shared Intensity, per the spec) — Pitch: retune strength, key override, chromatic
-  toggle (available in both Whole song and Region mode); Tempo: target BPM (Whole song only, gated by
-  `wholeSongOnly` like Normalize/Master). `canRun` now blocks running when Tempo is enabled with no
-  target BPM set.
-- 7 new tests in `tests/test_auto_clean_region_params.py` (off-by-default, applies-when-enabled,
-  region-scoping safety for pitch; time-stretch, no-target-bpm no-op, and region-forced-off for
-  tempo) — the tempo fixture needed a synthesized click track (`_click_track`, mirroring
-  `test_beat_correction.py`), since `match_tempo`'s `librosa.beat.beat_track` can't detect a tempo
-  from a steady sine tone (divide-by-zero). Verified via `pytest` (7 new + 12 pre-existing in that
-  file, plus 29 other pre-existing MCP tests, all passing) and `npm run build` (`next lint` still has
-  the same pre-existing environmental CLI-parsing failure QA noted on PR #81, unrelated to this
-  change). Docker daemon was down locally so the backend-boot check was skipped (infra, not code).
-- Pushed straight to PR #81 (no new PR) and edited its body to add `Closes #82`, resolving both of
-  QA's required changes on that PR in one pass.
+Fixed a regression where PR #81's `StepKey`/`STEP_DEFS` rework silently dropped Pitch correction and
+Tempo/beat correction from the (now-retired) `MultitrackEditor` UI, even though the backing tools
+(`correct_pitch`, `match_tempo`) still worked. `auto_clean_recording` gained two opt-in steps (no
+analysis recommends either, so both default off): `pitch` (region-scoped, key-aware auto-tune) and
+`tempo` (whole-track time-stretch to an explicit `target_bpm`, forced off under a region like
+Normalize/Master — it has no region parameter). Orchestration-only; neither tool's algorithm changed.
 
 ### 2026-07-31 — Per-step tunable cleaning params + unified whole-song/region flow (issue #77 follow-up)
-Addressed user confusion that the `/produce` editor's global Intensity dropdown didn't visibly relate
-to the "target" shown in Detected Issues (Normalize's target was hardcoded −3dB, Master's target came
-from analysis — neither moved with Intensity, which only scaled noise/EQ/compression-ratio). Also
-unified "Whole song" and "Region" selection: Region used to be a separate single-tool
-preview/apply flow with no analysis; it now drives the *same* analyze → detected-issues → per-step
-controls → Preview/Clean pipeline as whole-song, just scoped to `start_s`/`end_s`.
-- **Backend** (`src/production/big_flavor_mcp.py`): `analyze_and_recommend_processing` takes an
-  optional region and returns absolute-file-time results plus a `recommended_intensity` per step
-  (noise/EQ/normalize/master), derived from existing measurements. `auto_clean_recording` gains
-  `step_params` (explicit per-step raw-parameter overrides — target_lufs, reduction_strength,
-  compression_ratio, EQ bands, etc. — that always win over the `aggressiveness`-scaled
-  recommendation) and region bounds; a region always skips Normalize/Master (whole-track ops) and
-  routes Trim through `trim_silence`'s own scoped silence-trim instead of the whole-file
-  crop-to-detected-span path, so a mid-track selection can't delete audio outside it. `normalize_audio`
-  gained a real `compression_ratio` param — previously computed but silently dropped before reaching
-  it. Also fixed `dispatch_tool` (the actual `execute_tool` call path) to forward `start_s`/`end_s`/
-  `step_params`, which the JSON tool-schema declarations don't enforce.
-- **API** (`src/api/routers/produce.py`): `ProduceRequest` gained `step_params`, `start_s`/`end_s`,
-  `preview`; `/api/produce/auto-clean` writes a non-versioned preview candidate when `preview=true`
-  (mirroring the old region-tool preview/apply split); the dedup key folds in `step_params`/region.
-- **Frontend** (`MultitrackEditor.tsx`): replaced the single global Intensity dropdown with per-step
-  cards (Reduce noise/EQ/Normalize/Master), each pre-filled from the analysis's suggested intensity
-  and expandable to raw parameters; Region mode hides Normalize/Master and only shows
-  Trim/Noise/EQ. Old single-tool `/region/preview` + `/region/apply` endpoints/routes left in place
-  (unused by the UI now) — flagged for later removal.
-- 12 new tests in `tests/test_auto_clean_region_params.py` (synthetic audio, no DB), including a
-  region-trim safety test proving audio outside a selected span survives cleaning. Verified via
-  `pytest` (12 new + 19 pre-existing passing, unrelated DB-requiring tests skipped — no local
-  Postgres) and `npm run build` (`next lint` itself errors in this environment regardless of this
-  change — pre-existing CLI quirk, not investigated).
-- **Housekeeping note:** this file is now well past the ~200-line pruning threshold in AGENTS.md —
-  next session doing memory upkeep should move older entries into `.agents/memory/`.
-### 2026-07-31 — Release `v0.16.2` (release-manager)
-Cut **`v0.16.2`** from `main` (HEAD `b8894a1`), a **patch** bump from `v0.16.1` — the 3-commit range
-has no new feature: it's a docs-only change (`ddb2f82`, convert ASCII architecture diagrams to
-Mermaid) merged via a direct merge commit (`b8894a1`, no PR reference), plus the v0.16.1 memory
-chore (`07fc8d6`). No `#NN` PR references in the commit subjects, so no linked closed issues to
-notify. Published GitHub Release with auto-generated notes anchored to `v0.16.1`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.16.2. Sanity gate: Docker was up;
-backend restart booted clean (RAG system ready, MCP production server loaded, DB pool created,
-CLAP model warm-up hit HF as expected on cold start) — the only log error was the same pre-existing
-`PermissionError` on `/app/streaming/playlist/radio.m3u` in the radio loop noted since v0.14.0
-(local volume-mount permission issue, unrelated to this docs-only range). Frontend `npm run build`
-**passed**. Proceeded per Step 4.5.
-
-### 2026-07-30 — Release `v0.16.1` (release-manager)
-Cut **`v0.16.1`** from `main` (HEAD `adefdb8`), a **patch** bump from `v0.16.0` — the 3-commit range
-has no new feature: the only product change is a `fix:` (`8f62529`, keep radio Now Playing/Up Next in
-sync with the live stream) merged via PR #80, plus its merge commit and the v0.16.0 memory chore
-(`ed4698a`). Published GitHub Release with auto-generated notes anchored to `v0.16.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.16.1. Notified linked closed issue
-#79. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check
-skipped; frontend `npm run build` **passed** and built the radio routes (`/radio`, `/api/radio/*`)
-this fix touches. Proceeded per Step 4.5. (Note: a stray untracked `err.txt` sat at repo root — not
-tracked human work, left untouched.)
-
-### 2026-07-30 — Release `v0.16.0` (release-manager)
-Cut **`v0.16.0`** from `main` (HEAD `d99b4e0`), a **minor** bump from `v0.15.0` — the 4-commit range
-includes a `feat:` commit (`8c6c128`, unify analyze/clean and the waveform editor into one `/produce`
-panel) merged via PR #78, plus a waveforms follow-up (`d99b4e0`) and the v0.15.0 memory chore
-(`a59554f`). Published GitHub Release with auto-generated notes anchored to `v0.15.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.16.0. Notified linked closed issue
-#77. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check
-skipped; frontend `npm run build` **passed** and directly validated the changed `/produce` page.
-Proceeded per Step 4.5.
-
-### 2026-07-14 — Release `v0.15.0` (release-manager)
-Cut **`v0.15.0`** from `main` (HEAD `8d59ce5`), a **minor** bump from `v0.14.0` — the 4-commit range
-is a single merged PR (#76, closing issue #70): a `feat:` commit (`5c20f7c`, add a multitrack
-producer UI with region preview and stem mixer — new `MultitrackEditor`/`StemMixer`/`WaveformView`
-frontend components + `region`/`stems`/`beats` API routes under `frontend/app/api/produce/`, plus
-backend `src/api/region_tools.py` and `src/api/routers/produce.py`) and a same-day `fix:`
-(`8528dfc`, route region tools through one dispatch path that honors kwargs — refactored
-`src/production/big_flavor_mcp.py` and `src/agent/big_flavor_agent.py` tool dispatch, +282
-lines of new dispatch tests), plus the v0.14.0 memory chore. Published GitHub Release with
-auto-generated notes anchored to `v0.14.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.15.0. Notified linked closed issue
-#70. Sanity gate: backend restart came up **healthy** after model warm-up (CLAP model re-fetches
-from Hugging Face on cold start — expected, not an error); the only log error was the same
-pre-existing `PermissionError` on `/app/streaming/playlist/radio.m3u` in the radio loop noted since
-v0.14.0 (local volume-mount permission issue, unrelated to this range). Frontend `npm run build`
-**passed**, including the new `/produce/[songId]` region/stems/beats API routes. Proceeded per
-Step 4.5.
-
-### 2026-07-13 — Release `v0.14.0` (release-manager)
-Cut **`v0.14.0`** from `main` (HEAD `223d816`), a **minor** bump from `v0.13.0` — the 11-commit range
-is a run of production-pipeline `feat:` commits across five merged PRs: region time-range + wet/dry
-strength on cleanup tools (#71, issue #65), Demucs stem separation with per-stem remix (#72, #67),
-note-level key-aware pitch-correction auto-tune (#73, #68), trim-to-selection + non-stationary
-(adaptive) noise reduction (#75, #66), and beat-level tempo quantization / `correct_beats` MCP tool
-(#74, #69) — plus their merge commits and the `chore: record v0.13.0` memory commit. Range touches
-only backend/production code (`src/production/`, `src/api/`, `database/`, `backend_api.py`, a stems
-migration, `docker-compose.yml`, `requirements-api.txt`) and tests — no frontend. Published GitHub
-Release with auto-generated notes anchored to `v0.13.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.14.0. Notified linked closed issues
-#65–#69. Sanity gate: backend restart booted clean (health 200; the `PermissionError` on
-`/app/streaming/playlist/radio.m3u` in the radio loop is a pre-existing local volume-mount permission
-issue, not a startup/import error and not in this range — note the prior asyncpg
-`DatatypeMismatchError` did **not** recur this run). Frontend `npm run build` first failed on a stale
-`.next/dev/types/validator.ts` referencing a renamed auth route (`[auth0]` vs the actual
-`[...google]`); since the range changes zero frontend files (last frontend commit `059df70` predates
-v0.13.0), cleared `.next` and rebuilt — **passed**. Proceeded per Step 4.5.
-
-### 2026-07-13 — Release `v0.13.0` (release-manager)
-Cut **`v0.13.0`** from `main` (HEAD `0a5c9fb`), a **minor** bump from `v0.12.0` — the 12-commit range
-(5 merged feature PRs, #60–#64) is a run of production-pipeline `feat:` commits: preserve stereo
-channels through all production tools, source noise profile from quietest frames + smooth the gate +
-make high-pass opt-in, detect and remove mains hum (50/60 Hz + harmonics), preserve float precision
-through the auto-clean chain and master at 24-bit, and apply all recommended EQ bands with true
-peaking filters and measured LUFS mastering — plus the v0.12.0 memory chore and a `.gitignore` fix for
-`.serena/` that had tripped the release-manager's dirty-tree guard on the prior run. Published GitHub
-Release with auto-generated notes anchored to `v0.12.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.13.0. Notified linked closed issues
-#55–#59. Sanity gate: backend restart **failed** again with the same pre-existing
-`asyncpg.exceptions.DatatypeMismatchError` in `ensure_song_versions_table()` (local Postgres
-`songs.id` is `character varying` vs. the integer FK the code expects) — confirmed via `git diff
-v0.12.0..HEAD --stat` that this range touches only `src/agent/big_flavor_agent.py`,
-`src/production/big_flavor_mcp.py`, tests, and non-code files, not `database/database.py` or
-`backend_api.py`, so this is the same local DB-state drift noted in the v0.12.0/v0.7.0 entries, not a
-regression. Frontend `npm run build` **passed**. Proceeded per Step 4.5.
-
-### 2026-07-13 — Release `v0.12.0` (release-manager)
-Cut **`v0.12.0`** from `main` (HEAD `d225259`), a **minor** bump from `v0.11.1` — the 3-commit range
-includes a `feat:` commit (`bdd5aa2`, port concurrency standards from soccer-assistant-coach + run the
-pipeline in GitHub Actions), plus a `fix:` (`d225259`, document `gh` self-approval restriction as
-benign in qa-reviewer) and the v0.11.1 memory chore (`9abe59d`). All three commits touch only
-`.agents/`, `.claude/agents/`, `AGENTS.md`, and `.github/workflows/` — no application/database code —
-and were pushed directly to `main` without a PR, so there were no linked issues to notify. Published
-GitHub Release with auto-generated notes anchored to `v0.11.1`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.12.0. Sanity gate: backend restart
-**failed** with `asyncpg.exceptions.DatatypeMismatchError` in `ensure_song_versions_table()` (local
-Postgres `songs.id` is `character varying`, incompatible with the FK the code expects) — confirmed
-this is pre-existing local DB schema drift unrelated to the release range (no commit in range touches
-`database/database.py` or `backend_api.py`), not a regression, so **not** treated as a blocking `main`
-error. Frontend `npm run build` **passed**. Proceeded per Step 4.5.
+Replaced the (now-retired) `MultitrackEditor`'s single global Intensity dropdown with per-step
+recommendations and unified "Whole song"/"Region" into one analyze → detected-issues → per-step
+controls → Preview/Clean pipeline (a region is a scope — `start_s`/`end_s` — not a different tool).
+`analyze_and_recommend_processing` returns a per-step `recommended_intensity` derived from its own
+measurements; `auto_clean_recording` gained `step_params` (explicit per-step overrides that always win
+over the aggressiveness-scaled recommendation) and region bounds, with Normalize/Master always
+skipped under a region and Trim routed through `trim_silence`'s own scoped silence-trim so a
+mid-track selection can never delete audio outside it.
 
 ### 2026-07-12 — Pipeline concurrency standards ported from soccer-assistant-coach + GitHub Actions sweep
-Copied the sibling repo's updated agent standards. **AGENTS.md** gained a **Concurrency** section
-(4 rules: re-check before write; lost races are benign skips, not errors; writers claim / readers
-re-check; never touch a dirty human working tree) and now documents **two run environments** —
-local Windows and headless GitHub Actions (`$GITHUB_ACTIONS` = `true`; no Docker stack in CI, so
-agents run targeted pytest + frontend lint/build and honestly report what wasn't verified).
-Agent-file changes: **developer** got a Step 3.5 `dev-agent:claim` protocol (claim comment →
-sleep 5 → oldest active claim < 60 min wins), a dirty-tree/branch-exists guard before branching,
-and a pre-push PR re-check (rejected feature-branch push = benign race); **cpo/pm/qa** re-fetch
-markers immediately before posting; **release-manager** got a dirty-tree guard, a last-moment tag
-idempotency re-check, and benign handling for tag-push races. Orchestrator gained a
-**DEV-CLAIMED** triage bucket. New **`.github/workflows/fix-issue.yml`** runs the whole sweep via
-`anthropics/claude-code-action@v1.0.140` on issue-opened/reopened + human (non-`-agent:`-marker)
-comments + manual dispatch, replicating the local non-LLM gate; needs `BOT_TOKEN` and
-`CLAUDE_CODE_OAUTH_TOKEN` secrets. Deliberately NOT ported: soccer's `pr-reviewer` split and
-`COMPONENTS.md` (they exist there because its QA gate is an expensive cloud emulator run; QA here
-is cheap/local).
-
-### 2026-06-28 — Release `v0.11.1` (release-manager)
-Cut **`v0.11.1`** from `main` (HEAD `bcc5121`), a **patch** bump from `v0.11.0` — the single commit in
-the range is `bcc5121` (`chore: record v0.11.0 release in agent memory`), the release-manager's own
-memory chore from the v0.11.0 cut. No `feat:`/`fix:`/`enhancement` and no linked PR/issue, so no
-product change and no issues to notify. Published GitHub Release with auto-generated notes anchored to
-`v0.11.0`: https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.11.1. Sanity gate: Docker
-daemon down locally (infra, not a `main` error) so backend-boot check skipped; frontend `npm run build`
-**passed** (confirms `main` healthy; the chore doesn't touch the frontend). Proceeded per Step 4.5.
-
-### 2026-06-27 — Release `v0.11.0` (release-manager)
-Cut **`v0.11.0`** from `main` (HEAD `912dd0a`), a **minor** bump from `v0.10.0` because the 3-commit
-range adds a clear feature: a `feat:` commit (`963b4dd`, back-fill null catalog metadata — genre,
-duration, tempo) merged via PR #54. Range also includes the v0.10.0 release-memory chore (`6364589`)
-and the merge commit. Published GitHub Release with auto-generated notes anchored to `v0.10.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.11.0. Notified linked closed issue
-#52. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check skipped;
-frontend `npm run build` **passed**. The feature is a backfill script + DB work (not exercised by the
-frontend build), so it relies on the per-PR QA gate. Proceeded per Step 4.5.
-
-### 2026-06-27 — Release `v0.10.0` (release-manager)
-Cut **`v0.10.0`** from `main` (HEAD `21a3abf`), a **minor** bump from `v0.9.1` because the 9-commit
-range adds clear features: a `feat:` commit (`059df70`, add a recorded-on Date column to the Produce
-catalog table) merged via PR #53, plus the null-metadata back-fill/derivation work (back-fill script
-for `songs.session`/`recorded_on`, `insert_song()` now persisting them, and LLM-based energy/mood
-derivation for all 1341 songs). Published GitHub Release with auto-generated notes anchored to `v0.9.1`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.10.0. Notified linked closed issue
-#51. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check skipped;
-frontend `npm run build` **passed** and validated the changed `/produce` catalog page. Proceeded per
-Step 4.5.
-
-### 2026-06-27 — Back-fill + derive null song metadata
-Eight `songs` columns were entirely null (`energy, mood, recording_date, audio_quality, rating,
-session, uploaded_on, recorded_on`). Root cause: `insert_song()` (`database/database.py`) only ever
-wrote a fixed column set and **omitted `session`/`recorded_on`**, so scraped values were dropped on
-load; and the audio-analysis scripts only wrote "basic fields" (`tempo_bpm, key, duration_seconds`),
-never `energy`/`mood`. The `audio_analysis` table is empty — librosa energy/valence were never
-populated.
-- **Back-fill:** new `scraper/backfill_session_recorded_on.py` reads the latest `scraped_songs_*.json`
-  and fills `session` (663) + `recorded_on` (661) by id. Dry-run by default; `COALESCE`-based so it
-  never clobbers existing values; parses scraped `M/D/YY` as 20YY. Runs from the host venv against
-  the exposed DB (`localhost:5432`) — the `scraper/` dir is **not** mounted into `bigflavor-backend`.
-- **Prevent recurrence:** `insert_song()` now persists `session`/`recorded_on` (new `_parse_recorded_on`
-  helper coerces `M/D/YY`/ISO/`date` → DATE), with `COALESCE(EXCLUDED.…, songs.…)` on conflict so a
-  re-scrape lacking a field won't wipe a back-filled value.
-- **Derive energy/mood:** new `src/rag/derive_energy_mood.py` classifies all 1341 songs via
-  `get_llm_provider()` (ran on Ollama `mistral-nemo`) from title/metadata/lyrics, constrained to a
-  controlled vocab (`energy` low/medium/high; ~14 `mood` labels). CLI mirrors `index_lyrics`
-  (`--status/--limit/--reindex/--dry-run`); **run inside `bigflavor-backend`** where LLM+DB env is
-  wired. A single corrective retry handles out-of-vocab replies → **1341/1341** set. Distribution:
-  energy mostly `medium` (703); mood dominated by `melancholic` (624). Merged to `main` via branch
-  `fix/backfill-and-derive-song-metadata`.
-
-### 2026-06-27 — Release `v0.9.1` (release-manager)
-Cut **`v0.9.1`** from `main` (HEAD `f3dbcc5`), a **patch** bump from `v0.9.0` because the 4-commit
-range has no new feature — the only product change is a `fix:` (`cd5cfb0`, replace the `/produce`
-dropdown with a sortable catalog table + per-song detail page) merged via PR #50 (no `enhancement`
-label). The other three commits are release-manager memory chores from the v0.9.0 cut (`eb848d3`,
-`f3dbcc5`) and the merge commit (`fefb446`). Published GitHub Release with auto-generated notes anchored
-to `v0.9.0`: https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.9.1. Notified linked
-closed issue #49. Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot
-check skipped; frontend `npm run build` **passed** and directly validated the changed `/produce` page
-plus the new `/produce/[songId]` route. Proceeded per Step 4.5.
-
-### 2026-06-27 — Release `v0.9.0` (release-manager)
-Cut **`v0.9.0`** from `main` (HEAD `feee75c`), a **minor** bump from `v0.8.0` because the 6-commit
-range includes a `feat:` commit (`1dfd759`, save auto-clean output as a candidate version on
-`/produce`) merged via PR #48. Range also covers chores: local-dev against Anthropic + scripts/docs
-reorg (`b295d6c`), node_modules gitignore + agent-memory update (`3328971`), and `cleanup` (`feee75c`).
-Published GitHub Release with auto-generated notes anchored to `v0.8.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.9.0. Notified linked closed issue
-#47. PR #50 was approved-but-unmerged and correctly **out of scope** for this release (per orchestrator
-note). Sanity gate: Docker daemon down locally (infra, not a `main` error) so backend-boot check
-skipped; frontend `npm run build` **passed**. Proceeded per Step 4.5.
-
-### 2026-06-26 — Release `v0.8.0` (release-manager)
-Cut **`v0.8.0`** from `main` (HEAD `2ed9f36`), a **minor** bump from `v0.7.0` because the 2-commit
-range includes a `feat:` commit (`71bc42d`, manage song versions and set a default from `/produce`)
-merged via PR #46. Published GitHub Release with auto-generated notes anchored to `v0.7.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.8.0. Notified linked closed issue
-#43. Sanity gate: Docker daemon was down locally (infra, not a `main` error) so the backend-boot
-check was skipped; frontend `npm run build` **passed** and directly validated the changed `/produce`
-page plus the new version-management API routes (`/api/produce/versions/[versionId]/{audio,default,
-rename}`). Proceeded per Step 4.5.
-
-### 2026-06-23 — Release `v0.7.0` (release-manager)
-Cut **`v0.7.0`** from `main` (HEAD `425091e`), a **minor** bump from `v0.6.0` because the 2-commit
-range includes a `feat:` commit (`b3445e8`, inline help for the `/produce` configure-and-clean panel)
-merged via PR #45. The only product change in the range is `frontend/app/produce/page.tsx`. Published
-GitHub Release with auto-generated notes anchored to `v0.6.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.7.0. Notified linked closed issue
-#44. Sanity gate: frontend `npm run build` **passed** (directly validates the changed page). Backend
-boot **failed** with `asyncpg DatatypeMismatchError` on `song_versions_song_id_fkey` — local `songs.id`
-is `varchar` but `ensure_song_versions_table` (database/database.py:294) declares `song_id INTEGER
-REFERENCES songs(id)`. That code shipped in v0.6.0 (commit `6052d28`) and is **not** in this range, so
-the failure is a local DB-state divergence (env), not a `main` error introduced here — noted and
-proceeded per Step 4.5. Worth a human's eye if the local Postgres `songs.id` type ever needs
-reconciling with the integer FK the code expects.
-
-### 2026-06-22 — Release `v0.6.0` (release-manager)
-Cut **`v0.6.0`** from `main` (HEAD `0ed449d`), a **minor** bump from `v0.5.0` because the 11-commit
-range includes a `feat:` commit (`e970612`, clarify force-reclean has no effect) and merged feature
-PR #41. Range covered the `/produce` analyze/auto-clean fixes (mcp dep, numpy JSON, writable produced
-mount, before/after players), nginx path forwarding restore, and `AGENT_API_URL` next.config fallback.
-Published GitHub Release with auto-generated notes anchored to `v0.5.0`:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.6.0. Notified linked closed issues
-#38 and #39. Sanity gate: Docker daemon was up but the full stack wasn't running (Postgres exited,
-backend started clean with no logs) — treated as infra, not a `main` error, so proceeded.
-
-### 2026-06-22 — `/produce` Analyze was a silent no-op: missing `mcp` dep + numpy JSON bug
-`requirements-api.txt` never picked up the `mcp` package that
-`src/production/big_flavor_mcp.py` needs (it's only listed in the older
-`setup/requirements.txt`), so `BigFlavorMCPServer` failed to import and every
-production tool call (`analyze_and_recommend_processing`, `auto_clean_recording`)
-silently fell back to a generic `{"error": ..., "message": ...}` dict with no
-`status` field — the `/produce` page couldn't tell it was an error and rendered an
-empty "Detected issues" section instead. Fixed by adding `mcp>=1.0.0` to
-`requirements-api.txt` and rebuilding the backend image (`baf940c`). Recreating
-the backend container to pick up the new image also exposed that
-`BACKEND_API_SECRET` was never persisted to `.env` (only set via an exported shell
-var at the original `docker-compose up`), so every authenticated route 401'd
-("Server auth is not configured") until it was added to `.env`. With the
-dependency actually loaded, the real analysis code ran for the first time and hit
-a third bug: three `"recommended"` flags were raw `numpy.bool_` values from numpy
-comparisons, which FastAPI can't JSON-encode (500). Cast to `bool()`. Same day, a
-separate fix (`2e76db0`, not from this session) repaired nginx's resolver-based
-upstream variables, which had silently broken path forwarding (`/stream`,
-`/icecast/`, the backend catch-all) and were missing frontend-BFF routes for
-`/api/admin`, `/api/produce`, `/api/songs` — worth knowing if nginx 404s/502s show
-up in this area again. **Lesson:** `requirements-api.txt` is maintained
-separately from `setup/requirements.txt` and can silently drift; when a backend
-tool "does nothing," check the startup log for "MCP production server loaded" vs
-"not available" before chasing the data/network layer.
-
-### 2026-06-20 — First tagged release `v0.1.0` (release-manager)
-Adopted `vX.Y.Z` git-tag versioning. Cut the **first release `v0.1.0`** from `main` (HEAD `775e747`,
-44 commits, no prior tag) and published a GitHub Release with auto-generated notes:
-https://github.com/Robby2D2/big-flavor-band-agent/releases/tag/v0.1.0. No issues notified — the
-initial history has no `#NN` PR references in commit subjects, so there were no linked closed issues.
-Sanity gate skipped (Docker stack not running locally — infra, not a `main` error). The hygiene work
-on `fix/container-config-hygiene-11` (`97c4eb6`) was **not** merged to `main` and is correctly out of
-this release.
-
----
-
-## Project snapshot (as of 2026-06-19)
-
-AI music-discovery & production assistant over the Big Flavor Band catalog (~1,300 songs).
-- **Backend:** FastAPI (`backend_api.py`) — search, agent/DJ, radio, tools, users/admin routes.
-- **Frontend:** Next.js app-router (`frontend/`) with Google OAuth and an audio player.
-- **Agent:** `src/agent/big_flavor_agent.py`, LLM-provider-agnostic (Ollama default / Claude).
-- **Search:** `SongRAGSystem` (`src/rag/`) — text, lyric, audio-similarity, tempo, hybrid (pgvector).
-- **Production:** MCP server (`src/production/big_flavor_mcp.py`) — analyze/tempo-match/transition/master.
-- **Data:** PostgreSQL + pgvector; scraped from bigflavor.com; lyrics via Whisper large-v3.
-- **Radio:** Icecast + Liquidsoap, playlist via shared `streaming/playlist/radio.m3u`.
-- **Deploy:** Docker Compose (7 services); production env + nginx SSL.
-- Active branch is `front_end`; `main` is the integration branch.
-
----
-
-## Timeline (reconstructed from git)
-
-### 2026-06-20 — Radio state externalized to PostgreSQL (issue #2)
-Runtime radio state (queue, now-playing, play/pause, position) and active listeners moved out of
-per-process in-memory dicts in `backend_api.py` into a new `RadioStateStore`
-(`database/radio_state_store.py`) backed by a single-row `radio_state` JSONB table + a
-`radio_listeners` table (migration `06-create-radio-state-table.sql`). Endpoints now load → mutate →
-save state per request, so the radio survives a backend restart and is consistent across instances.
-Chose Postgres over Redis to avoid standing up new infra. Added `pytest`/`pytest-asyncio` dev deps,
-a root `pytest.ini` (`asyncio_mode = auto`), and the first assert-based test
-(`tests/test_radio_state_store.py`, fake DB pool — no live DB/LLM). Radio invariants preserved
-(`mksafe()` sources untouched; `/app/audio_library` → `/audio_library` rewrite intact).
-
-### 2025-11-24 — Radio fixed (`60da3f0`)
-Radio streaming stabilized. The key invariant: Liquidsoap playlist sources must be wrapped in
-`mksafe()` or `fallback` chooses `blank()` (silence) even with valid playlists; and the backend must
-rewrite playlist paths `/app/audio_library/…` → `/audio_library/…` to match Liquidsoap's mount. See
-[memory/radio_streaming.md](memory/radio_streaming.md).
-
-### 2025-11-23 — Frontend shows results, not agent prose (`eb3a032`)
-Dropped the LLM narration from the UI and display raw structured search results — clearer for music
-discovery.
-
-### 2025-11-21 — Search improvements (`c41f90c`)
-Iterated on search relevance/behavior.
-
-### 2025-11-19 → 11-20 — Production deployment support (`c633d34`, `00a73fa`)
-Added a production Docker environment and nginx SSL handling, making the stack deployable to a real
-host. See `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_QUICK_START.md`.
-
-### 2025-11-15 — Auth: Google OAuth multi-URL (`6718150`)
-Auth0/Google OAuth updated to support multiple callback URLs so one config works in dev **and** prod.
-Users/roles live in Postgres (migration `05`); admin routes under `/api/admin/*`.
-
-### 2025-11-11 → 11-12 — Frontend first pass (`5a9bffa`, `2f814e2`)
-Initial Next.js frontend built and stabilized (search UI, audio player, components).
-
-### 2025-11-10 — Full lyric + semantic search (`3a4145c`)
-Lyric search combines full-text and semantic (embedding) matching.
-
-### 2025-11-09 — Scraper indexes audio + all songs, incremental mode (`eb66637`, `0088ee6`, `3380d15`)
-Scraper extended to index audio embeddings as well as metadata, to cover the whole catalog, and to
-**process only missing data** on re-runs (idempotent ingest).
-
-### 2025-11-08 — Whisper large-v3 for lyric transcription (`09bb7ba`, `ef42485`, `8fae495`)
-Upgraded the lyric transcription model to Whisper large-v3 for accuracy; added GPU testing tools.
-
-### 2025-11-07 — Editing, title similarity, lyric matching, RAG/MCP split hardened
-(`a26b484`, `ce6d272`, `9becb30`, `96ce1b5`, `f8ac5a0`, `cb57406`, `72d7816`, `36e8f74`, `74ceb66`)
-Song editing added; title-similarity and lyric matching search; tool calling fixed; the READ (RAG
-library) vs WRITE (MCP server) separation cleaned up and the directory structure reorganized.
-
-### 2025-11-07 — DB credentials moved to `.env` (`caf28a0`)
-Stopped committing DB creds; `DatabaseManager` now reads `DB_*` / `DATABASE_URL` from env.
-
-### 2025-11-06 — Core system built: Postgres, scraper, RAG, MCP, agent
-(`98137ed`, `c52897d`…`dfe659c`, `41180f4`, `cd8f253`, `972aea3`, `7dff5a1`)
-Stood up PostgreSQL, screen-scraped the catalog (with de-duplication), created the RAG search system,
-wired RAG into the MCP server, and added the AI agent — the first end-to-end agent/MCP/RAG pass.
-
-### 2025-11-05 — Project genesis (`410268b`, `9e57cb4`, `fa83538`)
-Initial commit, first generation of the system, RSS feed for the MCP server. (An early TypeScript
-version, `15b3901`, was superseded by the Python implementation.)
+**AGENTS.md** gained a **Concurrency** section (re-check before write; lost races are benign skips,
+not errors; writers claim / readers re-check; never touch a dirty human working tree) and now
+documents two run environments — local Windows and headless GitHub Actions (`$GITHUB_ACTIONS`=`true`;
+no Docker stack in CI, so agents run targeted pytest + frontend lint/build and honestly report what
+wasn't verified). **developer** got a `dev-agent:claim` protocol + dirty-tree guard + pre-push PR
+re-check; **cpo/pm/qa** re-fetch markers before posting; **release-manager** got a dirty-tree guard +
+tag-idempotency re-check. New `.github/workflows/fix-issue.yml` runs the sweep via
+`anthropics/claude-code-action` on issue-opened/reopened + human comments + manual dispatch.
 
 ---
 
@@ -472,3 +165,10 @@ version, `15b3901`, was superseded by the Python implementation.)
 - **Schema changes are migrations** under `database/sql/migrations/`, not edits to `init/*.sql`.
 - **Releases are git tags `vX.Y.Z` on `main`** (first: `v0.1.0`, 2026-06-20); patch-bump by default,
   minor-bump if the range adds a clear feature. No formal test suite yet — see [TESTING.md](TESTING.md).
+- **Frontend theme (as of 2026-08-01):** dark-only "Console" design system, `darkMode: 'class'` +
+  permanent `dark` class on `<html>` — there is no light mode and no toggle. Design tokens live in
+  `frontend/tailwind.config.ts` (`canvas/panel/raised/well/signal/confirm/attention/text`, plus
+  `stem.*` accent colors). Every `frontend/app/api/produce/**/route.ts` is a hand-written BFF proxy
+  that whitelists which body fields it forwards to the backend — adding a field to a backend request
+  model does **not** automatically reach the browser; the matching proxy route needs the same field
+  added explicitly.

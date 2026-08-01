@@ -58,6 +58,7 @@ class ApplyMastering(AudioTool):
                     "current_lufs": round(float(current_lufs), 1),
                     "estimated_gain_db": round(float(gain), 1),
                 },
+                "confidence": self.confidence_tier(abs(gain), high=6.0, worth=1.5),
                 "reason": f"Measured {current_lufs:.1f} LUFS; ~{gain:+.1f} dB to reach {target_lufs:.0f} LUFS",
                 "region": {"start_s": start_s, "end_s": end_s},
             }

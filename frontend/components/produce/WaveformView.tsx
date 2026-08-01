@@ -21,6 +21,12 @@ interface WaveformViewProps {
   /** Current playback position (seconds), drawn as a moving line. */
   playhead?: number | null;
   waveColor?: string;
+  /**
+   * Arbitrary colored spans drawn under the waveform, e.g. one per pending
+   * fix that has a location (a trim zone, a pitch-drift section) — additive
+   * to `region`/`trimRegion`, which stay their own single-purpose props.
+   */
+  overlays?: { start: number; end: number; color: string }[];
 }
 
 const DEFAULT_WAVE = '#60a5fa';
@@ -41,6 +47,7 @@ export default function WaveformView({
   beats,
   playhead = null,
   waveColor = DEFAULT_WAVE,
+  overlays,
 }: WaveformViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -90,6 +97,17 @@ export default function WaveformView({
       if (xEnd < width) ctx.fillRect(xEnd, 0, 1.5, height);
     }
 
+    // Fix-location overlays (one per pending fix with a location), drawn
+    // under the waveform and under the region/trim highlights.
+    if (overlays && overlays.length && duration > 0) {
+      for (const o of overlays) {
+        const xStart = (o.start / duration) * width;
+        const xEnd = (o.end / duration) * width;
+        ctx.fillStyle = o.color;
+        ctx.fillRect(Math.max(0, xStart), 0, Math.max(1, xEnd - xStart), height);
+      }
+    }
+
     // Region highlight (drawn under the waveform).
     if (region && duration > 0) {
       const x1 = (region.start / duration) * width;
@@ -129,7 +147,7 @@ export default function WaveformView({
       ctx.fillStyle = '#ef4444';
       ctx.fillRect(x, 0, 1.5, height);
     }
-  }, [peaks, width, height, region, trimRegion, duration, beats, playhead, waveColor]);
+  }, [peaks, width, height, region, trimRegion, overlays, duration, beats, playhead, waveColor]);
 
   const xToTime = useCallback(
     (clientX: number): number => {

@@ -3,8 +3,7 @@
 import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
-import MultitrackEditor from '@/components/produce/MultitrackEditor';
-import LyricsPanel from '@/components/produce/LyricsPanel';
+import AudioProcessingTab from '@/components/produce/audio/AudioProcessingTab';
 
 interface CatalogSong {
   id: number;
@@ -40,7 +39,7 @@ export default function ProduceSongPage({
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [versionBusyId, setVersionBusyId] = useState<number | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'versions' | 'lyrics' | 'audio'>('versions');
+  const [activeTab, setActiveTab] = useState<'versions' | 'audio'>('versions');
 
   useEffect(() => {
     if (Number.isNaN(songId)) {
@@ -180,10 +179,10 @@ export default function ProduceSongPage({
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading song...</p>
+          <p className="mt-4 text-text/55">Loading song...</p>
         </div>
       </div>
     );
@@ -191,11 +190,11 @@ export default function ProduceSongPage({
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
-        <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
+        <div className="max-w-md w-full bg-panel rounded-lg shadow-lg p-8">
           <div className="text-red-600 dark:text-red-400 text-center">
             <h2 className="text-2xl font-bold mb-2">Unable to load song</h2>
-            <p className="text-gray-600 dark:text-gray-400">{error}</p>
+            <p className="text-text/55">{error}</p>
             <Link
               href="/produce"
               className="mt-6 inline-block px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -209,7 +208,7 @@ export default function ProduceSongPage({
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-canvas">
       <Header title="Produce" subtitle={song?.title ?? 'Song detail'} />
 
       <main className="container mx-auto px-4 py-8">
@@ -220,15 +219,14 @@ export default function ProduceSongPage({
           ← Back to catalog
         </Link>
 
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+        <h1 className="text-2xl font-bold text-text mb-6">
           {song?.title}
         </h1>
 
         {/* Tabs: Versions | Lyrics | Audio processing */}
-        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 mb-6">
+        <div className="flex gap-1 border-b border-white/8 mb-6">
           {([
             ['versions', 'Versions'],
-            ['lyrics', 'Lyrics'],
             ['audio', 'Audio processing'],
           ] as const).map(([key, label]) => (
             <button
@@ -237,7 +235,7 @@ export default function ProduceSongPage({
               className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 ${
                 activeTab === key
                   ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                  : 'border-transparent text-text/45 hover:text-text/70'
               }`}
             >
               {label}
@@ -245,53 +243,42 @@ export default function ProduceSongPage({
           ))}
         </div>
 
-        {/* Lyrics tab */}
-        {activeTab === 'lyrics' && (
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-              Lyrics
-            </h2>
-            <LyricsPanel songId={songId} />
-          </div>
-        )}
-
         {/* Audio processing tab */}
         {activeTab === 'audio' && (
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-              Audio processing
-            </h2>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              Pick a starting version, then drag-select a region on the waveform
-              (or leave it on the whole song) and run tools. Analyze prepopulates
-              every tool with recommended settings; each Apply — or a full Clean —
-              produces a new version, so the version you start from is never
-              overwritten. Separated stems appear with their own mute / solo / gain.
+          <div className="bg-panel border border-white/8 rounded-xl p-6">
+            <h2 className="text-xl font-semibold text-text mb-1">Audio processing</h2>
+            <p className="text-sm text-text/50 mb-4">
+              Pick a starting version, then Start analysis — it separates the song
+              into stems and measures each one on its own. Review the detected
+              fixes below, adjust or skip what you don&apos;t want, then accept the
+              rest as a new version. The version you start from is never
+              overwritten.
             </p>
-            <MultitrackEditor
+            <AudioProcessingTab
               songId={songId}
               versions={versions}
               onApplied={loadVersions}
+              onManageVersions={() => setActiveTab('versions')}
             />
           </div>
         )}
 
         {/* Versions tab */}
         {activeTab === 'versions' && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+        <div className="bg-panel rounded-lg shadow-lg p-6">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+            <h2 className="text-xl font-semibold text-text">
               Manage versions
             </h2>
             <button
               onClick={loadVersions}
               disabled={versionsLoading}
-              className="text-sm px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+              className="text-sm px-3 py-1 border border-white/14 rounded-lg text-text/70 hover:bg-white/5 disabled:opacity-50"
             >
               {versionsLoading ? 'Refreshing...' : 'Refresh'}
             </button>
           </div>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          <p className="text-sm text-text/55 mb-4">
             The default version is what plays everywhere — radio, search and preview,
             and downloads. The original is always kept until you delete it.
           </p>
@@ -303,13 +290,13 @@ export default function ProduceSongPage({
           )}
 
           {versions.length === 0 && !versionsLoading ? (
-            <p className="text-gray-500 dark:text-gray-400 text-sm">
+            <p className="text-text/45 text-sm">
               No versions yet for this song.
             </p>
           ) : (
-            <div className="overflow-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+            <div className="overflow-auto border border-white/8 rounded-lg">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 dark:bg-gray-900 text-left text-gray-500 dark:text-gray-400">
+                <thead className="bg-well text-left text-text/45">
                   <tr>
                     <th className="py-2 px-3">Version</th>
                     <th className="py-2 px-3">Steps</th>
@@ -321,11 +308,11 @@ export default function ProduceSongPage({
                     <th className="py-2 px-3">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="text-gray-900 dark:text-white">
+                <tbody className="text-text">
                   {versions.map((v) => (
                     <tr
                       key={v.id}
-                      className="border-t border-gray-200 dark:border-gray-700 align-middle"
+                      className="border-t border-white/8 align-middle"
                     >
                       <td className="py-2 px-3">
                         <div className="flex items-center gap-2">
@@ -336,27 +323,27 @@ export default function ProduceSongPage({
                             </span>
                           )}
                           {v.label === 'original' && (
-                            <span className="text-xs text-gray-400 dark:text-gray-500">
+                            <span className="text-xs text-text/35">
                               original
                             </span>
                           )}
                         </div>
                       </td>
-                      <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                      <td className="py-2 px-3 text-text/55">
                         {v.steps_applied && v.steps_applied.length > 0
                           ? v.steps_applied.map((s) => s.step).join(', ')
                           : '—'}
                       </td>
-                      <td className="py-2 px-3 text-gray-600 dark:text-gray-400 capitalize">
+                      <td className="py-2 px-3 text-text/55 capitalize">
                         {v.aggressiveness ?? '—'}
                       </td>
-                      <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                      <td className="py-2 px-3 text-text/55">
                         {formatDuration(v.duration_seconds)}
                       </td>
-                      <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                      <td className="py-2 px-3 text-text/55">
                         {formatBytes(v.file_size_bytes)}
                       </td>
-                      <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                      <td className="py-2 px-3 text-text/55">
                         {v.created_at ? new Date(v.created_at).toLocaleString() : '—'}
                       </td>
                       <td className="py-2 px-3">
@@ -372,14 +359,14 @@ export default function ProduceSongPage({
                           <button
                             onClick={() => handleSetDefault(v.id)}
                             disabled={v.is_published || versionBusyId === v.id}
-                            className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
+                            className="text-xs px-2 py-1 bg-signal text-canvas font-semibold rounded hover:opacity-90 disabled:bg-white/10 disabled:text-text/35 disabled:cursor-not-allowed"
                           >
                             Set default
                           </button>
                           <button
                             onClick={() => handleRenameVersion(v.id, v.name)}
                             disabled={versionBusyId === v.id}
-                            className="text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+                            className="text-xs px-2 py-1 border border-white/14 rounded text-text/70 hover:bg-white/5 disabled:opacity-50"
                           >
                             Rename
                           </button>

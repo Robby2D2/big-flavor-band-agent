@@ -22,33 +22,33 @@ export default function Header({
   const canAdmin = user?.role === 'admin';
 
   return (
-    <header className="bg-gray-900 text-white">
+    <header className="bg-canvas text-text border-b border-white/8">
       <div className="container mx-auto px-4 py-4">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-8">
             <Link href="/" className="hover:opacity-80 transition-opacity">
-              <h1 className="text-3xl font-bold">{title}</h1>
-              <p className="text-gray-400 text-sm">{subtitle}</p>
+              <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+              <p className="text-text/40 text-sm">{subtitle}</p>
             </Link>
 
             {showNav && (
-              <nav className="hidden md:flex gap-6">
+              <nav className="hidden md:flex gap-1">
                 <Link
                   href="/search"
-                  className="text-gray-300 hover:text-white transition-colors"
+                  className="text-text/50 hover:text-text hover:bg-white/8 transition-colors px-3 py-1.5 rounded-md text-sm font-medium"
                 >
                   Search
                 </Link>
                 <Link
                   href="/radio"
-                  className="text-gray-300 hover:text-white transition-colors"
+                  className="text-text/50 hover:text-text hover:bg-white/8 transition-colors px-3 py-1.5 rounded-md text-sm font-medium"
                 >
                   Radio
                 </Link>
                 {canEdit && (
                   <Link
                     href="/edit"
-                    className="text-gray-300 hover:text-white transition-colors"
+                    className="text-text/50 hover:text-text hover:bg-white/8 transition-colors px-3 py-1.5 rounded-md text-sm font-medium"
                   >
                     Edit
                   </Link>
@@ -56,7 +56,7 @@ export default function Header({
                 {canEdit && (
                   <Link
                     href="/produce"
-                    className="text-gray-300 hover:text-white transition-colors"
+                    className="text-text/50 hover:text-text hover:bg-white/8 transition-colors px-3 py-1.5 rounded-md text-sm font-medium"
                   >
                     Produce
                   </Link>
@@ -64,7 +64,7 @@ export default function Header({
                 {canAdmin && (
                   <Link
                     href="/admin"
-                    className="text-gray-300 hover:text-white transition-colors"
+                    className="text-text/50 hover:text-text hover:bg-white/8 transition-colors px-3 py-1.5 rounded-md text-sm font-medium"
                   >
                     Admin
                   </Link>

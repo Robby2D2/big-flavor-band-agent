@@ -60,6 +60,14 @@ class NormalizeAudio(AudioTool):
                 comp_ratio = 2.0
 
             recommended = bool(peak_db < -6 or peak_db > -1)
+            deviation_db = None
+            if np.isfinite(peak_db):
+                if peak_db < -6:
+                    deviation_db = -6 - peak_db
+                elif peak_db > -1:
+                    deviation_db = peak_db - (-1)
+                else:
+                    deviation_db = 0.0
             return {
                 "status": "success",
                 "tool": self.name,
@@ -70,6 +78,7 @@ class NormalizeAudio(AudioTool):
                     "current_peak_db": round(float(peak_db), 1) if np.isfinite(peak_db) else None,
                     "crest_factor_db": round(float(crest_db), 1),
                 },
+                "confidence": self.confidence_tier(deviation_db, high=6.0, worth=0.0),
                 "reason": (f"Peak at {peak_db:.1f} dB — level optimization recommended"
                            if recommended else "Levels are already in range"),
                 "region": {"start_s": start_s, "end_s": end_s},

@@ -91,6 +91,7 @@ class ReduceNoise(AudioTool):
                 "params": {"reduction_strength": float(recommended_strength),
                            "noise_profile_duration": 1.0},
                 "findings": {"noise_level_db": round(float(noise_level_db), 1)},
+                "confidence": self.confidence_tier(noise_level_db, high=-40, worth=-55),
                 "reason": f"Background noise floor at {noise_level_db:.1f} dB",
                 "region": {"start_s": start_s, "end_s": end_s},
             }

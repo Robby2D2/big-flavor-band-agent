@@ -28,6 +28,7 @@ export async function POST(
         body: JSON.stringify({
           song_id: body.song_id,
           source_version_id: body.source_version_id ?? null,
+          stem_id: body.stem_id ?? null,
           start_s: body.start_s ?? null,
           end_s: body.end_s ?? null,
           params: body.params ?? {},

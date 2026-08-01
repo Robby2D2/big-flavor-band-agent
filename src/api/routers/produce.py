@@ -23,7 +23,7 @@ import json
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -172,6 +172,42 @@ async def _resolve_clean_source_path(
     if not await run_in_threadpool(path.exists):
         raise HTTPException(status_code=404, detail="Source version audio file missing")
     return path
+
+
+async def _resolve_stem_path(song_id: int, stem_id: int, db: DatabaseManager) -> Path:
+    """Resolve one separated stem's own audio file, or 404.
+
+    The stem must belong to a stem set for ``song_id`` — this is the trust
+    boundary a stem-scoped tool run relies on, same ownership check
+    ``_resolve_clean_source_path`` does for versions.
+    """
+    stem = await db.get_stem(stem_id)
+    if stem is None:
+        raise HTTPException(status_code=404, detail="Stem not found")
+    stem_set = await db.get_stem_set(stem["stem_set_id"])
+    if stem_set is None or stem_set["song_id"] != song_id:
+        raise HTTPException(status_code=404, detail="Stem not found for this song")
+    path = Path(stem["path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Stem audio file missing")
+    return path
+
+
+async def _resolve_tool_source_path(
+    song_id: int,
+    source_version_id: Optional[int],
+    stem_id: Optional[int],
+    db: DatabaseManager,
+) -> Path:
+    """Resolve the audio file a per-tool analyze/apply run should read.
+
+    A ``stem_id`` (an individual separated stem's own audio) takes precedence
+    over ``source_version_id``/the catalog original — the per-stem review
+    queue always means "this stem's audio," never the whole mix.
+    """
+    if stem_id is not None:
+        return await _resolve_stem_path(song_id, stem_id, db)
+    return await _resolve_clean_source_path(song_id, source_version_id, db)
 
 
 def _produced_dir() -> Path:
@@ -1105,6 +1141,178 @@ async def render_stem_remix(
     }
 
 
+# ---- Console redesign: per-stem fix chains + accept-fixes orchestration ----
+
+
+class StemFixSpec(BaseModel):
+    """One accepted fix in a review-queue chain: a tool + its (possibly
+    user-adjusted) params, optionally scoped to a region."""
+    tool: str
+    params: Dict[str, Any] = {}
+    start_s: Optional[float] = None
+    end_s: Optional[float] = None
+
+
+async def _chain_apply_tools(
+    agent: BigFlavorAgent,
+    specs: List[StemFixSpec],
+    source_path: Path,
+    output_dir: Path,
+    tag: str,
+) -> Path:
+    """Sequentially apply each fix spec, step N's output feeding step N+1.
+
+    Returns ``source_path`` unchanged (no processing, no file written) when
+    ``specs`` is empty — an unmodified stem or a master bucket with every fix
+    skipped is a valid, cheap no-op. Intermediate files land under
+    ``output_dir / tag /`` so a multi-stem chain-apply run can never collide
+    with another stem's or another run's files.
+    """
+    if not specs:
+        return source_path
+
+    chain_dir = output_dir / tag
+    chain_dir.mkdir(parents=True, exist_ok=True)
+    current = source_path
+    for i, spec in enumerate(specs):
+        next_path = chain_dir / f"{i:02d}_{spec.tool}_{int(time.time() * 1000)}.wav"
+        args = {
+            "file_path": str(current),
+            "output_path": str(next_path),
+            "start_s": spec.start_s,
+            "end_s": spec.end_s,
+            **(spec.params or {}),
+        }
+        result = await agent.execute_tool(spec.tool, args)
+        if result.get("status") != "success":
+            raise HTTPException(
+                status_code=502, detail=result.get("error", f"{spec.tool} failed")
+            )
+        current = next_path
+    return current
+
+
+class StemPreviewChainRequest(BaseModel):
+    fixes: List[StemFixSpec] = []
+
+
+@router.post("/api/produce/stems/{stem_id}/preview-chain")
+async def preview_stem_fix_chain(
+    stem_id: int,
+    request: StemPreviewChainRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Render one stem through its currently-enabled fix chain, for audition.
+
+    Drives the review queue's "with fixes" A/B waveform and the advanced
+    drawer's live listen — non-destructive, no version, no DB write. An empty
+    ``fixes`` list returns the stem's own unmodified audio path.
+    """
+    stem = await db.get_stem(stem_id)
+    if stem is None:
+        raise HTTPException(status_code=404, detail="Stem not found")
+    stem_set = await db.get_stem_set(stem["stem_set_id"])
+    if stem_set is None:
+        raise HTTPException(status_code=404, detail="Stem set not found")
+
+    output_dir = _produced_dir() / str(stem_set["song_id"]) / "stem_preview" / str(stem_id)
+    candidate_path = await _chain_apply_tools(
+        agent, request.fixes, Path(stem["path"]), output_dir, tag=f"run{int(time.time() * 1000)}"
+    )
+    return {"stem_id": stem_id, "candidate_path": str(candidate_path)}
+
+
+class StemAcceptSpec(BaseModel):
+    """One stem's enabled fixes for an accept-fixes run."""
+    stem_id: int
+    fixes: List[StemFixSpec] = []
+
+
+class AcceptFixesRequest(BaseModel):
+    """Compose every stem's accepted fixes + master-bucket fixes into one
+    result (issue: Console redesign review queue).
+
+    Each stem in ``stems`` is chain-applied independently (issue: "a hiss fix
+    that saves the vocal can wreck the cymbals" — stems never share a
+    processing chain), remixed back down at unity gain, then ``master_fixes``
+    (whole-mix tools: trim/normalize/mastering/tempo) run on the remix.
+    ``preview=True`` returns a candidate to audition without creating a
+    version ("Preview full mix first"); ``preview=False`` saves it as a new
+    candidate version ("Accept all & save version").
+    """
+    song_id: int
+    source_version_id: Optional[int] = None
+    stems: List[StemAcceptSpec] = []
+    master_fixes: List[StemFixSpec] = []
+    preview: bool = False
+
+
+@router.post("/api/produce/accept-fixes")
+async def accept_fixes(
+    request: AcceptFixesRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Render every accepted per-stem + master fix into one file.
+
+    Backs both "Accept all & save version" (``preview=False``, the default)
+    and "Preview full mix first" (``preview=True``) in the review-queue UI.
+    """
+    run_dir = _produced_dir() / str(request.song_id) / "accept_fixes" / str(int(time.time() * 1000))
+
+    remix_inputs: List[Dict[str, str]] = []
+    for stem_spec in request.stems:
+        stem = await db.get_stem(stem_spec.stem_id)
+        if stem is None:
+            raise HTTPException(status_code=404, detail=f"Stem {stem_spec.stem_id} not found")
+        stem_set = await db.get_stem_set(stem["stem_set_id"])
+        if stem_set is None or stem_set["song_id"] != request.song_id:
+            raise HTTPException(
+                status_code=404, detail=f"Stem {stem_spec.stem_id} not found for this song"
+            )
+        fixed_path = await _chain_apply_tools(
+            agent, stem_spec.fixes, Path(stem["path"]), run_dir, tag=stem["name"]
+        )
+        remix_inputs.append({"name": stem["name"], "path": str(fixed_path)})
+
+    if remix_inputs:
+        downmix_path = run_dir / "downmix.wav"
+        try:
+            await run_in_threadpool(
+                stem_separation.remix_stems, remix_inputs, str(downmix_path), {}
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        # No stems in this run (master-only fixes) — start from the song's
+        # current source audio instead of a remix.
+        downmix_path = await _resolve_clean_source_path(
+            request.song_id, request.source_version_id, db
+        )
+
+    final_path = await _chain_apply_tools(
+        agent, request.master_fixes, downmix_path, run_dir, tag="master"
+    )
+
+    if request.preview:
+        return {"status": "success", "candidate_path": str(final_path)}
+
+    after = await run_in_threadpool(_measure_audio, str(final_path))
+    metrics = {
+        "steps_applied": (
+            [{"stem": s.stem_id, "tools": [f.tool for f in s.fixes]} for s in request.stems]
+            + [{"step": f.tool, "scope": "master"} for f in request.master_fixes]
+        ),
+        "after": after,
+        "produced_at": time.time(),
+    }
+    version = await save_candidate_version(request.song_id, str(final_path), metrics, db)
+    return {"status": "success", "version": version}
+
+
 # ---- issue #70: waveform region editor — region-scoped preview / apply ----
 
 
@@ -1234,13 +1442,18 @@ class ToolRunRequest(BaseModel):
     """Analyze or apply one registered audio tool for a song (per-tool API).
 
     The browser passes the catalog ``song_id`` (optionally a
-    ``source_version_id`` to work from a specific version's audio), an optional
-    region, and the tool's own ``params`` as declared by ``GET /api/produce/tools``.
-    Apply writes a produced file and saves it as an unpublished candidate
-    version; analyze processes nothing.
+    ``source_version_id`` to work from a specific version's audio, or a
+    ``stem_id`` to run against one separated stem's own audio instead of the
+    whole song), an optional region, and the tool's own ``params`` as declared
+    by ``GET /api/produce/tools``. Apply writes a produced file; for a
+    song/version-scoped request it also saves an unpublished candidate
+    version, but a stem-scoped apply never does (the stem console composes
+    per-stem fixes into a version through ``/api/produce/accept-fixes``
+    instead — see that route). Analyze processes nothing either way.
     """
     song_id: int
     source_version_id: Optional[int] = None
+    stem_id: Optional[int] = None
     start_s: Optional[float] = None
     end_s: Optional[float] = None
     params: Dict[str, Any] = {}
@@ -1275,8 +1488,8 @@ async def analyze_with_tool(
     if not agent.production_server:
         raise HTTPException(status_code=503, detail="Production tools not available")
 
-    source_path = await _resolve_clean_source_path(
-        request.song_id, request.source_version_id, db
+    source_path = await _resolve_tool_source_path(
+        request.song_id, request.source_version_id, request.stem_id, db
     )
     args = {
         "file_path": str(source_path),
@@ -1298,11 +1511,15 @@ async def apply_with_tool(
     db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ):
-    """Apply one tool and save the result as a new candidate version.
+    """Apply one tool, against either a song/version or one separated stem.
 
     Restricted to tools that transform a single file into an output (they take a
     ``file_path`` + ``output_path``); analysis-only / multi-input tools are not
-    valid here.
+    valid here. A song/version-scoped run (the default, ``stem_id`` unset) saves
+    the result as a new candidate version, same as before. A stem-scoped run
+    (``stem_id`` set) is always a preview only — it returns a ``candidate_path``
+    to audition and never writes a version; per-stem fixes only become a version
+    together, through ``POST /api/produce/accept-fixes``.
     """
     registry = _get_registry()
     spec = registry.get(tool)
@@ -1313,10 +1530,16 @@ async def apply_with_tool(
             status_code=400, detail=f"Tool '{tool}' cannot be applied to a single file"
         )
 
-    source_path = await _resolve_clean_source_path(
-        request.song_id, request.source_version_id, db
+    source_path = await _resolve_tool_source_path(
+        request.song_id, request.source_version_id, request.stem_id, db
     )
-    output_path = _build_output_path(request.song_id)
+    if request.stem_id is not None:
+        output_path = (
+            _produced_dir()
+            / f"{request.song_id}_stem{request.stem_id}_preview_{int(time.time())}.wav"
+        )
+    else:
+        output_path = _build_output_path(request.song_id)
     args = {
         "file_path": str(source_path),
         "output_path": str(output_path),
@@ -1327,6 +1550,9 @@ async def apply_with_tool(
     result = await agent.execute_tool(tool, args)
     if result.get("status") != "success":
         raise HTTPException(status_code=502, detail=result.get("error", f"{tool} failed"))
+
+    if request.stem_id is not None:
+        return {"status": "success", "result": result, "candidate_path": str(output_path)}
 
     after = await run_in_threadpool(_measure_audio, str(output_path))
     metrics = {

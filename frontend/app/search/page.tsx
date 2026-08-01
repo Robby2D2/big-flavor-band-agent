@@ -136,7 +136,7 @@ export default function SearchPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-canvas">
       <Header
         title="Search BigFlavor Songs"
         subtitle="Use natural language to find the perfect song"
@@ -155,7 +155,7 @@ export default function SearchPage() {
           {loading && (
             <div className="mt-8 text-center">
               <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-              <p className="mt-4 text-gray-600 dark:text-gray-400">
+              <p className="mt-4 text-text/55">
                 Searching...
               </p>
             </div>
@@ -165,7 +165,7 @@ export default function SearchPage() {
             <div className="mt-6">
               {/* Similar-to banner */}
               {similarTo && (
-                <div className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+                <div className="mb-4 text-sm text-text/55">
                   Songs that sound like{' '}
                   <span className="font-semibold">{similarTo}</span>
                 </div>
@@ -221,7 +221,7 @@ export default function SearchPage() {
 
               {/* Results count */}
               {results.length > 0 && (
-                <div className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+                <div className="mb-4 text-sm text-text/45">
                   Found {results.length} matching {results.length === 1 ? 'song' : 'songs'}
                 </div>
               )}
@@ -234,7 +234,7 @@ export default function SearchPage() {
                 />
               )}
               {results.length === 0 && (
-                <div className="text-center text-gray-600 dark:text-gray-400">
+                <div className="text-center text-text/55">
                   {similarTo
                     ? 'No related songs available for this song.'
                     : 'No songs found. Try a different search.'}

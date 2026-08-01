@@ -164,17 +164,17 @@ export default function RadioPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">Tuning in...</p>
+          <p className="mt-4 text-text/55">Tuning in...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-canvas">
       <Header
         title="BigFlavor Radio"
         subtitle="Live radio - everyone hears the same thing!"
@@ -190,14 +190,14 @@ export default function RadioPage() {
         />
 
         {/* Now Playing */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 mb-6">
+        <div className="bg-panel rounded-lg shadow-lg p-8 mb-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+            <h2 className="text-2xl font-bold text-text">
               Now Playing
             </h2>
             <div className="flex items-center gap-2">
               <div className={`w-3 h-3 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
-              <span className="text-sm text-gray-600 dark:text-gray-400">
+              <span className="text-sm text-text/55">
                 {isLive ? 'LIVE' : 'PAUSED'}
               </span>
             </div>
@@ -205,11 +205,11 @@ export default function RadioPage() {
 
           {radioState?.current_song ? (
             <div>
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              <h3 className="text-xl font-semibold text-text mb-2">
                 {radioState.current_song.title}
               </h3>
               <div className="flex items-center gap-4">
-                <span className="text-gray-600 dark:text-gray-400">
+                <span className="text-text/55">
                   {formatTime(radioState.position)} / {formatTime(radioState.current_song.duration || 0)}
                 </span>
                 {isEditor && (
@@ -222,7 +222,7 @@ export default function RadioPage() {
                 )}
               </div>
               {/* Progress bar */}
-              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-4">
+              <div className="w-full bg-white/10 rounded-full h-2 mt-4">
                 <div
                   className="bg-blue-600 h-2 rounded-full transition-all"
                   style={{
@@ -233,22 +233,22 @@ export default function RadioPage() {
             </div>
           ) : isLive ? (
             <div>
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              <h3 className="text-xl font-semibold text-text mb-2">
                 Fallback music
               </h3>
-              <p className="text-gray-600 dark:text-gray-400 mb-4">
+              <p className="text-text/55 mb-4">
                 Streaming fallback music — no catalog song is queued right now.
                 {isEditor && ' Add some songs to take over the airwaves!'}
               </p>
             </div>
           ) : (
-            <p className="text-gray-600 dark:text-gray-400 mb-4">
+            <p className="text-text/55 mb-4">
               No song currently playing. {isEditor && 'Add some songs to get started!'}
             </p>
           )}
 
           {/* Audio Player Controls - Always visible */}
-          <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+          <div className="mt-6 pt-6 border-t border-white/8">
             <div className="flex items-center gap-4">
               {/* Play/Stop Button */}
               <button
@@ -271,14 +271,14 @@ export default function RadioPage() {
               </button>
 
               <div className="flex-1">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                <span className="text-sm font-medium text-text/70">
                   {isListening ? 'Listening...' : 'Click to tune in'}
                 </span>
               </div>
 
               {/* Volume Control */}
               <div className="flex items-center gap-2">
-                <svg className="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+                <svg className="w-5 h-5 text-text/45" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
                 </svg>
                 <input
@@ -288,7 +288,7 @@ export default function RadioPage() {
                   step="0.1"
                   value={volume}
                   onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-                  className="w-24 h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                  className="w-24 h-2 bg-white/10 rounded-lg appearance-none cursor-pointer"
                 />
               </div>
             </div>
@@ -296,8 +296,8 @@ export default function RadioPage() {
         </div>
 
         {/* Queue */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+        <div className="bg-panel rounded-lg shadow-lg p-6">
+          <h2 className="text-xl font-semibold text-text mb-4">
             Up Next ({radioState?.queue_length || 0} songs)
           </h2>
           <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -305,14 +305,14 @@ export default function RadioPage() {
               radioState.queue.map((song, index) => (
                 <div
                   key={song.id}
-                  className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg"
+                  className="flex items-center justify-between p-3 bg-well rounded-lg"
                 >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm text-gray-500 dark:text-gray-400">
+                      <span className="text-sm text-text/45">
                         {index + 1}.
                       </span>
-                      <span className="text-sm font-medium text-gray-900 dark:text-white">
+                      <span className="text-sm font-medium text-text">
                         {song.title}
                       </span>
                     </div>
@@ -328,7 +328,7 @@ export default function RadioPage() {
                 </div>
               ))
             ) : (
-              <p className="text-gray-500 dark:text-gray-400 text-sm">
+              <p className="text-text/45 text-sm">
                 Queue is empty
               </p>
             )}

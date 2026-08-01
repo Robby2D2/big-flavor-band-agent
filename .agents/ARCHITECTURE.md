@@ -60,8 +60,13 @@ database/
   sql/init/*.sql              # initial schema (songs, details, audio embeddings)
   sql/migrations/*.sql        # versioned migrations (song_id→int, users table)
 frontend/
-  app/                        # Next.js app-router pages + /api route handlers (BFF)
-  components/                 # React components (AudioPlayer, SongList, SearchBar, …)
+  app/                         # Next.js app-router pages + /api route handlers (BFF)
+  components/                  # React components (AudioPlayer, SongList, SearchBar, …)
+    produce/audio/              # Audio-processing review-queue UI (VersionBar, StemConsole,
+                                 #   StemDetailPanel, FixQueue/FixCard, AdvancedDrawer, ResultSidebar,
+                                 #   LyricsCard, useStemPlayback, fixCopy.ts, stemColors.ts)
+  hooks/useProcessingQueue.ts  # Data-flow hub for the audio-processing review queue (analyze fan-out,
+                                #   FixEntry state, accept/preview)
 streaming/
   radio.liq                   # Liquidsoap config
   playlist/radio.m3u          # generated playlist (shared volume backend↔liquidsoap)
@@ -167,6 +172,33 @@ never delete audio outside the selected span. Two further steps, `pitch` and `te
 `match_tempo` tool (whole-track time-stretch to an explicit target BPM) and is forced off under a
 region exactly like Normalize/Master, since it has no region parameter (issue #82).
 
+**Per-stem analyze/apply (2026-08):** `AudioTool.analyze()`/`apply()` were already file-path-agnostic
+(they only ever see a `file_path`), so a separated stem's own audio is just another file to run a
+tool against — no DSP changes were needed. `src/api/routers/produce.py`'s `ToolRunRequest` takes an
+optional `stem_id`, resolved via `_resolve_tool_source_path` → `db.get_stem`/`db.get_stem_set` (404 on
+song-ownership mismatch). A stem-scoped `apply` is always a preview render (no version write) — only
+`POST /api/produce/accept-fixes` creates a version, by chain-applying each stem's accepted fixes
+(`_chain_apply_tools`, step N's output feeding step N+1), remixing them at unity gain
+(`stem_separation.remix_stems`), then chain-applying master-bucket fixes on the remix.
+`POST /api/produce/stems/{stem_id}/preview-chain` renders one stem's enabled chain for audition only.
+`AudioTool.confidence_tier(value, high, worth, higher_is_worse)` (`toolkit.py`) buckets a tool's own
+measured magnitude into `"high"`/`"worth_a_listen"`/`None`, surfaced as `analyze()`'s `confidence` key
+on the 7 tools with real measurements — the review-queue UI's per-card confidence tag.
+
+---
+
+## Frontend Theming
+
+Dark-only "Console" design system (2026-08) — there is no light mode and no toggle:
+`frontend/tailwind.config.ts` sets `darkMode: 'class'` and defines the token palette (`canvas/panel/
+raised/well/signal/confirm/attention/text`, plus `stem.{vocals,drums,bass,other,guitar,piano}` accent
+colors); `frontend/app/layout.tsx` loads IBM Plex Sans/Mono via `next/font/google` and applies a
+permanent `className="dark"` to `<html>`. New components use the token utilities directly
+(`bg-panel`, `text-text`); pages migrated before this token set existed still carry paired
+`bg-white dark:bg-gray-800`-style Tailwind classes, which now render correctly since `darkMode:'class'`
++ the permanent `dark` class makes the `dark:` variant always win — a page can be migrated to the
+token utilities at any time without breaking in the meantime.
+
 ---
 
 ## Database
@@ -237,3 +269,6 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-07 | Per-step `step_params` override wins over `aggressiveness`-scaled recommendations, not a per-step multiplier (issue #77 follow-up) | Keeps one resolution rule (explicit value → else `aggressiveness`-scaled recommendation → else default) instead of the backend tracking five independent intensity dials; the per-step Intensity presets in the UI are computed client-side with the same multiplier formula and sent as explicit overrides. |
 | 2026-07 | Pitch correction and Tempo/beat correction restored as opt-in steps inside `auto_clean_recording`, not a separate tool/UI path (issue #82) | PR #81's per-step rework dropped both from the `/produce` UI. Rather than resurrect the old standalone region-tool flow, they're added as two more steps in the one unified pipeline, each with its own controls (no shared Intensity) since no analysis measurement backs either — `pitch` (`correct_pitch`, region-scoped) and `tempo` (`match_tempo`, whole-track only, forced off under a region like Normalize/Master). |
 | 2026-07 | Agent pipeline made concurrency-safe + runnable in GitHub Actions (`.github/workflows/fix-issue.yml`) | Ported soccer-assistant-coach's standards: AGENTS.md Concurrency rules (re-check before write; races are benign; dev claims via `dev-agent:claim`; never touch dirty human trees) so local scheduled, interactive, and CI sweeps can overlap safely. CI sweeps trigger on human activity only (marker-filtered `issue_comment`), agents detect CI via `$GITHUB_ACTIONS` and honestly skip Docker-dependent checks. |
+| 2026-08 | Dark-only "Console" design system, no light/dark toggle | The source design (a Claude Design mockup) had zero light-mode artifacts and stated "dark because you stare at waveforms"; building a toggle would have been speculative scope nobody asked for. `darkMode:'class'` + a permanent `dark` class on `<html>` also made every pre-existing `dark:` Tailwind class elsewhere in the app activate unconditionally for free, so unmigrated pages don't look broken in the meantime. |
+| 2026-08 | Retired `MultitrackEditor.tsx`/`StemMixer.tsx` for a new `produce/audio/` component tree, not an in-place rewrite | The review-queue interaction model (analyze once → one card per fix → accept all) is different enough from the old per-tool-checkbox model that patching in place would have compounded an already-1319-line file. Only the genuinely reusable pieces (the Web Audio group-playback engine, the waveform canvas + region drag-select) were extracted into shared hooks/props instead of duplicated. |
+| 2026-08 | Stem-scoped `apply` never writes a version; only `/api/produce/accept-fixes` does | Keeps "create a version" a single seam. Per-stem/per-fix "Hear it" and "Preview with fixes" auditioning needed to be cheap and side-effect-free, so every per-tool or per-stem render is a preview; only the explicit accept-fixes orchestrator (which composes every stem + master fix into one file) is allowed to call `save_candidate_version`. |

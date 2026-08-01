@@ -77,6 +77,10 @@ class CorrectBeats(AudioTool):
                     "mean_confidence": round(mean_conf, 3),
                     "reliable_grid": bool(reliable),
                 },
+                "confidence": (
+                    self.confidence_tier(mean_conf, high=0.75, worth=LOW_BEAT_CONFIDENCE)
+                    if reliable else None
+                ),
                 "reason": (
                     f"{len(beat_times)} beats at {tempo_bpm:.0f} BPM (confidence {mean_conf:.2f})"
                     if reliable else

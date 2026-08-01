@@ -89,10 +89,10 @@ export default function EditPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading tools...</p>
+          <p className="mt-4 text-text/55">Loading tools...</p>
         </div>
       </div>
     );
@@ -100,14 +100,14 @@ export default function EditPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
-        <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
+        <div className="max-w-md w-full bg-panel rounded-lg shadow-lg p-8">
           <div className="text-red-600 dark:text-red-400 text-center">
             <svg className="w-16 h-16 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <h2 className="text-2xl font-bold mb-2">Access Denied</h2>
-            <p className="text-gray-600 dark:text-gray-400">{error}</p>
+            <p className="text-text/55">{error}</p>
             <a
               href="/"
               className="mt-6 inline-block px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -121,7 +121,7 @@ export default function EditPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-canvas">
       <Header
         title="Editor Tools"
         subtitle="MCP Tools for audio processing and management"
@@ -130,13 +130,13 @@ export default function EditPage() {
       <main className="container mx-auto px-4 py-8">
         <div className="grid md:grid-cols-3 gap-6">
           {/* Tools List */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+          <div className="bg-panel rounded-lg shadow-lg p-6">
+            <h2 className="text-xl font-semibold text-text mb-4">
               Available Tools
             </h2>
             <div className="space-y-2">
               {tools.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400">
+                <p className="text-text/45">
                   No tools available
                 </p>
               ) : (
@@ -151,7 +151,7 @@ export default function EditPage() {
                     className={`w-full text-left p-3 rounded-lg transition ${
                       selectedTool?.name === tool.name
                         ? 'bg-blue-100 dark:bg-blue-900 text-blue-900 dark:text-blue-100'
-                        : 'bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-900 dark:text-white'
+                        : 'bg-well hover:bg-white/8 text-text'
                     }`}
                   >
                     <p className="font-medium">{tool.name}</p>
@@ -163,17 +163,17 @@ export default function EditPage() {
           </div>
 
           {/* Tool Parameters */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+          <div className="bg-panel rounded-lg shadow-lg p-6">
+            <h2 className="text-xl font-semibold text-text mb-4">
               Tool Parameters
             </h2>
             {!selectedTool ? (
-              <p className="text-gray-500 dark:text-gray-400">
+              <p className="text-text/45">
                 Select a tool to configure parameters
               </p>
             ) : (
               <div>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                <p className="text-sm text-text/55 mb-4">
                   {selectedTool.description}
                 </p>
                 <div className="space-y-4">
@@ -183,7 +183,7 @@ export default function EditPage() {
                         const isRequired = selectedTool.input_schema?.required?.includes(paramName);
                         return (
                           <div key={paramName}>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label className="block text-sm font-medium text-text/70 mb-1">
                               {paramName}
                               {isRequired && (
                                 <span className="text-red-500 ml-1">*</span>
@@ -201,10 +201,10 @@ export default function EditPage() {
                                 )
                               }
                               placeholder={paramInfo.description}
-                              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:border-blue-500 dark:bg-gray-700 dark:text-white"
+                              className="w-full px-3 py-2 border border-white/14 rounded-lg focus:outline-none focus:border-signal bg-well text-text"
                             />
                             {paramInfo.description && (
-                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                              <p className="text-xs text-text/45 mt-1">
                                 {paramInfo.description}
                               </p>
                             )}
@@ -225,12 +225,12 @@ export default function EditPage() {
           </div>
 
           {/* Execution Result */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+          <div className="bg-panel rounded-lg shadow-lg p-6">
+            <h2 className="text-xl font-semibold text-text mb-4">
               Result
             </h2>
             {!executionResult ? (
-              <p className="text-gray-500 dark:text-gray-400">
+              <p className="text-text/45">
                 No execution result yet
               </p>
             ) : (

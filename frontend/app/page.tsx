@@ -2,14 +2,14 @@ import Header from '@/components/Header';
 
 export default function Home() {
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-canvas">
       <Header />
 
       <main className="flex-1 container mx-auto p-8">
         <div className="grid md:grid-cols-2 gap-8">
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+          <div className="bg-panel p-6 rounded-lg shadow-lg">
             <h2 className="text-2xl font-bold mb-4">Search Songs</h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-4">
+            <p className="text-text/55 mb-4">
               Use natural language to find songs by mood, tempo, genre, or lyrics.
             </p>
             <a
@@ -20,9 +20,9 @@ export default function Home() {
             </a>
           </div>
 
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+          <div className="bg-panel p-6 rounded-lg shadow-lg">
             <h2 className="text-2xl font-bold mb-4">BigFlavor Radio</h2>
-            <p className="text-gray-600 dark:text-gray-300 mb-4">
+            <p className="text-text/55 mb-4">
               Let our AI DJ create a personalized music experience for you.
             </p>
             <a
@@ -35,7 +35,7 @@ export default function Home() {
         </div>
       </main>
 
-      <footer className="bg-gray-900 text-white text-center p-4">
+      <footer className="bg-canvas border-t border-white/8 text-text/60 text-center p-4">
         <p>BigFlavor Band Agent - Powered by Claude AI</p>
       </footer>
     </div>

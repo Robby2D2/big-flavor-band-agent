@@ -245,10 +245,10 @@ export default function ProducePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="text-center">
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading catalog...</p>
+          <p className="mt-4 text-text/55">Loading catalog...</p>
         </div>
       </div>
     );
@@ -256,11 +256,11 @@ export default function ProducePage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
-        <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+      <div className="min-h-screen bg-canvas flex items-center justify-center">
+        <div className="max-w-md w-full bg-panel rounded-lg shadow-lg p-8">
           <div className="text-red-600 dark:text-red-400 text-center">
             <h2 className="text-2xl font-bold mb-2">Access Denied</h2>
-            <p className="text-gray-600 dark:text-gray-400">{error}</p>
+            <p className="text-text/55">{error}</p>
             <a
               href="/"
               className="mt-6 inline-block px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -274,21 +274,21 @@ export default function ProducePage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-canvas">
       <Header title="Produce" subtitle="Analyze and auto-clean catalog audio" />
 
       <main className="container mx-auto px-4 py-8">
         {/* Selection toolbar */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-4 mb-4 flex flex-wrap items-end gap-4">
+        <div className="bg-panel rounded-lg shadow-lg p-4 mb-4 flex flex-wrap items-end gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            <label className="block text-sm font-medium text-text/70 mb-1">
               Intensity
             </label>
             <select
               value={intensity}
               onChange={(e) => setIntensity(e.target.value as Intensity)}
               disabled={cleaning}
-              className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+              className="px-3 py-2 border border-white/14 rounded-lg bg-well text-text focus:outline-none focus:border-signal disabled:opacity-50"
             >
               <option value="gentle">Gentle</option>
               <option value="moderate">Moderate</option>
@@ -304,7 +304,7 @@ export default function ProducePage() {
             {cleaning ? 'Cleaning...' : `Clean selected (${selectedIds.size})`}
           </button>
 
-          <span className="text-sm text-gray-600 dark:text-gray-400">
+          <span className="text-sm text-text/55">
             {selectedIds.size} selected · {visibleSongs.length} of {songs.length} shown
           </span>
         </div>
@@ -316,8 +316,8 @@ export default function ProducePage() {
         )}
 
         {cleanProgress && (
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-4 mb-4">
-            <div className="flex items-center justify-between text-sm text-gray-700 dark:text-gray-300 mb-2">
+          <div className="bg-panel rounded-lg shadow-lg p-4 mb-4">
+            <div className="flex items-center justify-between text-sm text-text/70 mb-2">
               <span className="font-medium">
                 {cleaning ? 'Cleaning selected songs...' : 'Clean complete'}
               </span>
@@ -325,7 +325,7 @@ export default function ProducePage() {
                 {cleanProgress.done} / {cleanProgress.total} processed
               </span>
             </div>
-            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mb-3">
+            <div className="w-full bg-white/10 rounded-full h-2 mb-3">
               <div
                 className="bg-green-600 h-2 rounded-full transition-all"
                 style={{
@@ -338,21 +338,21 @@ export default function ProducePage() {
               />
             </div>
             {cleanResults.length > 0 && (
-              <div className="max-h-72 overflow-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+              <div className="max-h-72 overflow-auto border border-white/8 rounded-lg">
                 <table className="w-full text-sm">
-                  <thead className="bg-gray-50 dark:bg-gray-900 text-left text-gray-500 dark:text-gray-400 sticky top-0">
+                  <thead className="bg-well text-left text-text/45 sticky top-0">
                     <tr>
                       <th className="py-2 px-3">Song</th>
                       <th className="py-2 px-3">Outcome</th>
                       <th className="py-2 px-3">Reason</th>
                     </tr>
                   </thead>
-                  <tbody className="text-gray-900 dark:text-white">
+                  <tbody className="text-text">
                     {cleanResults.map((r) => (
-                      <tr key={r.song_id} className="border-t border-gray-200 dark:border-gray-700">
+                      <tr key={r.song_id} className="border-t border-white/8">
                         <td className="py-2 px-3">{r.title}</td>
                         <td className="py-2 px-3 capitalize">{r.outcome}</td>
-                        <td className="py-2 px-3 text-gray-500 dark:text-gray-400">
+                        <td className="py-2 px-3 text-text/45">
                           {r.reason ?? '—'}
                         </td>
                       </tr>
@@ -365,10 +365,10 @@ export default function ProducePage() {
         )}
 
         {/* Catalog table */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
+        <div className="bg-panel rounded-lg shadow-lg overflow-hidden">
           <div className="overflow-auto max-h-[70vh]">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 dark:bg-gray-900 text-left text-gray-600 dark:text-gray-300 sticky top-0 z-10">
+              <thead className="bg-well text-left text-text/60 sticky top-0 z-10">
                 <tr>
                   <th className="py-2 px-3 w-10">
                     <input
@@ -400,17 +400,17 @@ export default function ProducePage() {
                         value={filters[col.key]}
                         onChange={(e) => setFilter(col.key, e.target.value)}
                         placeholder={`Filter ${col.label.toLowerCase()}`}
-                        className="w-full px-2 py-1 text-xs font-normal border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                        className="w-full px-2 py-1 text-xs font-normal border border-white/14 rounded bg-well text-text focus:outline-none focus:border-signal"
                       />
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="text-gray-900 dark:text-white">
+              <tbody className="text-text">
                 {visibleSongs.map((song) => (
                   <tr
                     key={song.id}
-                    className="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                    className="border-t border-white/8 hover:bg-white/5"
                   >
                     <td className="py-2 px-3">
                       <input
@@ -429,16 +429,16 @@ export default function ProducePage() {
                         {song.title}
                       </Link>
                     </td>
-                    <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                    <td className="py-2 px-3 text-text/55">
                       {song.genre ?? '—'}
                     </td>
-                    <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                    <td className="py-2 px-3 text-text/55">
                       {song.tempo_bpm == null ? '—' : Math.round(song.tempo_bpm)}
                     </td>
-                    <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                    <td className="py-2 px-3 text-text/55">
                       {formatDuration(song.duration_seconds) || '—'}
                     </td>
-                    <td className="py-2 px-3 text-gray-600 dark:text-gray-400">
+                    <td className="py-2 px-3 text-text/55">
                       {formatDate(song.recorded_on) || '—'}
                     </td>
                     <td className="py-2 px-3">
@@ -447,7 +447,7 @@ export default function ProducePage() {
                           Cleaned
                         </span>
                       ) : (
-                        <span className="text-xs text-gray-400 dark:text-gray-500">—</span>
+                        <span className="text-xs text-text/35">—</span>
                       )}
                     </td>
                   </tr>
@@ -456,7 +456,7 @@ export default function ProducePage() {
                   <tr>
                     <td
                       colSpan={COLUMNS.length + 1}
-                      className="py-6 px-3 text-center text-gray-500 dark:text-gray-400"
+                      className="py-6 px-3 text-center text-text/45"
                     >
                       No songs match the current filters.
                     </td>

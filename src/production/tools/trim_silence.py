@@ -96,6 +96,9 @@ class TrimSilence(AudioTool):
                     "trim_start_seconds": round(float(trim_from_start), 2),
                     "trim_end_seconds": round(float(trim_from_end), 2),
                 },
+                "confidence": self.confidence_tier(
+                    trim_from_start + trim_from_end, high=3.0, worth=0.5
+                ),
                 "reason": (
                     f"Found {trim_from_start:.1f}s of non-musical content at the start "
                     f"and {trim_from_end:.1f}s at the end"

@@ -166,6 +166,7 @@ class ApplyEq(AudioTool):
                     },
                     "adjustments": adjustments,
                 },
+                "confidence": self.confidence_tier(len(adjustments), high=2, worth=0),
                 "reason": (f"{len(adjustments)} frequency imbalance(s) detected"
                            if recommended else "Frequency balance looks fine"),
                 "region": {"start_s": start_s, "end_s": end_s},

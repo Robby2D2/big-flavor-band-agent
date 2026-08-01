@@ -43,6 +43,9 @@ class RemoveHum(AudioTool):
         try:
             y, sr, offset_s, duration = load_for_analysis(file_path, start_s, end_s)
             detection = detect_hum(y, sr)
+            max_prominence_db = (
+                max(detection["prominence_db"].values()) if detection["detected"] else None
+            )
             return {
                 "status": "success",
                 "tool": self.name,
@@ -54,6 +57,7 @@ class RemoveHum(AudioTool):
                     "harmonics_affected": detection["harmonics_affected"],
                     "prominence_db": detection["prominence_db"],
                 },
+                "confidence": self.confidence_tier(max_prominence_db, high=20, worth=10),
                 "reason": (
                     f"Mains hum detected at {detection['fundamental_hz']:.0f} Hz "
                     f"({len(detection['harmonics_affected'])} affected frequencies)"

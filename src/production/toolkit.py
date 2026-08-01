@@ -262,6 +262,34 @@ class AudioTool:
             "message": f"No analysis available for '{self.name}'",
         }
 
+    @staticmethod
+    def confidence_tier(
+        value: Optional[float], high: float, worth: float, higher_is_worse: bool = True
+    ) -> Optional[str]:
+        """Bucket a measured magnitude into a review-queue confidence tag.
+
+        ``"high"`` / ``"worth_a_listen"`` / ``None`` (not worth flagging), so a
+        tool's ``analyze()`` can turn one already-computed number (a dB level, a
+        count, a confidence score) into the tag a fix card shows, without every
+        tool re-deriving its own tiering. ``higher_is_worse`` picks the
+        direction: True when a larger value is stronger evidence for the fix
+        (e.g. noise floor dB, count of imbalances), False when a smaller value
+        is (e.g. a distance-from-target that should shrink).
+        """
+        if value is None:
+            return None
+        if higher_is_worse:
+            if value > high:
+                return "high"
+            if value > worth:
+                return "worth_a_listen"
+            return None
+        if value < high:
+            return "high"
+        if value < worth:
+            return "worth_a_listen"
+        return None
+
     async def apply(self, ctx: "ToolContext", *args, **kwargs) -> dict:
         raise NotImplementedError(f"{self.name}.apply is not implemented")
 
