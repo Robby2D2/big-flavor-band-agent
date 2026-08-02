@@ -112,7 +112,11 @@ echo ""
 echo "=========================================="
 echo "Starting services..."
 echo "=========================================="
-docker-compose --env-file .env.production up -d
+docker-compose --env-file .env.production up -d || {
+    echo -e "${RED}ERROR: docker-compose up failed${NC}"
+    echo "Check logs with: docker-compose logs"
+    exit 1
+}
 
 echo ""
 echo "=========================================="
@@ -155,29 +159,69 @@ if [ "$LLM_PROVIDER" = "ollama" ]; then
     fi
 fi
 
-# Check service health
+# Check every compose service individually, not just "does the string 'Up
+# (healthy)' appear somewhere in docker-compose ps". `docker-compose up -d`
+# can abort starting a service whose health-gated dependency (e.g. frontend
+# -> backend) isn't healthy yet at that exact moment — it does NOT retry,
+# leaving the dependent container stuck "created" and never actually
+# running. A loose substring match can't catch that (some other, unrelated
+# service already being healthy satisfies it), so verify each service's
+# real state and nudge anything that never started.
+mapfile -t SERVICES < <(docker-compose config --services)
+
 RETRIES=30
 COUNT=0
+ALL_UP=0
+STATUS_LINES=()
+
 while [ $COUNT -lt $RETRIES ]; do
-    if docker-compose ps | grep -q "Up (healthy)"; then
-        echo -e "${GREEN}✓ Services are healthy${NC}"
+    ALL_UP=1
+    STATUS_LINES=()
+    for svc in "${SERVICES[@]}"; do
+        [ -z "$svc" ] && continue
+        cid=$(docker-compose ps -q "$svc" | head -n1)
+        if [ -z "$cid" ]; then
+            STATUS_LINES+=("$svc : no container")
+            ALL_UP=0
+            continue
+        fi
+        info=$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid")
+        state="${info%%|*}"
+        health="${info##*|}"
+        if [ "$state" != "running" ]; then
+            # Never started (stuck "created") or crashed ("exited") — nudge
+            # it directly instead of waiting out the full retry budget.
+            docker start "$cid" > /dev/null 2>&1 || true
+        fi
+        if [ "$state" != "running" ] || { [ "$health" != "healthy" ] && [ "$health" != "none" ]; }; then
+            ALL_UP=0
+        fi
+        STATUS_LINES+=("$svc : $state/$health")
+    done
+    if [ $ALL_UP -eq 1 ]; then
+        echo -e "${GREEN}✓ All services running and healthy${NC}"
         break
     fi
-    echo "Waiting for health checks... ($((COUNT+1))/$RETRIES)"
+    echo "Waiting for services... ($((COUNT+1))/$RETRIES)"
     sleep 5
     COUNT=$((COUNT+1))
 done
-
-if [ $COUNT -eq $RETRIES ]; then
-    echo -e "${YELLOW}WARNING: Health checks taking longer than expected${NC}"
-    echo "Check logs with: docker-compose logs -f"
-fi
 
 echo ""
 echo "=========================================="
 echo "Deployment Status"
 echo "=========================================="
 docker-compose ps
+
+if [ $ALL_UP -ne 1 ]; then
+    echo ""
+    echo -e "${RED}ERROR: Not all services came up running/healthy:${NC}"
+    for line in "${STATUS_LINES[@]}"; do
+        echo -e "  ${YELLOW}${line}${NC}"
+    done
+    echo "Check logs with: docker-compose logs -f <service>"
+    exit 1
+fi
 
 echo ""
 echo "=========================================="

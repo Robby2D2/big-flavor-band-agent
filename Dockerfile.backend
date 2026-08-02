@@ -2,10 +2,13 @@
 # Backend Dockerfile - Python FastAPI Service
 FROM python:3.12-slim as base
 
-# Install system dependencies
+# Install system dependencies. gosu lets the entrypoint start as root (to
+# chown bind-mounted volumes — see docker-entrypoint-backend.sh) and then
+# drop to appuser without the signal-handling quirks of `su`.
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsndfile1 \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -47,9 +50,14 @@ RUN mkdir -p /app/audio_library
 
 # Run as a non-root user. Own the app dir (including the audio_library mount point)
 # so the process can read mounted volumes and write the shared playlist directory.
+# Stays root at container start (no USER here) — the entrypoint below needs
+# root to chown bind-mounted volumes before dropping to appuser itself.
 RUN useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /app
-USER appuser
+
+COPY docker-entrypoint-backend.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Expose port 8000
 EXPOSE 8000

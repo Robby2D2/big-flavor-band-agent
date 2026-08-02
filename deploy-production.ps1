@@ -111,6 +111,11 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Starting services..." -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 docker-compose --env-file .env.production up -d
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: docker-compose up failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+    Write-Host "Check logs with: docker-compose logs" -ForegroundColor Yellow
+    exit 1
+}
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
@@ -154,26 +159,49 @@ if ($llmProvider -eq "ollama") {
     }
 }
 
-# Check service health
+# Check every compose service individually, not just "does the word healthy
+# appear somewhere in docker-compose ps". `docker-compose up -d` can abort
+# starting a service whose health-gated dependency (e.g. frontend -> backend)
+# isn't healthy yet at that exact moment — it does NOT retry, leaving the
+# dependent container stuck "Created" and never actually running. A loose
+# substring match can't catch that (some other, unrelated service already
+# being healthy satisfies it), so verify each service's real state and
+# nudge anything that never started.
+$services = (docker-compose config --services) | Where-Object { $_.Trim() -ne '' }
+
 $retries = 30
 $count = 0
-$healthy = $false
+$allUp = $false
+$statusLines = @()
 
 while ($count -lt $retries) {
-    $status = docker-compose ps
-    if ($status -match "healthy") {
-        Write-Host "[OK]Services are healthy" -ForegroundColor Green
-        $healthy = $true
+    $allUp = $true
+    $statusLines = @()
+    foreach ($svc in $services) {
+        $cid = (docker-compose ps -q $svc | Select-Object -First 1)
+        if (-not $cid) {
+            $statusLines += "$svc : no container"
+            $allUp = $false
+            continue
+        }
+        $info = docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $cid
+        $state, $health = $info -split '\|'
+        if ($state -ne 'running') {
+            # Never started (stuck "created") or crashed ("exited") — nudge
+            # it directly instead of waiting out the full retry budget.
+            docker start $cid | Out-Null
+        }
+        $ok = ($state -eq 'running') -and ($health -eq 'healthy' -or $health -eq 'none')
+        if (-not $ok) { $allUp = $false }
+        $statusLines += "$svc : $state/$health"
+    }
+    if ($allUp) {
+        Write-Host "[OK]All services running and healthy" -ForegroundColor Green
         break
     }
-    Write-Host "Waiting for health checks... ($($count+1)/$retries)"
+    Write-Host "Waiting for services... ($($count+1)/$retries)"
     Start-Sleep -Seconds 5
     $count++
-}
-
-if (-not $healthy) {
-    Write-Host "WARNING: Health checks taking longer than expected" -ForegroundColor Yellow
-    Write-Host "Check logs with: docker-compose logs -f" -ForegroundColor Yellow
 }
 
 Write-Host ""
@@ -181,6 +209,14 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Deployment Status" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 docker-compose ps
+
+if (-not $allUp) {
+    Write-Host ""
+    Write-Host "ERROR: Not all services came up running/healthy:" -ForegroundColor Red
+    foreach ($line in $statusLines) { Write-Host "  $line" -ForegroundColor Yellow }
+    Write-Host "Check logs with: docker-compose logs -f <service>" -ForegroundColor Yellow
+    exit 1
+}
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green
