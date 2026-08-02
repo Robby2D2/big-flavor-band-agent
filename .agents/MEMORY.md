@@ -49,6 +49,55 @@ multitracks the band doesn't have) are recorded in ARCHITECTURE.md's decisions l
 > the tagger) stop re-downloading on every recreate. That needs `docker-compose up -d backend`, not
 > a plain `docker restart`.
 
+### 2026-08-02 — Timed lyrics (phase 1): follow-along highlighting + vocal-isolated transcription + vitest
+Lyrics can now be followed along while a song plays. The enabling discovery: **Whisper was already
+computing the timings and we were throwing them away** — `lyrics_extractor.transcribe_audio()` built a
+`segments` list with `start`/`end`/`text`/`confidence`, and `lyrics_jobs._blocking_extract` returned only
+the joined text. Line-level sync therefore cost no extra compute.
+- **Storage:** new `song_lyric_timings` table (migration `11`, plus `ensure_song_lyric_timings_table()`
+  called from the lifespan like `song_versions`/`song_stems`). One JSONB `lines` document per song
+  (UNIQUE on song_id) — always read whole for playback, never queried by field. Lyric **text** stays in
+  `text_embeddings` (content_type `lyrics`) as the single search source of truth; timings are a derived
+  sidecar. Deliberately *not* a second `text_embeddings` row: that table is keyed
+  `UNIQUE(song_id, content_type)` around an embedding column and lyric search filters on content_type.
+- **Vocal isolation, pulled forward from phase 2** at the user's request, so the ~1,300-song
+  re-extraction only has to run once. Extraction now prefers isolated vocals: it reuses an existing
+  completed `vocals` stem (issue #67's `song_stem_sets`/`song_stems`, via `db.get_vocals_stem_path()`)
+  when the file is still on disk, else runs Demucs in-job; the raw mix is only a fallback.
+  `word_timestamps=True` was pulled forward for the same reason — the words are persisted now even
+  though phase 1's UI only lights up lines.
+- **Two real bugs found in `lyrics_extractor.py` while wiring this up:** (1) `separate_vocals()` picked
+  the vocals stem by hardcoded index `sources[3]`, which silently transcribes the wrong stem for any
+  model whose source order differs — now looked up by name; (2) `extract_lyrics()` gated separation on
+  `self.demucs is not None`, making `separate_vocals=True` a **silent no-op** whenever the extractor was
+  built with `load_demucs=False` (exactly how the job constructs it) — `separate_vocals()` lazy-loads,
+  so the gate is gone.
+- **Staleness:** hand-editing lyrics invalidates timings, so `PUT .../lyrics` compares
+  `lyrics_jobs.lyrics_signature()` (case/punctuation/whitespace-normalized word sequence) and marks the
+  record `stale`. Reflow and capitalization edits deliberately keep timings `current`. Stale timings are
+  hidden during playback rather than highlighting the wrong words; `LyricsPanel` surfaces the state.
+- **API:** new **listener-scoped** `GET /api/songs/{id}/lyrics/timed` (in the search router, next to the
+  existing public lyrics route) + a matching BFF route. This is the point that would have been easy to
+  get wrong: the editor lyric routes live under `/api/produce/*` behind `require_role("editor")`, which
+  would have locked every ordinary listener out of their own player. The produce GET/PUT also return
+  `timings` for the editor.
+- **Frontend:** pure logic in `lib/lyricTimings.ts` (`findActiveLine` binary search, `findDisplayLine`
+  which holds the last line through instrumental gaps, `findActiveWord`, `isFollowable`), `useActiveLyric`
+  hook, and a time-source-agnostic `LyricsFollower` component (takes seconds, not a player — so the same
+  component can serve the `<audio>` player, the produce page's AudioContext `playhead`, and the radio's
+  polled position). Wired into `AudioPlayer` behind a Lyrics toggle, driven by **rAF** rather than
+  `timeupdate` (which only fires ~4x/sec — fine for a seek bar, visibly behind for words).
+  Manual-scroll detection suspends autoscroll for 4s with a "Jump to current" button.
+- **Testing:** added **vitest** — the project's first frontend test runner (`vitest.config.mts` + jsdom +
+  React Testing Library, `npm test`). 26 frontend tests. Backend: new `tests/test_lyrics_jobs.py` plus
+  timed-lyrics cases in `test_produce_router.py`/`test_api_routers.py`.
+- **Fixed in passing:** `tests/test_lifespan.py` was already failing on `main` — its `FakeDatabaseManager`
+  never gained `ensure_song_stems_tables` after issue #67, so the lifespan tests died with AttributeError.
+  The fake now covers all three ensure-calls and asserts them, so it can't silently rot again.
+- **Known gap:** `npm run lint` is broken repo-wide — Next 16 removed `next lint`, so the script now
+  reads "lint" as a directory name and errors. Pre-existing and unrelated to this work, but it means the
+  documented frontend lint gate isn't running; needs a migration to flat-config `eslint .`.
+
 ---
 
 ### 2026-08-01 — Claude Design "Console" redesign of the Audio Processing tab: dark theme + per-stem review queue

@@ -175,3 +175,34 @@ async def get_song_lyrics(
         return {"lyrics": lyrics}
     else:
         return {"lyrics": "Lyrics not available for this song."}
+
+
+@router.get("/api/songs/{song_id}/lyrics/timed")
+async def get_song_timed_lyrics(
+    song_id: int,
+    db: DatabaseManager = Depends(get_db)
+):
+    """Get a song's lyrics with per-line timings, for follow-along playback.
+
+    Listener-scoped on purpose: the editor-facing lyric routes live under
+    /api/produce/* behind an editor role, but every listener's player needs to
+    read these. Read-only, and never returns the "not available" placeholder the
+    plain lyrics route uses — a player wants an empty string, not prose.
+
+    ``timings`` is null when the song has never been extracted with timings; the
+    client falls back to showing static lyrics. A ``stale`` status means the text
+    was hand-edited after extraction, so the timings no longer line up.
+    """
+    from src.api import lyrics_jobs
+
+    if await db.get_song(song_id) is None:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    lyrics = await db.get_song_lyrics(song_id)
+    timings = await db.get_lyric_timings(song_id)
+
+    return {
+        "song_id": song_id,
+        "lyrics": lyrics or "",
+        "timings": lyrics_jobs.timings_view(timings),
+    }

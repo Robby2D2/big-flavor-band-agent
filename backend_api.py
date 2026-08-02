@@ -118,6 +118,10 @@ async def lifespan(app: FastAPI):
     await deps.db_manager.ensure_song_stems_tables()
     logger.info("Startup: song_stem_sets / song_stems ensured")
 
+    # Ensure the timed-lyrics table exists (follow-along highlighting).
+    await deps.db_manager.ensure_song_lyric_timings_table()
+    logger.info("Startup: song_lyric_timings ensured")
+
     deps.rag = SongRAGSystem(deps.db_manager, use_clap=True)
     logger.info("Startup: SongRAGSystem ready")
 

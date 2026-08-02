@@ -424,24 +424,50 @@ async def get_song_lyrics_endpoint(
     db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ):
-    """Return a song's stored lyrics (empty string when none)."""
+    """Return a song's stored lyrics (empty string when none) plus its timings."""
+    from src.api import lyrics_jobs
+
     lyrics = await db.get_song_lyrics(song_id)
-    return {"song_id": song_id, "lyrics": lyrics or ""}
+    timings = await db.get_lyric_timings(song_id)
+    return {
+        "song_id": song_id,
+        "lyrics": lyrics or "",
+        "timings": lyrics_jobs.timings_view(timings),
+    }
 
 
 @router.put("/api/produce/songs/{song_id}/lyrics")
 async def save_song_lyrics(
     song_id: int,
     request: LyricsUpdate,
+    db: DatabaseManager = Depends(get_db),
     rag: SongRAGSystem = Depends(get_rag),
     _role: str = Depends(require_role("editor")),
 ):
-    """Persist hand-edited lyrics, re-embedding so lyric search stays consistent."""
+    """Persist hand-edited lyrics, re-embedding so lyric search stays consistent.
+
+    An edit that changes the words invalidates any stored timings — they were
+    measured against the old transcript — so they're marked stale rather than
+    left to highlight the wrong words. Pure reflow/capitalization edits keep
+    them current (see ``lyrics_jobs.lyrics_signature``).
+    """
     from src.api import lyrics_jobs
 
     text = (request.lyrics or "").strip()
     await lyrics_jobs.index_lyrics_text(rag, song_id, text)
-    return {"song_id": song_id, "lyrics": text, "status": "saved"}
+
+    timings = await db.get_lyric_timings(song_id)
+    if timings and timings.get("status") == "current":
+        transcript = lyrics_jobs.timings_text(timings.get("lines") or [])
+        if lyrics_jobs.lyrics_signature(transcript) != lyrics_jobs.lyrics_signature(text):
+            timings = await db.set_lyric_timings_status(song_id, "stale")
+
+    return {
+        "song_id": song_id,
+        "lyrics": text,
+        "status": "saved",
+        "timings": lyrics_jobs.timings_view(timings),
+    }
 
 
 @router.post("/api/produce/songs/{song_id}/lyrics/extract")
@@ -454,12 +480,14 @@ async def extract_song_lyrics(
     """Start a background Whisper transcription of the song's original audio.
 
     Returns immediately; poll the status endpoint. On success the extracted
-    lyrics are stored + embedded (same path as a manual save).
+    lyrics are stored + embedded (same path as a manual save) and the per-line
+    timings are persisted for follow-along playback. Transcription runs on
+    isolated vocals (a reused stem when the song has one, else a Demucs run).
     """
     from src.api import lyrics_jobs
 
     source_path = await _resolve_clean_source_path(song_id, None, db)
-    started = lyrics_jobs.manager.start(song_id, str(source_path), rag)
+    started = lyrics_jobs.manager.start(song_id, str(source_path), rag, db)
     if not started:
         return {"song_id": song_id, "status": "running", "message": "Extraction already in progress"}
     return {"song_id": song_id, "status": "running"}

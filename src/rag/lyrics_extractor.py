@@ -197,9 +197,19 @@ class LyricsExtractor:
 
             sources = sources * ref.std() + ref.mean()
             
-            # Extract vocals (index depends on model, usually index 3 for htdemucs)
-            # htdemucs order: drums, bass, other, vocals
-            vocals = sources[3]  # vocals stem
+            # Look the vocals stem up by name rather than by a hardcoded index:
+            # the source order differs per model (htdemucs is drums/bass/other/
+            # vocals, the 6-source variants append guitar/piano), and demucs_model
+            # is configurable, so an index would silently transcribe the wrong stem.
+            try:
+                vocals_index = list(self.demucs.sources).index("vocals")
+            except ValueError:
+                logger.error(
+                    "Demucs model '%s' has no 'vocals' source (%s)",
+                    self.demucs_model, list(self.demucs.sources)
+                )
+                return audio_path
+            vocals = sources[vocals_index]
             
             # Save vocals to file using soundfile to avoid torchcodec issues
             vocals_path = Path(output_dir) / "vocals.wav"
@@ -285,18 +295,22 @@ class LyricsExtractor:
         language: str = "en",
         vad_filter: bool = False,
         vad_min_silence_ms: int = 2000,
-        vad_threshold: float = 0.3
+        vad_threshold: float = 0.3,
+        word_timestamps: bool = False
     ) -> Dict[str, Any]:
         """
         Transcribe audio to text using faster-whisper.
-        
+
         Args:
             audio_path: Path to audio file (preferably vocals only)
             language: Language code for transcription ('en' for English)
             vad_filter: Enable voice activity detection (filters silence)
             vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
             vad_threshold: VAD sensitivity threshold 0.0-1.0 (lower = more sensitive, default 0.3)
-            
+            word_timestamps: Also emit per-word start/end times (cross-attention DTW
+                             alignment). Costs roughly 10-25% extra transcription
+                             time; required for word-level follow-along highlighting.
+
         Returns:
             Dictionary with transcription results
         """
@@ -315,7 +329,8 @@ class LyricsExtractor:
             transcribe_args = {
                 'language': language,
                 'beam_size': 5,
-                'vad_filter': vad_filter
+                'vad_filter': vad_filter,
+                'word_timestamps': word_timestamps
             }
             
             # Add VAD parameters if enabled
@@ -346,12 +361,27 @@ class LyricsExtractor:
                 
                 if confidence >= self.min_confidence:
                     all_text.append(segment.text.strip())
-                    segment_data.append({
+                    entry = {
                         'start': segment.start,
                         'end': segment.end,
                         'text': segment.text.strip(),
                         'confidence': confidence
-                    })
+                    }
+                    if word_timestamps and getattr(segment, 'words', None):
+                        entry['words'] = [
+                            {
+                                'start': word.start,
+                                'end': word.end,
+                                'text': word.word.strip(),
+                                'probability': word.probability,
+                            }
+                            for word in segment.words
+                            # Whisper occasionally emits a word with null bounds;
+                            # a word with no time can't be highlighted, so drop it
+                            # rather than let it break the follow-along cursor.
+                            if word.start is not None and word.end is not None
+                        ]
+                    segment_data.append(entry)
                     total_confidence += confidence
                     segment_count += 1
             
@@ -388,7 +418,8 @@ class LyricsExtractor:
         vad_filter: bool = False,
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
-        apply_voice_filter: bool = False
+        apply_voice_filter: bool = False,
+        word_timestamps: bool = False
     ) -> Dict[str, Any]:
         """
         Extract lyrics from audio file (full pipeline).
@@ -402,7 +433,8 @@ class LyricsExtractor:
             vad_min_silence_ms: Minimum silence duration in ms before filtering (default 2000 = 2 seconds)
             vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
             apply_voice_filter: Apply bandpass filter for voice frequencies (80-8000 Hz)
-            
+            word_timestamps: Also emit per-word start/end times inside each segment
+
         Returns:
             Dictionary with lyrics and metadata
         """
@@ -411,8 +443,11 @@ class LyricsExtractor:
         temp_files = []
         
         try:
-            # Step 1: Separate vocals if requested
-            if separate_vocals and DEMUCS_AVAILABLE and self.demucs is not None:
+            # Step 1: Separate vocals if requested. Don't require the model to be
+            # pre-loaded — separate_vocals() lazy-loads it. (Gating on
+            # `self.demucs is not None` here made separate_vocals=True a silent
+            # no-op whenever the extractor was built with load_demucs=False.)
+            if separate_vocals and DEMUCS_AVAILABLE:
                 temp_dir = tempfile.mkdtemp(prefix="lyrics_extraction_")
                 vocals_path = self.separate_vocals(audio_path, temp_dir)
                 if vocals_path is None:
@@ -429,11 +464,12 @@ class LyricsExtractor:
             
             # Step 2: Transcribe
             result = self.transcribe_audio(
-                vocals_path, 
+                vocals_path,
                 language,
                 vad_filter=vad_filter,
                 vad_min_silence_ms=vad_min_silence_ms,
-                vad_threshold=vad_threshold
+                vad_threshold=vad_threshold,
+                word_timestamps=word_timestamps
             )
             
             # Add metadata

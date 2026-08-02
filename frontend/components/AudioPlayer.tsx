@@ -1,6 +1,8 @@
 'use client';
 
 import { useRef, useEffect, useState } from 'react';
+import LyricsFollower from './LyricsFollower';
+import { LyricTimings, TimedLyricsResponse, isFollowable } from '@/lib/lyricTimings';
 
 interface Song {
   id: number;
@@ -19,6 +21,9 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
+  const [timings, setTimings] = useState<LyricTimings | null>(null);
+  const [showLyrics, setShowLyrics] = useState(false);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -43,6 +48,54 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
       audio.pause();
     };
   }, [song.id]);
+
+  // Load this song's timed lyrics. A song with none (never extracted, or edited
+  // since) simply gets no follow-along — never an error the listener has to see.
+  useEffect(() => {
+    let cancelled = false;
+    setTimings(null);
+
+    fetch(`/api/songs/${song.id}/lyrics/timed`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: TimedLyricsResponse | null) => {
+        if (!cancelled) setTimings(data?.timings ?? null);
+      })
+      .catch(() => {
+        /* follow-along is an enhancement; failing to load it is not an error */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [song.id]);
+
+  // `timeupdate` only fires ~4x/second — fine for the seek bar, visibly behind
+  // for word-level highlighting. Drive the lyric clock off rAF instead, and only
+  // while lyrics are actually on screen and playing.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !isPlaying || !showLyrics) return;
+
+    const tick = () => {
+      setCurrentTime(audio.currentTime);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
+  }, [isPlaying, showLyrics]);
+
+  const handleLyricSeek = (time: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = time;
+    setCurrentTime(time);
+  };
+
+  const canFollow = isFollowable(timings);
 
   const togglePlay = () => {
     const audio = audioRef.current;
@@ -86,6 +139,15 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
       <audio ref={audioRef} />
 
       <div className="container mx-auto max-w-4xl">
+        {showLyrics && canFollow && (
+          <LyricsFollower
+            lines={timings!.lines}
+            currentTime={currentTime}
+            onSeek={handleLyricSeek}
+            className="mb-3 border-b border-gray-700"
+          />
+        )}
+
         <div className="flex items-center justify-between mb-2">
           <div className="flex-1">
             <h3 className="font-semibold">{song.title}</h3>
@@ -93,6 +155,19 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
               <p className="text-sm text-gray-400">{song.genre}</p>
             )}
           </div>
+          {canFollow && (
+            <button
+              onClick={() => setShowLyrics((v) => !v)}
+              aria-pressed={showLyrics}
+              className={`mr-3 text-xs px-3 py-1 rounded-full border ${
+                showLyrics
+                  ? 'border-green-500 text-green-400'
+                  : 'border-gray-600 text-gray-400 hover:text-white'
+              }`}
+            >
+              Lyrics
+            </button>
+          )}
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-white"

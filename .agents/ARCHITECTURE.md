@@ -66,8 +66,12 @@ frontend/
                                  #   StemRow, StemDetailPanel, FixQueue/FixCard, AdvancedDrawer,
                                  #   ResultSidebar, LyricsCard, Spinner, useStemPlayback,
                                  #   fixCopy.ts, stemColors.ts)
+  components/LyricsFollower.tsx # Follow-along lyric highlighting (time-source agnostic)
   hooks/useProcessingQueue.ts  # Data-flow hub for the audio-processing review queue (analyze fan-out,
                                 #   FixEntry state, accept/preview)
+  hooks/useActiveLyric.ts      # Resolves active lyric line/word from a playback time
+  lib/lyricTimings.ts          # Timed-lyric types + pure lookup logic (unit-tested under __tests__/)
+  __tests__/                   # vitest + jsdom + React Testing Library (`npm test`)
 streaming/
   radio.liq                   # Liquidsoap config
   playlist/radio.m3u          # generated playlist (shared volume backend↔liquidsoap)
@@ -118,6 +122,19 @@ the backend (it is a library, not a service) for speed. It combines:
 - **Text/metadata embeddings** — `sentence-transformers`.
 - **Lyrics** — Whisper-transcribed (`lyrics_extractor.py`, large-v3 model), indexed for full-text +
   semantic lyric search.
+
+**Timed lyrics (2026-08).** Whisper's per-segment (and per-word) timestamps are persisted to
+`song_lyric_timings` (migration `11`) as one JSONB `lines` document per song, so the UI can highlight
+lyrics in time with playback. The lyric **text** stays in `text_embeddings` (content_type `lyrics`) as
+the single source of truth for lyric search — timings are a derived sidecar, never a second row in
+that table. Extraction (`src/api/lyrics_jobs.py`) prefers **isolated vocals**, which transcribe and
+time markedly better than a full mix: it reuses an existing completed `vocals` stem (issue #67) when
+one is on disk, else runs Demucs in-job, falling back to the mix only when separation is unavailable.
+A record carries `status` `current`|`stale`; hand-editing the lyric text marks it stale (compared via
+`lyrics_jobs.lyrics_signature()`, which ignores case/punctuation/whitespace so a reflow doesn't discard
+good timings) and the player then falls back to static lyrics. Read paths: **listener-scoped**
+`GET /api/songs/{id}/lyrics/timed` (search router) for playback, and the editor-gated
+`GET/PUT /api/produce/songs/{id}/lyrics` which also carries `timings`.
 
 Search modes: audio similarity, natural-language/text, lyric, tempo (BPM), and hybrid. `pgvector`
 provides the vector similarity; SQL search functions live in `database/sql/` and
@@ -293,6 +310,11 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-07 | Agent pipeline made concurrency-safe + runnable in GitHub Actions (`.github/workflows/fix-issue.yml`) | Ported soccer-assistant-coach's standards: AGENTS.md Concurrency rules (re-check before write; races are benign; dev claims via `dev-agent:claim`; never touch dirty human trees) so local scheduled, interactive, and CI sweeps can overlap safely. CI sweeps trigger on human activity only (marker-filtered `issue_comment`), agents detect CI via `$GITHUB_ACTIONS` and honestly skip Docker-dependent checks. |
 | 2026-08 | Dark-only "Console" design system, no light/dark toggle | The source design (a Claude Design mockup) had zero light-mode artifacts and stated "dark because you stare at waveforms"; building a toggle would have been speculative scope nobody asked for. `darkMode:'class'` + a permanent `dark` class on `<html>` also made every pre-existing `dark:` Tailwind class elsewhere in the app activate unconditionally for free, so unmigrated pages don't look broken in the meantime. |
 | 2026-08 | Retired `MultitrackEditor.tsx`/`StemMixer.tsx` for a new `produce/audio/` component tree, not an in-place rewrite | The review-queue interaction model (analyze once → one card per fix → accept all) is different enough from the old per-tool-checkbox model that patching in place would have compounded an already-1319-line file. Only the genuinely reusable pieces (the Web Audio group-playback engine, the waveform canvas + region drag-select) were extracted into shared hooks/props instead of duplicated. |
+| 2026-08 | Timed lyrics stored in their own `song_lyric_timings` table, not a second `text_embeddings` row | `text_embeddings` is `UNIQUE(song_id, content_type)` around an embedding column and lyric search filters on `content_type`; a `lyrics_timing` row there would risk polluting search results. Timings are always read whole for playback and never queried by field, so one JSONB document per song beats a ~100k-row line table. Lyric text remains the single search source of truth; timings are a derived sidecar that can go `stale` independently. |
+| 2026-08 | Lyric transcription runs on isolated vocals (reused stem → in-job Demucs → mix), and word timestamps were enabled before the catalog backfill | Whisper times sung vocals poorly over a full mix. Stem separation (issue #67) often already produced a `vocals` stem, making the better path free for those songs. Both this and `word_timestamps=True` were pulled forward out of "phase 2" specifically so the multi-minute-per-song re-extraction over ~1,300 songs only has to run once. |
+| 2026-08 | Follow-along playback reads a **listener-scoped** `/api/songs/{id}/lyrics/timed`, not the produce lyric routes | The existing lyric read/write endpoints sit under `/api/produce/*` behind `require_role("editor")`. Reusing them for the player would have made follow-along lyrics an editors-only feature. |
+| 2026-08 | `LyricsFollower` takes a time in seconds, not a player | There are three unrelated playback surfaces (the `<audio>` element player, the produce page's AudioContext `playhead`, the radio's polled position) with very different timing precision. A component that owns no clock serves all three; the radio's coarse 3s-polled position can drive line-level highlighting even though it can never support word-level. |
+| 2026-08 | vitest adopted for frontend tests | `lib/lyricTimings.ts`'s active-line/word lookup has real edge cases (seeks, instrumental gaps, shared line boundaries) and the repo had no frontend test runner at all — `lint`/`build` cannot catch a wrong binary search. |
 | 2026-08 | Stem-scoped `apply` never writes a version; only `/api/produce/accept-fixes` does | Keeps "create a version" a single seam. Per-stem/per-fix "Hear it" and "Preview with fixes" auditioning needed to be cheap and side-effect-free, so every per-tool or per-stem render is a preview; only the explicit accept-fixes orchestrator (which composes every stem + master fix into one file) is allowed to call `save_candidate_version`. |
 | 2026-08 | Tag instruments on stems instead of trying to separate more of them | Demucs' source list is baked into the model weights, so "add banjo/mandolin" is not a config change — it needs either query-based separation (materially worse quality than Demucs on its native sources) or a fine-tune on isolated multitracks the band doesn't have. But nothing is actually *lost*: the 6 stems sum back to the mix, so a banjo is present, just inside `other`. The gap is naming, not coverage — so an AudioSet tagger names what's in each stem and the producer can override the label by hand. Query-based separation stays on the table if per-instrument isolation later proves worth it. |
 | 2026-08 | Instrument tagging runs after the stem set is marked `complete`, not before | Separation already takes minutes; making the producer wait on a second model pass before any waveform appears would compound the exact slowness the console was being fixed for. Tags are a labelling pass over stems that already exist, so the console renders immediately and the labels fill in behind via a bounded poll. It also means a tagging failure can't fail a separation that produced perfectly usable stems. |

@@ -23,7 +23,7 @@ from src.api.radio_service import (
     _find_audio_file,
     advance_to_next_song,
 )
-from src.api.dependencies import get_radio_store
+from src.api.dependencies import get_db, get_radio_store
 
 
 # --- Routes are all still mounted at the same path/method ------------------
@@ -39,6 +39,7 @@ EXPECTED_ROUTES = {
     ("POST", "/api/search/text"),
     ("POST", "/api/search/lyrics"),
     ("GET", "/api/songs/{song_id}/lyrics"),
+    ("GET", "/api/songs/{song_id}/lyrics/timed"),
     ("POST", "/api/agent/chat"),
     ("POST", "/api/agent/dj/request"),
     ("POST", "/api/agent/dj/playlist"),
@@ -239,3 +240,76 @@ def test_find_audio_file_matches_song_id_prefix(tmp_path, monkeypatch):
     (tmp_path / "7_track.mp3").write_bytes(b"x")
     assert _find_audio_file(7).name == "7_track.mp3"
     assert _find_audio_file(8) is None
+
+
+# --- Timed lyrics: listener-scoped, for follow-along playback --------------
+
+class FakeLyricsDB:
+    """Stand-in for the lyric reads the timed-lyrics route makes."""
+
+    def __init__(self, song=None, lyrics=None, timings=None):
+        self._song = song
+        self._lyrics = lyrics
+        self._timings = timings
+
+    async def get_song(self, song_id):
+        return self._song
+
+    async def get_song_lyrics(self, song_id):
+        return self._lyrics
+
+    async def get_lyric_timings(self, song_id):
+        return self._timings
+
+
+@pytest.fixture
+def lyrics_client():
+    def _client(db):
+        backend_api.app.dependency_overrides[get_db] = lambda: db
+        return TestClient(backend_api.app)
+
+    yield _client
+    backend_api.app.dependency_overrides.clear()
+
+
+def test_timed_lyrics_returns_lines_without_an_editor_role(lyrics_client):
+    """Playback is a listener feature — this route must not be editor-gated."""
+    db = FakeLyricsDB(
+        song={"id": 5, "title": "Test Track"},
+        lyrics="Headed down south",
+        timings={
+            "format_version": 1, "source": "whisper", "model": "large-v3",
+            "audio_source": "vocals_stem", "status": "current",
+            "lines": [{"start": 2.0, "end": 5.0, "text": "Headed down south"}],
+        },
+    )
+    resp = lyrics_client(db).get("/api/songs/5/lyrics/timed")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["lyrics"] == "Headed down south"
+    assert body["timings"]["lines"][0]["start"] == 2.0
+    assert body["timings"]["audio_source"] == "vocals_stem"
+
+
+def test_timed_lyrics_null_timings_when_never_extracted(lyrics_client):
+    db = FakeLyricsDB(song={"id": 5}, lyrics="Some words", timings=None)
+    resp = lyrics_client(db).get("/api/songs/5/lyrics/timed")
+
+    assert resp.status_code == 200
+    assert resp.json()["timings"] is None
+    # Not the "Lyrics not available" placeholder prose the plain route returns.
+    assert resp.json()["lyrics"] == "Some words"
+
+
+def test_timed_lyrics_empty_string_when_song_has_no_lyrics(lyrics_client):
+    db = FakeLyricsDB(song={"id": 5}, lyrics=None, timings=None)
+    resp = lyrics_client(db).get("/api/songs/5/lyrics/timed")
+
+    assert resp.status_code == 200
+    assert resp.json()["lyrics"] == ""
+
+
+def test_timed_lyrics_404_for_unknown_song(lyrics_client):
+    resp = lyrics_client(FakeLyricsDB(song=None)).get("/api/songs/9999/lyrics/timed")
+    assert resp.status_code == 404

@@ -315,6 +315,131 @@ class DatabaseManager:
 
         return row['lyrics'] if row else None
 
+    # Timed lyrics (migration 11) — follow-along highlighting while a song plays.
+    async def ensure_song_lyric_timings_table(self) -> None:
+        """Create the song_lyric_timings table if missing. Idempotent.
+
+        Mirrors ensure_song_versions_table: the canonical schema lives in
+        database/sql/migrations/11-create-song-lyric-timings.sql, and this method
+        applies the same idempotent DDL so the table exists without a manual
+        migration step.
+        """
+        ddl = """
+            CREATE TABLE IF NOT EXISTS song_lyric_timings (
+                id SERIAL PRIMARY KEY,
+                song_id INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+                format_version INTEGER NOT NULL DEFAULT 1,
+                source VARCHAR(16) NOT NULL DEFAULT 'whisper',
+                model VARCHAR(64),
+                audio_source VARCHAR(32) NOT NULL DEFAULT 'mix',
+                status VARCHAR(16) NOT NULL DEFAULT 'current',
+                lines JSONB NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (song_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_song_lyric_timings_song_id
+                ON song_lyric_timings (song_id);
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+        logger.info("song_lyric_timings table ensured")
+
+    async def get_lyric_timings(self, song_id: int) -> Optional[Dict[str, Any]]:
+        """Return a song's timed-lyric record, or None if it has none.
+
+        ``lines`` comes back as a decoded Python list — asyncpg hands JSONB back
+        as a string unless a codec is registered, so decode defensively (same
+        approach as RadioStateStore).
+        """
+        query = "SELECT * FROM song_lyric_timings WHERE song_id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id)
+        if not row:
+            return None
+
+        record = dict(row)
+        raw = record.get("lines")
+        record["lines"] = json.loads(raw) if isinstance(raw, str) else raw
+        return record
+
+    async def save_lyric_timings(
+        self,
+        song_id: int,
+        lines: List[Dict[str, Any]],
+        source: str = "whisper",
+        model: Optional[str] = None,
+        audio_source: str = "mix",
+        format_version: int = 1,
+    ) -> Dict[str, Any]:
+        """Upsert a song's timed lyrics, marking them current. Returns the row.
+
+        A re-extraction replaces the record in place (UNIQUE on song_id) so a
+        song never accumulates competing timing documents.
+        """
+        query = """
+            INSERT INTO song_lyric_timings
+                (song_id, format_version, source, model, audio_source, status, lines)
+            VALUES ($1, $2, $3, $4, $5, 'current', $6)
+            ON CONFLICT (song_id) DO UPDATE SET
+                format_version = EXCLUDED.format_version,
+                source = EXCLUDED.source,
+                model = EXCLUDED.model,
+                audio_source = EXCLUDED.audio_source,
+                status = 'current',
+                lines = EXCLUDED.lines,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                song_id,
+                format_version,
+                source,
+                model,
+                audio_source,
+                json.dumps(lines),
+            )
+        return dict(row)
+
+    async def set_lyric_timings_status(
+        self, song_id: int, status: str
+    ) -> Optional[Dict[str, Any]]:
+        """Mark a song's timings 'current' or 'stale'. None if it has no record.
+
+        Hand-editing the lyric text invalidates the timings, so the save path
+        marks them stale rather than silently highlighting the wrong words.
+        """
+        query = """
+            UPDATE song_lyric_timings
+            SET status = $2, updated_at = CURRENT_TIMESTAMP
+            WHERE song_id = $1
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id, status)
+        return dict(row) if row else None
+
+    async def get_vocals_stem_path(self, song_id: int) -> Optional[str]:
+        """Path of the newest already-separated vocals stem for a song, if any.
+
+        Lyric transcription is markedly more accurate on isolated vocals than on
+        a full mix, and stem separation (issue #67) may already have produced
+        them — reusing that file skips a multi-minute Demucs run.
+        """
+        query = """
+            SELECT st.path
+            FROM song_stems st
+            JOIN song_stem_sets ss ON ss.id = st.stem_set_id
+            WHERE ss.song_id = $1 AND ss.status = 'complete' AND st.name = 'vocals'
+            ORDER BY ss.created_at DESC
+            LIMIT 1
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, song_id)
+        return row["path"] if row else None
+
     # Song version operations (issue #30 — cleanup audition/publish loop)
     async def ensure_song_versions_table(self) -> None:
         """Create the song_versions table if missing. Idempotent.

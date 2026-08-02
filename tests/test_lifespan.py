@@ -33,6 +33,12 @@ class FakeDatabaseManager:
     async def ensure_song_versions_table(self):
         self.song_versions_ensured = True
 
+    async def ensure_song_stems_tables(self):
+        self.song_stems_ensured = True
+
+    async def ensure_song_lyric_timings_table(self):
+        self.lyric_timings_ensured = True
+
     async def get_published_audio_paths(self):
         return {}
 
@@ -89,6 +95,12 @@ async def test_lifespan_initializes_singletons_at_startup():
         assert deps.agent.initialized is True
         # RAG shares the backend's DB manager.
         assert deps.rag.db_manager is deps.db_manager
+        # Every table the lifespan is responsible for ensuring got ensured. This
+        # fake previously drifted behind the real startup sequence and failed with
+        # AttributeError instead of a readable assertion — keep it asserted.
+        assert deps.db_manager.song_versions_ensured is True
+        assert deps.db_manager.song_stems_ensured is True
+        assert deps.db_manager.lyric_timings_ensured is True
 
 
 @pytest.mark.asyncio

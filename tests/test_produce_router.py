@@ -30,6 +30,13 @@ from src.api.dependencies import get_agent, get_db, get_rag
 _SECRET = "test-secret-value"
 
 
+def _run(coro):
+    """Drive one of FakeDB's async setup methods from a sync test."""
+    import asyncio
+
+    return asyncio.run(coro)
+
+
 def _editor_headers(monkeypatch):
     monkeypatch.setenv("BACKEND_API_SECRET", _SECRET)
     return {"X-Service-Secret": _SECRET, "X-User-Role": "editor"}
@@ -84,6 +91,7 @@ class FakeDB:
         self._versions = {}
         self._next_id = 1
         self._lyrics = {}
+        self._timings = {}
 
     async def get_all_songs(self):
         return [{"id": 5, "title": "Test Track"}]
@@ -95,6 +103,32 @@ class FakeDB:
 
     async def get_song_lyrics(self, song_id):
         return self._lyrics.get(song_id)
+
+    async def get_lyric_timings(self, song_id):
+        return self._timings.get(song_id)
+
+    async def save_lyric_timings(
+        self, song_id, lines, source="whisper", model=None,
+        audio_source="mix", format_version=1,
+    ):
+        row = {
+            "song_id": song_id,
+            "lines": lines,
+            "source": source,
+            "model": model,
+            "audio_source": audio_source,
+            "format_version": format_version,
+            "status": "current",
+        }
+        self._timings[song_id] = row
+        return row
+
+    async def set_lyric_timings_status(self, song_id, status):
+        row = self._timings.get(song_id)
+        if row is None:
+            return None
+        row["status"] = status
+        return row
 
     async def ensure_original_version(self, song_id, audio_path):
         for v in self._versions.values():
@@ -517,7 +551,7 @@ def test_extract_lyrics_starts_job_and_reports_status(produce_client, monkeypatc
     # Stub the manager so the test never loads Whisper.
     monkeypatch.setattr(
         lyrics_jobs.manager, "start",
-        lambda song_id, path, rag: (calls.append((song_id, path)), True)[1],
+        lambda song_id, path, rag, db=None: (calls.append((song_id, path, db)), True)[1],
     )
 
     status0 = client.get(
@@ -531,3 +565,76 @@ def test_extract_lyrics_starts_job_and_reports_status(produce_client, monkeypatc
     assert started.status_code == 200 and started.json()["status"] == "running"
     assert len(calls) == 1
     assert calls[0][0] == 5 and calls[0][1].endswith(".mp3")
+    # The job needs the DB handle to reuse a vocals stem and persist timings.
+    assert calls[0][2] is not None
+
+
+# ---- timed lyrics (follow-along highlighting) ----
+
+
+_LINES = [
+    {"start": 2.0, "end": 5.0, "text": "Headed down south"},
+    {"start": 5.0, "end": 8.0, "text": "to the land of the pines"},
+]
+
+
+def test_get_song_lyrics_includes_timings(produce_client, monkeypatch):
+    client, _agent, _rag, db, _lib = produce_client
+    db._lyrics[5] = "Headed down south to the land of the pines"
+    _run(db.save_lyric_timings(5, _LINES, model="large-v3", audio_source="vocals_stem"))
+
+    resp = client.get("/api/produce/songs/5/lyrics", headers=_editor_headers(monkeypatch))
+    assert resp.status_code == 200
+    timings = resp.json()["timings"]
+    assert timings["status"] == "current"
+    assert timings["audio_source"] == "vocals_stem"
+    assert [line["text"] for line in timings["lines"]] == [
+        "Headed down south",
+        "to the land of the pines",
+    ]
+
+
+def test_get_song_lyrics_timings_null_when_never_extracted(produce_client, monkeypatch):
+    client, *_ = produce_client
+    resp = client.get("/api/produce/songs/5/lyrics", headers=_editor_headers(monkeypatch))
+    assert resp.status_code == 200
+    assert resp.json()["timings"] is None
+
+
+def test_saving_changed_lyrics_marks_timings_stale(produce_client, monkeypatch):
+    client, _agent, _rag, db, _lib = produce_client
+    _run(db.save_lyric_timings(5, _LINES))
+
+    resp = client.put(
+        "/api/produce/songs/5/lyrics",
+        json={"lyrics": "Completely different words"},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200
+    # Timings were measured against the old transcript, so they can no longer
+    # be trusted to highlight the right words.
+    assert resp.json()["timings"]["status"] == "stale"
+
+
+def test_saving_reflowed_lyrics_keeps_timings_current(produce_client, monkeypatch):
+    client, _agent, _rag, db, _lib = produce_client
+    _run(db.save_lyric_timings(5, _LINES))
+
+    # Same words, different case / line breaks / punctuation — a formatting edit
+    # must not throw away perfectly good timings.
+    resp = client.put(
+        "/api/produce/songs/5/lyrics",
+        json={"lyrics": "Headed down south,\nTo the Land of the Pines!"},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["timings"]["status"] == "current"
+
+
+def test_lyrics_signature_ignores_case_punctuation_and_whitespace():
+    from src.api import lyrics_jobs
+
+    assert lyrics_jobs.lyrics_signature("Headed down south,\n  to the pines!") == (
+        lyrics_jobs.lyrics_signature("headed  DOWN south to the pines")
+    )
+    assert lyrics_jobs.lyrics_signature("one two") != lyrics_jobs.lyrics_signature("one three")

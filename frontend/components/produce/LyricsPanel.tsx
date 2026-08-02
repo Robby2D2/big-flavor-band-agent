@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { LyricTimings } from '@/lib/lyricTimings';
 
 // ---------------------------------------------------------------------------
 // Lyrics tab: view / hand-edit / re-extract a song's lyrics.
@@ -9,6 +10,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // so lyric search stays consistent), and can kick off a background Whisper
 // re-extraction (POST .../lyrics/extract) that it polls to completion, then
 // reloads the freshly transcribed text.
+//
+// Extraction also stores per-line timings that drive follow-along highlighting
+// during playback. An edit that changes the words invalidates them, so the
+// backend marks them stale and this panel surfaces that — the fix is a
+// re-extract, which is why it's called out next to that button.
 // ---------------------------------------------------------------------------
 
 interface LyricsPanelProps {
@@ -20,6 +26,7 @@ type ExtractStatus = 'idle' | 'running' | 'complete' | 'failed';
 export default function LyricsPanel({ songId }: LyricsPanelProps) {
   const [lyrics, setLyrics] = useState('');
   const [savedLyrics, setSavedLyrics] = useState('');
+  const [timings, setTimings] = useState<LyricTimings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +45,7 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
       if (!res.ok) throw new Error(data.error || 'Failed to load lyrics');
       setLyrics(data.lyrics || '');
       setSavedLyrics(data.lyrics || '');
+      setTimings(data.timings ?? null);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -66,6 +74,7 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
       if (!res.ok) throw new Error(data.error || 'Failed to save');
       setSavedLyrics(data.lyrics ?? lyrics);
       setLyrics(data.lyrics ?? lyrics);
+      setTimings(data.timings ?? null);
       setMessage('Saved.');
     } catch (err: any) {
       setError(err.message);
@@ -171,6 +180,22 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
           <span className="text-xs text-amber-600 dark:text-amber-400">Unsaved changes</span>
         )}
       </div>
+
+      <p className="text-xs mt-3 text-gray-500 dark:text-gray-400">
+        {!timings ? (
+          <>No follow-along timings yet — re-extract to generate them.</>
+        ) : timings.status === 'stale' ? (
+          <span className="text-amber-600 dark:text-amber-400">
+            Follow-along timings are out of date (the lyrics were edited after
+            extraction) and are hidden during playback. Re-extract to refresh them.
+          </span>
+        ) : (
+          <>
+            Follow-along timings: {timings.lines.length} lines
+            {timings.audio_source === 'vocals_stem' ? ' (from isolated vocals)' : ' (from the full mix)'}.
+          </>
+        )}
+      </p>
     </div>
   );
 }

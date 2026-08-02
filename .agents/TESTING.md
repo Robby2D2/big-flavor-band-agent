@@ -4,10 +4,17 @@
 > test suite. The `tests/` directory is a large collection of **ad-hoc, print-based scripts**
 > (manual demos and one-off verification runners using `asyncio`, e.g. `tests/test_search.py`,
 > `tests/demo_rag_search.py`). They are useful for manual checking but are **not** assertion-based
-> and are not wired into a test runner. The frontend has **no** test script (only `lint`/`build`).
+> and are not wired into a test runner. The frontend gained a real runner in 2026-08 — **vitest**
+> (`npm test`, jsdom + React Testing Library, specs under `frontend/__tests__/`) — but only the newest
+> components are covered by it.
 >
 > The convention **going forward** is below. New backend behavior should ship with a real
-> `pytest` test; new frontend behavior must at least keep `npm run lint` and `npm run build` green.
+> `pytest` test; new frontend behavior should ship with a `vitest` test where the logic is testable
+> (pure functions and components), and must at least keep `npm run build` green.
+>
+> **Known broken:** `npm run lint` fails repo-wide — Next 16 removed `next lint`, so the script reads
+> `lint` as a directory argument and errors out. It needs migrating to a flat-config `eslint .` run;
+> until then `npm run build` (which typechecks) plus `npm test` are the frontend gates that work.
 
 ---
 
@@ -21,8 +28,25 @@ checks that actually exist and pass them:
 | Backend imports/health | `docker restart bigflavor-backend && docker logs bigflavor-backend --tail 50` | The app boots, no import/startup errors, `/health` is reachable |
 | Backend unit (new) | `python -m pytest tests/ -q` (after adding real pytest tests) | New backend logic |
 | Backend manual script | `python tests/<script>.py` (venv active) | Reproducing a search/agent/radio scenario by hand |
-| Frontend lint | `cd frontend && npm run lint` | TypeScript/React correctness |
-| Frontend build | `cd frontend && npm run build` | The app compiles for production |
+| Frontend unit | `cd frontend && npm test` | vitest specs in `frontend/__tests__/` (hooks, pure logic, components) |
+| Frontend build | `cd frontend && npm run build` | The app compiles for production (also typechecks) |
+| Frontend lint | `cd frontend && npm run lint` | **Currently broken** — see the note above |
+
+> **Backend suite caveat.** `python -m pytest tests/ -q` fails to *collect* four ad-hoc scraper scripts
+> (`test_scraper.py`, `test_click_details.py`, `test_details_one_by_one.py`, `test_incremental_scrape.py`
+> — they import a `web_scraper` module that no longer exists), and ~13 further demo scripts fail at run
+> time without a live Postgres/Ollama. Neither is a regression signal. Run with those four `--ignore`d
+> and read past the connection-refused failures; the assertion-based tests are the ones that matter.
+
+### Writing new frontend tests (vitest)
+
+`frontend/vitest.config.mts` (jsdom, globals, `@/` paths from tsconfig) + `vitest.setup.ts`
+(jest-dom matchers, auto-cleanup). Put specs in `frontend/__tests__/*.test.{ts,tsx}`.
+
+Prefer extracting logic into a pure module and testing that directly — `lib/lyricTimings.ts` is the
+model: the active-line/word search lives there as plain functions, and `LyricsFollower.test.tsx` only
+covers what genuinely needs a DOM (highlighting, click-to-seek, scroll). jsdom implements neither
+`scrollIntoView` nor `matchMedia`, so components using them need those stubbed in the spec.
 
 > **venv first.** Per `.github/copilot-instructions.md`, activate the venv before any Python command
 > (`venv\Scripts\Activate.ps1` on Windows) and prefer `python -m …`. Most backend code, though, is
