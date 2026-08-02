@@ -1,5 +1,16 @@
 # Lyrics Extraction Setup Guide
 
+> ⚠️ **Superseded for anything involving playback.** This guide documents
+> `src/rag/index_lyrics.py`, the original host-run extractor that stores lyric **text only**. It
+> predates *timed* lyrics (per-line/per-word timestamps for follow-along highlighting) and does not
+> populate the `song_lyric_timings` table.
+>
+> For the current path — isolated vocals → Whisper with word timestamps → timed lyrics, run inside
+> the backend container — see **[`LYRICS_TIMINGS_BACKFILL.md`](LYRICS_TIMINGS_BACKFILL.md)**.
+>
+> This document is still accurate about how Demucs/faster-whisper work and how to install them
+> locally for experimentation.
+
 ## Overview
 
 This system extracts lyrics from audio files using:

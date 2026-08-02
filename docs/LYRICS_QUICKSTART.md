@@ -1,5 +1,12 @@
 # Lyrics Extraction - Quick Reference
 
+> ⚠️ **Superseded for anything involving playback.** The commands below drive
+> `src/rag/index_lyrics.py`, which stores lyric **text only** and runs on the host. It predates
+> *timed* lyrics (per-line/per-word timestamps for follow-along highlighting) and does not populate
+> the `song_lyric_timings` table.
+>
+> For the current path, see **[`LYRICS_TIMINGS_BACKFILL.md`](LYRICS_TIMINGS_BACKFILL.md)**.
+
 ## 🎵 What This Does
 
 Automatically extracts lyrics from your audio files and indexes them for semantic search in the RAG system.

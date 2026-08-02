@@ -53,6 +53,16 @@ the web frontend).
 | [`run_migration.py`](run_migration.py) | Applies the `05-create-users-table.sql` migration against the database. |
 | [`check_tempo.py`](check_tempo.py) | Quick diagnostic: counts songs with/without `tempo_bpm` populated. |
 
+## Catalog backfills
+
+Long-running, resumable jobs over the whole catalog. Unlike the scripts above,
+these **must run inside the `bigflavor-backend` container** — they need the ML
+models and the GPU, and refuse to run without them.
+
+| Script | What it does |
+|--------|--------------|
+| [`backfill_lyric_timings.py`](backfill_lyric_timings.py) | Re-transcribes the catalog to produce **timed lyrics** (follow-along highlighting): isolated vocals → Whisper → `song_lyric_timings`. Resumable; safe to interrupt. Full runbook: [`docs/LYRICS_TIMINGS_BACKFILL.md`](../docs/LYRICS_TIMINGS_BACKFILL.md). |
+
 ## Ollama & GPU setup  **[legacy]**
 
 Only needed if you opt back into running a local LLM instead of Anthropic.
