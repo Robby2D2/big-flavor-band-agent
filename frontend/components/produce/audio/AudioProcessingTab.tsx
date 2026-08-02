@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useProcessingQueue, FixEntry } from '@/hooks/useProcessingQueue';
+import { useEffect, useRef, useState } from 'react';
+import { useProcessingQueue, FixEntry, FULL_MIX_STEM_ID } from '@/hooks/useProcessingQueue';
 import { decodeAudio, Region } from '../audioEngine';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
@@ -53,44 +53,87 @@ export default function AudioProcessingTab({
   const queue = useProcessingQueue(songId, sourceVersionId);
 
   const [buffers, setBuffers] = useState<Record<number, AudioBuffer>>({});
+  const [loadingStemIds, setLoadingStemIds] = useState<Set<number>>(new Set());
   const [controls, setControls] = useState<Record<number, StemPlaybackControl>>({});
   const [region, setRegion] = useState<Region | null>(null);
   const [drawerFix, setDrawerFix] = useState<FixEntry | null>(null);
   const [decodeError, setDecodeError] = useState<string | null>(null);
 
-  // Decode each newly-analyzed stem's audio once, for the console sparkline,
-  // playback, and the selected stem's detail waveform.
+  // Decode the full mix and each stem once, for the transport, the console
+  // sparklines, playback, and the selected row's detail waveform. Decoding is
+  // fanned out rather than run one after another — a full stem set is several
+  // whole-song files, and serially they took long enough that the console sat
+  // there looking empty.
+  const decodedUrls = useRef<Map<number, string>>(new Map());
+  const stemIdsKey = queue.stems.map((s) => s.id).join(',');
   useEffect(() => {
-    if (queue.stems.length === 0) return;
+    if (sourceVersionId == null) return;
+    const targets = [
+      { id: FULL_MIX_STEM_ID, url: `/api/produce/versions/${sourceVersionId}/audio` },
+      ...queue.stems.map((s) => ({ id: s.id, url: `/api/produce/stems/${s.id}/audio` })),
+    ];
+    const targetIds = new Set(targets.map((t) => t.id));
+
+    // Drop anything that is no longer a console row (a re-separation replacing
+    // the stem set), and keep what is still current — including the user's
+    // mute/solo/gain for rows that survived.
+    for (const id of Array.from(decodedUrls.current.keys())) {
+      if (!targetIds.has(id)) decodedUrls.current.delete(id);
+    }
+    setBuffers((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([id]) => targetIds.has(Number(id))))
+    );
+    setControls((prev) =>
+      Object.fromEntries(
+        targets.map((t) => [
+          t.id,
+          // The stems already add up to the full mix, so the mix channel starts
+          // muted — un-mute or solo it to hear the mix itself.
+          prev[t.id] ?? { gain: 1, mute: t.id === FULL_MIX_STEM_ID, solo: false },
+        ])
+      )
+    );
+
+    const pending = targets.filter((t) => decodedUrls.current.get(t.id) !== t.url);
+    if (pending.length === 0) return;
+
     let cancelled = false;
     setDecodeError(null);
-    (async () => {
-      const nextBuffers: Record<number, AudioBuffer> = {};
-      const nextControls: Record<number, StemPlaybackControl> = {};
-      for (const stem of queue.stems) {
+    setLoadingStemIds(new Set(pending.map((t) => t.id)));
+    void Promise.all(
+      pending.map(async (t) => {
         try {
-          nextBuffers[stem.id] = await decodeAudio(`/api/produce/stems/${stem.id}/audio`);
+          const buffer = await decodeAudio(t.url);
+          if (cancelled) return;
+          decodedUrls.current.set(t.id, t.url);
+          setBuffers((prev) => ({ ...prev, [t.id]: buffer }));
         } catch (err) {
           if (!cancelled) setDecodeError((err as Error).message);
+        } finally {
+          if (!cancelled) {
+            setLoadingStemIds((prev) => {
+              const next = new Set(prev);
+              next.delete(t.id);
+              return next;
+            });
+          }
         }
-        nextControls[stem.id] = { gain: 1, mute: false, solo: false };
-      }
-      if (!cancelled) {
-        setBuffers(nextBuffers);
-        setControls(nextControls);
-      }
-    })();
+      })
+    );
     return () => {
       cancelled = true;
     };
-  }, [queue.stems]);
+    // `stemIdsKey` stands in for queue.stems: a fresh array arrives on every
+    // analysis pass, but only a different set of stem ids should re-decode.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceVersionId, stemIdsKey]);
 
   useEffect(() => {
     queue.ensureToolParams();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue.analyzed]);
 
-  const playback = useStemPlayback(queue.stems, buffers, controls);
+  const playback = useStemPlayback(queue.consoleStems, buffers, controls);
 
   const setControl = (id: number, patch: Partial<StemPlaybackControl>) => {
     setControls((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -100,13 +143,15 @@ export default function AudioProcessingTab({
     setRegion(null);
   }, [queue.selectedStemId]);
 
-  const selectedStem = queue.stems.find((s) => s.id === queue.selectedStemId) ?? null;
+  const selectedStem = queue.consoleStems.find((s) => s.id === queue.selectedStemId) ?? null;
+  const fullMixSelected = queue.selectedStemId === FULL_MIX_STEM_ID;
   const selectedStemFixes = queue.selectedStemId != null ? queue.fixesForStem(queue.selectedStemId) : [];
   const enabledSelectedStemFixCount = selectedStemFixes.filter((f) => f.enabled).length;
   // A stem set can be showing (preloaded from an earlier session) before any
   // analysis pass has ever run for it — the fix queue/results only make sense
-  // once a pass has completed or is currently in flight.
-  const hasEverAnalyzed = queue.analyzed || queue.analyzing;
+  // once a pass has completed, is in flight, or a single row has been analyzed
+  // on its own.
+  const hasEverAnalyzed = queue.analyzed || queue.analyzing || queue.analyzedStemIds.size > 0;
 
   if (versions.length === 0) {
     return <p className="text-sm text-text/50">No versions yet for this song.</p>;
@@ -163,17 +208,22 @@ export default function AudioProcessingTab({
           {queue.stems.length > 0 && (
             <>
               <StemConsole
-                stems={queue.stems}
+                stems={queue.consoleStems}
                 buffers={buffers}
+                loadingStemIds={loadingStemIds}
                 controls={controls}
                 setControl={setControl}
                 selectedStemId={queue.selectedStemId}
                 onSelectStem={queue.setSelectedStemId}
                 fixesForStem={queue.fixesForStem}
+                analyzedStemIds={queue.analyzedStemIds}
+                analyzingStemIds={queue.analyzingStemIds}
+                onAnalyzeStem={queue.analyzeStem}
                 playing={playback.playing}
                 playhead={playback.playhead}
                 maxDuration={playback.maxDuration}
-                onTogglePlay={playback.playing ? playback.stop : playback.start}
+                onTogglePlay={playback.toggle}
+                onSeek={playback.seek}
                 separating={queue.analyzing}
                 analyzed={queue.analyzed}
                 analysisNote={queue.analysisNote}
@@ -184,6 +234,11 @@ export default function AudioProcessingTab({
                 <StemDetailPanel
                   stemId={selectedStem.id}
                   stemName={selectedStem.name}
+                  audioSrc={
+                    fullMixSelected
+                      ? `/api/produce/versions/${sourceVersionId}/audio`
+                      : `/api/produce/stems/${selectedStem.id}/audio`
+                  }
                   buffer={buffers[selectedStem.id] ?? null}
                   duration={playback.maxDuration}
                   region={region}
@@ -196,8 +251,11 @@ export default function AudioProcessingTab({
               {hasEverAnalyzed ? (
                 <FixQueue
                   stemName={selectedStem?.name ?? null}
+                  scopeLabel={fullMixSelected ? 'FULL MIX' : 'THIS STEM'}
                   stemFixes={selectedStemFixes}
-                  masterFixes={queue.masterFixes}
+                  // The full-mix row already *is* the master bucket — don't
+                  // list the same fixes twice when it's selected.
+                  masterFixes={fullMixSelected ? [] : queue.masterFixes}
                   analyzing={queue.analyzing}
                   onToggle={queue.toggleFix}
                   onAdjust={setDrawerFix}

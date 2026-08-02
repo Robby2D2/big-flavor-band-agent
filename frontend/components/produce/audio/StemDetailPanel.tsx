@@ -8,6 +8,8 @@ import { stemColor } from './stemColors';
 interface StemDetailPanelProps {
   stemId: number;
   stemName: string;
+  /** Audio URL for the "A · as recorded" side (a stem file, or the full mix). */
+  audioSrc: string;
   buffer: AudioBuffer | null;
   duration: number;
   region: Region | null;
@@ -25,6 +27,7 @@ interface StemDetailPanelProps {
 export default function StemDetailPanel({
   stemId,
   stemName,
+  audioSrc,
   buffer,
   duration,
   region,
@@ -129,7 +132,7 @@ export default function StemDetailPanel({
         src={
           mode === 'B' && previewPath
             ? `/api/produce/clean/preview?path=${encodeURIComponent(previewPath)}`
-            : `/api/produce/stems/${stemId}/audio`
+            : audioSrc
         }
         className="w-full h-9 mt-3"
       />

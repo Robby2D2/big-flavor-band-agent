@@ -5,6 +5,8 @@ import FixCard from './FixCard';
 
 interface FixQueueProps {
   stemName: string | null;
+  /** Badge for the selected row's scope — "THIS STEM", or "FULL MIX". */
+  scopeLabel?: string;
   stemFixes: FixEntry[];
   masterFixes: FixEntry[];
   analyzing?: boolean;
@@ -20,6 +22,7 @@ interface FixQueueProps {
  */
 export default function FixQueue({
   stemName,
+  scopeLabel = 'THIS STEM',
   stemFixes,
   masterFixes,
   analyzing = false,
@@ -42,11 +45,11 @@ export default function FixQueue({
             )}
           </h3>
           <span className="font-mono text-[9.5px] tracking-wide text-text/45 bg-white/6 px-1.5 py-0.5 rounded">
-            THIS STEM
+            {scopeLabel}
           </span>
         </div>
         <p className="text-xs text-text/45 mt-1">
-          Pick another stem above to tune its chain · master fixes live at the bottom of the list
+          Pick another row above to tune its chain · master fixes live at the bottom of the list
         </p>
       </div>
 
