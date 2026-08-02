@@ -10,10 +10,14 @@ export interface StemPlaybackControl {
 }
 
 /**
- * Sample-synced group playback + per-stem audition through the single shared
- * AudioContext (extracted from the old StemMixer, which owned this same
- * engine inline). Every stem plays through one AudioContext clock, which is
- * what keeps mute/solo/gain and multi-stem sync accurate.
+ * Sample-synced group playback through the single shared AudioContext
+ * (extracted from the old StemMixer, which owned this same engine inline).
+ * Every stem plays through one AudioContext clock, which is what keeps
+ * mute/solo/gain and multi-stem sync accurate.
+ *
+ * Transport is media-player shaped: play/pause keeps the playhead where it is
+ * and `seek` moves it, restarting every source at the new offset so the stems
+ * stay sample-synced across a scrub.
  */
 export function useStemPlayback(
   stems: { id: number; name: string }[],
@@ -22,13 +26,14 @@ export function useStemPlayback(
 ) {
   const [playing, setPlaying] = useState(false);
   const [playhead, setPlayhead] = useState(0);
-  const [auditionId, setAuditionId] = useState<number | null>(null);
 
   const sourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const gainsRef = useRef<Map<number, GainNode>>(new Map());
-  const auditionRef = useRef<AudioBufferSourceNode | null>(null);
-  const startTimeRef = useRef(0);
+  /** ctx.currentTime that corresponds to playhead 0 (start time minus offset). */
+  const originRef = useRef(0);
   const rafRef = useRef<number | null>(null);
+  const playheadRef = useRef(0);
+  const playingRef = useRef(false);
 
   const maxDuration = useMemo(
     () => Object.values(buffers).reduce((m, b) => Math.max(m, b.duration), 0),
@@ -47,7 +52,13 @@ export function useStemPlayback(
     [controls, anySolo]
   );
 
-  const stop = useCallback(() => {
+  const movePlayhead = useCallback((t: number) => {
+    playheadRef.current = t;
+    setPlayhead(t);
+  }, []);
+
+  /** Tear the graph down without touching the playhead (pause/seek/stop share it). */
+  const teardown = useCallback(() => {
     for (const src of sourcesRef.current) {
       try {
         src.onended = null;
@@ -62,24 +73,20 @@ export function useStemPlayback(
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
+    playingRef.current = false;
     setPlaying(false);
-    setPlayhead(0);
   }, []);
 
-  const stopAudition = useCallback(() => {
-    if (auditionRef.current) {
-      try {
-        auditionRef.current.onended = null;
-        auditionRef.current.stop();
-      } catch {
-        // already stopped
-      }
-      auditionRef.current = null;
-    }
-    setAuditionId(null);
-  }, []);
+  const pause = useCallback(() => {
+    teardown();
+  }, [teardown]);
 
-  // Live-apply gain/mute/solo changes to already-playing (group) nodes.
+  const stop = useCallback(() => {
+    teardown();
+    movePlayhead(0);
+  }, [teardown, movePlayhead]);
+
+  // Live-apply gain/mute/solo changes to already-playing nodes.
   useEffect(() => {
     if (!playing) return;
     const ctx = getAudioContext();
@@ -88,86 +95,81 @@ export function useStemPlayback(
     }
   }, [controls, playing, effectiveGain]);
 
-  const start = useCallback(async () => {
-    if (!stems.length) return;
-    const ctx = getAudioContext();
-    await ctx.resume();
-    stopAudition();
-    stop();
-
-    const startAt = ctx.currentTime + 0.05;
-    const sources: AudioBufferSourceNode[] = [];
-    let longest: AudioBufferSourceNode | null = null;
-    let longestDur = 0;
-
-    for (const stem of stems) {
-      const buffer = buffers[stem.id];
-      if (!buffer) continue;
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-      const gain = ctx.createGain();
-      gain.gain.value = effectiveGain(stem.id);
-      src.connect(gain).connect(ctx.destination);
-      src.start(startAt);
-      sources.push(src);
-      gainsRef.current.set(stem.id, gain);
-      if (buffer.duration > longestDur) {
-        longestDur = buffer.duration;
-        longest = src;
-      }
-    }
-
-    if (!sources.length) return;
-    sourcesRef.current = sources;
-    startTimeRef.current = startAt;
-    if (longest) longest.onended = () => stop();
-    setPlaying(true);
-
-    const tick = () => {
-      const t = ctx.currentTime - startTimeRef.current;
-      setPlayhead(Math.max(0, t));
-      if (t >= longestDur) {
-        stop();
-        return;
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-  }, [stems, buffers, effectiveGain, stop, stopAudition]);
-
-  const toggleAudition = useCallback(
-    async (id: number) => {
+  const play = useCallback(
+    async (from?: number) => {
+      if (!stems.length) return;
       const ctx = getAudioContext();
       await ctx.resume();
-      if (auditionId === id) {
-        stopAudition();
-        return;
+      teardown();
+
+      // Playing from the very end (or past it) restarts the track, the way a
+      // media player's play button does after it has run out.
+      const requested = from ?? playheadRef.current;
+      const offset = requested >= maxDuration - 0.05 ? 0 : Math.max(0, requested);
+
+      const startAt = ctx.currentTime + 0.05;
+      const sources: AudioBufferSourceNode[] = [];
+      let longest: AudioBufferSourceNode | null = null;
+      let longestDur = 0;
+
+      for (const stem of stems) {
+        const buffer = buffers[stem.id];
+        if (!buffer || offset >= buffer.duration) continue;
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        const gain = ctx.createGain();
+        gain.gain.value = effectiveGain(stem.id);
+        src.connect(gain).connect(ctx.destination);
+        src.start(startAt, offset);
+        sources.push(src);
+        gainsRef.current.set(stem.id, gain);
+        if (buffer.duration > longestDur) {
+          longestDur = buffer.duration;
+          longest = src;
+        }
       }
-      stop();
-      stopAudition();
-      const buffer = buffers[id];
-      if (!buffer) return;
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-      src.connect(ctx.destination);
-      src.onended = () => {
-        auditionRef.current = null;
-        setAuditionId(null);
+
+      if (!sources.length) return;
+      sourcesRef.current = sources;
+      originRef.current = startAt - offset;
+      if (longest) longest.onended = () => stop();
+      playingRef.current = true;
+      setPlaying(true);
+      movePlayhead(offset);
+
+      const tick = () => {
+        const t = ctx.currentTime - originRef.current;
+        movePlayhead(Math.min(longestDur, Math.max(0, t)));
+        if (t >= longestDur) {
+          stop();
+          return;
+        }
+        rafRef.current = requestAnimationFrame(tick);
       };
-      src.start();
-      auditionRef.current = src;
-      setAuditionId(id);
+      rafRef.current = requestAnimationFrame(tick);
     },
-    [auditionId, buffers, stop, stopAudition]
+    [stems, buffers, maxDuration, effectiveGain, teardown, stop, movePlayhead]
   );
 
-  useEffect(
-    () => () => {
-      stop();
-      stopAudition();
+  /** Jump to a position; resumes from there if a playback pass is running. */
+  const seek = useCallback(
+    (seconds: number) => {
+      const clamped = Math.min(Math.max(0, seconds), maxDuration);
+      if (playingRef.current) {
+        void play(clamped);
+      } else {
+        movePlayhead(clamped);
+      }
     },
-    [stop, stopAudition]
+    [maxDuration, play, movePlayhead]
   );
 
-  return { playing, playhead, maxDuration, auditionId, start, stop, toggleAudition };
+  const toggle = useCallback(() => {
+    if (playingRef.current) pause();
+    else void play();
+  }, [pause, play]);
+
+  useEffect(() => () => teardown(), [teardown]);
+
+  return { playing, playhead, maxDuration, play, pause, stop, seek, toggle };
 }

@@ -1,5 +1,8 @@
 /** Per-stem accent color, matching the Console design system's stem.* tokens. */
 export const STEM_COLOR: Record<string, string> = {
+  // The full-mix pseudo-stem: a neutral light tone, so the parts keep the
+  // saturated colors and the whole song reads as the sum of them.
+  'full mix': '#c9d2e0',
   vocals: '#c56edc',
   drums: '#4da3ff',
   bass: '#3fbf88',

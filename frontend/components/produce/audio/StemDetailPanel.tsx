@@ -7,7 +7,12 @@ import { stemColor } from './stemColors';
 
 interface StemDetailPanelProps {
   stemId: number;
+  /** What to call this stem — the producer's label when they've set one. */
   stemName: string;
+  /** The Demucs source name, which is what the color scheme is keyed on. */
+  sourceName: string;
+  /** Audio URL for the "A · as recorded" side (a stem file, or the full mix). */
+  audioSrc: string;
   buffer: AudioBuffer | null;
   duration: number;
   region: Region | null;
@@ -25,6 +30,8 @@ interface StemDetailPanelProps {
 export default function StemDetailPanel({
   stemId,
   stemName,
+  sourceName,
+  audioSrc,
   buffer,
   duration,
   region,
@@ -36,7 +43,7 @@ export default function StemDetailPanel({
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const color = stemColor(stemName);
+  const color = stemColor(sourceName);
 
   // Selecting a different stem, or changing which fixes are enabled,
   // invalidates any previously rendered "with fixes" preview.
@@ -129,7 +136,7 @@ export default function StemDetailPanel({
         src={
           mode === 'B' && previewPath
             ? `/api/produce/clean/preview?path=${encodeURIComponent(previewPath)}`
-            : `/api/produce/stems/${stemId}/audio`
+            : audioSrc
         }
         className="w-full h-9 mt-3"
       />

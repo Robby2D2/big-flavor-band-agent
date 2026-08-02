@@ -23,7 +23,7 @@ logger = logging.getLogger("backend-api")
 DEFAULT_MODEL = "htdemucs_6s"
 
 
-def _select_device() -> str:
+def select_device() -> str:
     """Pick a compute device: CUDA GPU if present, else CPU (the correctness path)."""
     try:
         import torch
@@ -54,7 +54,7 @@ def separate_stems(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    device = _select_device()
+    device = select_device()
     logger.info("Stem separation: model=%s device=%s src=%s", model_name, device, source_path)
 
     model = get_model(model_name)

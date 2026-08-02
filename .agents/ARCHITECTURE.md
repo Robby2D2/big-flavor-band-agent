@@ -63,8 +63,9 @@ frontend/
   app/                         # Next.js app-router pages + /api route handlers (BFF)
   components/                  # React components (AudioPlayer, SongList, SearchBar, …)
     produce/audio/              # Audio-processing review-queue UI (VersionBar, StemConsole,
-                                 #   StemDetailPanel, FixQueue/FixCard, AdvancedDrawer, ResultSidebar,
-                                 #   LyricsCard, useStemPlayback, fixCopy.ts, stemColors.ts)
+                                 #   StemRow, StemDetailPanel, FixQueue/FixCard, AdvancedDrawer,
+                                 #   ResultSidebar, LyricsCard, Spinner, useStemPlayback,
+                                 #   fixCopy.ts, stemColors.ts)
   hooks/useProcessingQueue.ts  # Data-flow hub for the audio-processing review queue (analyze fan-out,
                                 #   FixEntry state, accept/preview)
 streaming/
@@ -185,6 +186,27 @@ song-ownership mismatch). A stem-scoped `apply` is always a preview render (no v
 measured magnitude into `"high"`/`"worth_a_listen"`/`None`, surfaced as `analyze()`'s `confidence` key
 on the 7 tools with real measurements — the review-queue UI's per-card confidence tag.
 
+**Full mix as a console row (2026-08):** the stem console's first row is a *pseudo-stem*
+(`FULL_MIX_STEM_ID = -1` in `useProcessingQueue.ts`) whose fixes are the master-scoped ones, so the
+whole song is played, analyzed and fixed through the same row UI as its parts. It exists only in the
+frontend — the accept/apply payloads still carry real stem ids plus a `master_fixes` list, so no
+backend code knows about it. It plays through the same mixer but starts **muted**: the stems already
+sum to the mix, so an un-muted mix channel would double every part.
+
+**Stem instrument tagging (2026-08):** Demucs' source list is fixed by the model weights
+(`htdemucs_6s` = vocals/drums/bass/guitar/piano/other), so a banjo, mandolin or fiddle lands inside
+`other` — present in the audio, but unnamed. Rather than separating instruments the model was never
+trained on, `src/production/instrument_tagging.py` *labels* each stem with an AudioSet tagger
+(`MIT/ast-finetuned-audioset-10-10-0.4593`, multi-label so one stem reports "banjo *and* fiddle"),
+mapping AudioSet's comma-separated display names onto a curated producer-facing vocabulary. Scores
+are taken as the **max** across evenly-spaced non-silent windows, not the mean — an instrument that
+only plays one section must still be reported. An all-silent stem returns `silent: true`, which is a
+real answer (a band with no piano still gets a piano stem). Tagging runs in `stem_jobs.py` *after*
+the set is marked complete, best-effort: a tagging failure never fails a separation that produced
+usable stems. `song_stems.display_name` lets a producer override the label by hand
+(`PATCH /api/produce/stems/{id}`); `POST /api/produce/stems/{id}/identify` is the per-stem retry.
+`name` always stays the Demucs source name, because that is what the fix tools resolve against.
+
 ---
 
 ## Frontend Theming
@@ -272,3 +294,5 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-08 | Dark-only "Console" design system, no light/dark toggle | The source design (a Claude Design mockup) had zero light-mode artifacts and stated "dark because you stare at waveforms"; building a toggle would have been speculative scope nobody asked for. `darkMode:'class'` + a permanent `dark` class on `<html>` also made every pre-existing `dark:` Tailwind class elsewhere in the app activate unconditionally for free, so unmigrated pages don't look broken in the meantime. |
 | 2026-08 | Retired `MultitrackEditor.tsx`/`StemMixer.tsx` for a new `produce/audio/` component tree, not an in-place rewrite | The review-queue interaction model (analyze once → one card per fix → accept all) is different enough from the old per-tool-checkbox model that patching in place would have compounded an already-1319-line file. Only the genuinely reusable pieces (the Web Audio group-playback engine, the waveform canvas + region drag-select) were extracted into shared hooks/props instead of duplicated. |
 | 2026-08 | Stem-scoped `apply` never writes a version; only `/api/produce/accept-fixes` does | Keeps "create a version" a single seam. Per-stem/per-fix "Hear it" and "Preview with fixes" auditioning needed to be cheap and side-effect-free, so every per-tool or per-stem render is a preview; only the explicit accept-fixes orchestrator (which composes every stem + master fix into one file) is allowed to call `save_candidate_version`. |
+| 2026-08 | Tag instruments on stems instead of trying to separate more of them | Demucs' source list is baked into the model weights, so "add banjo/mandolin" is not a config change — it needs either query-based separation (materially worse quality than Demucs on its native sources) or a fine-tune on isolated multitracks the band doesn't have. But nothing is actually *lost*: the 6 stems sum back to the mix, so a banjo is present, just inside `other`. The gap is naming, not coverage — so an AudioSet tagger names what's in each stem and the producer can override the label by hand. Query-based separation stays on the table if per-instrument isolation later proves worth it. |
+| 2026-08 | Instrument tagging runs after the stem set is marked `complete`, not before | Separation already takes minutes; making the producer wait on a second model pass before any waveform appears would compound the exact slowness the console was being fixed for. Tags are a labelling pass over stems that already exist, so the console renders immediately and the labels fill in behind via a bounded poll. It also means a tagging failure can't fail a separation that produced perfectly usable stems. |

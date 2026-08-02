@@ -20,6 +20,12 @@ interface WaveformViewProps {
   beats?: number[];
   /** Current playback position (seconds), drawn as a moving line. */
   playhead?: number | null;
+  /**
+   * Click/drag anywhere on the waveform to move the playhead there — the
+   * transport scrub. Mutually exclusive with `selectable` (a drag can't both
+   * scrub and draw a region).
+   */
+  onSeek?: (seconds: number) => void;
   waveColor?: string;
   /**
    * Arbitrary colored spans drawn under the waveform, e.g. one per pending
@@ -46,6 +52,7 @@ export default function WaveformView({
   trimRegion = null,
   beats,
   playhead = null,
+  onSeek,
   waveColor = DEFAULT_WAVE,
   overlays,
 }: WaveformViewProps) {
@@ -53,6 +60,8 @@ export default function WaveformView({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(600);
   const dragAnchor = useRef<number | null>(null);
+  const scrubbing = useRef(false);
+  const seekable = !selectable && !!onSeek;
 
   // Track the container width so peaks and hit-testing use the rendered size.
   useEffect(() => {
@@ -160,7 +169,14 @@ export default function WaveformView({
   );
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!selectable || !onRegionChange || duration <= 0) return;
+    if (duration <= 0) return;
+    if (seekable) {
+      (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
+      scrubbing.current = true;
+      onSeek!(xToTime(e.clientX));
+      return;
+    }
+    if (!selectable || !onRegionChange) return;
     (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const t = xToTime(e.clientX);
     dragAnchor.current = t;
@@ -168,6 +184,10 @@ export default function WaveformView({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (seekable) {
+      if (scrubbing.current) onSeek!(xToTime(e.clientX));
+      return;
+    }
     if (!selectable || !onRegionChange || dragAnchor.current == null) return;
     const t = xToTime(e.clientX);
     const anchor = dragAnchor.current;
@@ -175,6 +195,10 @@ export default function WaveformView({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (seekable) {
+      scrubbing.current = false;
+      return;
+    }
     if (!selectable || !onRegionChange || dragAnchor.current == null) return;
     const t = xToTime(e.clientX);
     const anchor = dragAnchor.current;
@@ -193,7 +217,7 @@ export default function WaveformView({
         ref={canvasRef}
         style={{ width: '100%', height }}
         className={`rounded bg-gray-100 dark:bg-gray-900 ${
-          selectable ? 'cursor-crosshair' : ''
+          selectable ? 'cursor-crosshair' : seekable ? 'cursor-pointer' : ''
         }`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
