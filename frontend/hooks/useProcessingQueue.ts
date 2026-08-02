@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fixCopyFor } from '@/components/produce/audio/fixCopy';
 
 export type Confidence = 'high' | 'worth_a_listen' | null;
@@ -86,6 +86,30 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const [error, setError] = useState<string | null>(null);
   const [fixes, setFixes] = useState<FixEntry[]>([]);
   const [toolParamsByTool, setToolParamsByTool] = useState<Record<string, any[]>>({});
+
+  // Optimistic preload: a stem set from an earlier session may already sit
+  // complete on disk. Show it (waveforms, playback) the moment the tab
+  // mounts instead of making the user press "Start analysis" just to see
+  // what's already there — fixes still require a real analysis pass, so
+  // `analyzed` stays false until that runs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sets = await fetchStemSets(songId);
+        const complete = latestComplete(sets);
+        if (!complete || cancelled) return;
+        setStems((prev) => (prev.length > 0 ? prev : complete.stems));
+        setSelectedStemId((prev) => (prev != null ? prev : complete.stems[0]?.id ?? null));
+      } catch {
+        // Silent — this is just an optimistic preload; Start analysis will
+        // surface any real fetch failure.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [songId]);
 
   // `forceNew=false` (normal "Start analysis"): reuse an existing complete
   // stem set if one exists, else kick off separation and wait for it.

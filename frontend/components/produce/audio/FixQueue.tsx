@@ -7,6 +7,7 @@ interface FixQueueProps {
   stemName: string | null;
   stemFixes: FixEntry[];
   masterFixes: FixEntry[];
+  analyzing?: boolean;
   onToggle: (id: string) => void;
   onAdjust: (fix: FixEntry) => void;
   onHear: (fix: FixEntry) => Promise<string>;
@@ -17,9 +18,17 @@ interface FixQueueProps {
  * underneath — trim, tone balance, and loudness are reviewed once per song,
  * not once per stem.
  */
-export default function FixQueue({ stemName, stemFixes, masterFixes, onToggle, onAdjust, onHear }: FixQueueProps) {
+export default function FixQueue({
+  stemName,
+  stemFixes,
+  masterFixes,
+  analyzing = false,
+  onToggle,
+  onAdjust,
+  onHear,
+}: FixQueueProps) {
   return (
-    <div className="flex flex-col gap-4">
+    <div className={`flex flex-col gap-4 transition-opacity ${analyzing ? 'opacity-40 pointer-events-none select-none' : ''}`}>
       <div>
         <div className="flex items-center gap-2">
           <h3 className="font-semibold text-text">
@@ -43,7 +52,9 @@ export default function FixQueue({ stemName, stemFixes, masterFixes, onToggle, o
 
       <div className="flex flex-col gap-2.5">
         {stemFixes.length === 0 ? (
-          <p className="text-sm text-text/40">Nothing detected for this stem.</p>
+          <p className="text-sm text-text/40">
+            {analyzing ? 'Analyzing…' : 'Nothing detected for this stem.'}
+          </p>
         ) : (
           stemFixes.map((fix, i) => (
             <FixCard

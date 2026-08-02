@@ -103,6 +103,10 @@ export default function AudioProcessingTab({
   const selectedStem = queue.stems.find((s) => s.id === queue.selectedStemId) ?? null;
   const selectedStemFixes = queue.selectedStemId != null ? queue.fixesForStem(queue.selectedStemId) : [];
   const enabledSelectedStemFixCount = selectedStemFixes.filter((f) => f.enabled).length;
+  // A stem set can be showing (preloaded from an earlier session) before any
+  // analysis pass has ever run for it — the fix queue/results only make sense
+  // once a pass has completed or is currently in flight.
+  const hasEverAnalyzed = queue.analyzed || queue.analyzing;
 
   if (versions.length === 0) {
     return <p className="text-sm text-text/50">No versions yet for this song.</p>;
@@ -131,59 +135,87 @@ export default function AudioProcessingTab({
         </div>
       )}
 
-      {queue.stems.length === 0 && !queue.analyzing && (
-        <p className="text-sm text-text/45 py-6 text-center">
-          Press <span className="text-text/70 font-medium">Start analysis</span> above — it
-          separates the song into stems, then measures each one on its own.
-        </p>
-      )}
+      {/* Lyrics and (once a stem set exists) the stem console both render
+          independently of whether analysis has ever been run — a stem set
+          or a lyric sheet saved in an earlier session shows immediately on
+          mount instead of waiting behind "Start analysis". */}
+      <div className="grid gap-4 lg:grid-cols-[1fr_360px] items-start">
+        <div className="flex flex-col gap-4 min-w-0">
+          {queue.stems.length === 0 && !queue.analyzing && (
+            <p className="text-sm text-text/45 py-6 text-center">
+              Press <span className="text-text/70 font-medium">Start analysis</span> above — it
+              separates the song into stems, then measures each one on its own.
+            </p>
+          )}
 
-      {/* Stays mounted (showing the previous run's stems) through a
-          re-separate/re-analyze, instead of the whole console vanishing
-          back to the empty-state prompt above. */}
-      {queue.stems.length > 0 && (
-        <div className="grid gap-4 lg:grid-cols-[1fr_360px] items-start">
-          <div className="flex flex-col gap-4 min-w-0">
-            <StemConsole
-              stems={queue.stems}
-              buffers={buffers}
-              controls={controls}
-              setControl={setControl}
-              selectedStemId={queue.selectedStemId}
-              onSelectStem={queue.setSelectedStemId}
-              fixesForStem={queue.fixesForStem}
-              playing={playback.playing}
-              playhead={playback.playhead}
-              maxDuration={playback.maxDuration}
-              onTogglePlay={playback.playing ? playback.stop : playback.start}
-              separating={queue.analyzing}
-              onReseparate={queue.reseparateAndAnalyze}
-            />
+          {queue.stems.length === 0 && queue.analyzing && (
+            <div className="flex flex-col items-center gap-3 py-10 text-center">
+              <div className="w-6 h-6 rounded-full border-2 border-signal/30 border-t-signal animate-spin" />
+              <p className="text-sm text-text/60">
+                {queue.analysisNote ?? 'Analyzing…'}
+              </p>
+            </div>
+          )}
 
-            {selectedStem && (
-              <StemDetailPanel
-                stemId={selectedStem.id}
-                stemName={selectedStem.name}
-                buffer={buffers[selectedStem.id] ?? null}
-                duration={playback.maxDuration}
-                region={region}
-                onRegionChange={setRegion}
-                enabledFixCount={enabledSelectedStemFixCount}
-                onPreviewChain={() => queue.previewStemChain(selectedStem.id)}
+          {/* Stays mounted (showing the previous run's stems) through a
+              re-separate/re-analyze, instead of the whole console vanishing
+              back to the empty-state prompt above. */}
+          {queue.stems.length > 0 && (
+            <>
+              <StemConsole
+                stems={queue.stems}
+                buffers={buffers}
+                controls={controls}
+                setControl={setControl}
+                selectedStemId={queue.selectedStemId}
+                onSelectStem={queue.setSelectedStemId}
+                fixesForStem={queue.fixesForStem}
+                playing={playback.playing}
+                playhead={playback.playhead}
+                maxDuration={playback.maxDuration}
+                onTogglePlay={playback.playing ? playback.stop : playback.start}
+                separating={queue.analyzing}
+                analyzed={queue.analyzed}
+                analysisNote={queue.analysisNote}
+                onReseparate={queue.reseparateAndAnalyze}
               />
-            )}
 
-            <FixQueue
-              stemName={selectedStem?.name ?? null}
-              stemFixes={selectedStemFixes}
-              masterFixes={queue.masterFixes}
-              onToggle={queue.toggleFix}
-              onAdjust={setDrawerFix}
-              onHear={queue.previewSingleFix}
-            />
-          </div>
+              {selectedStem && (
+                <StemDetailPanel
+                  stemId={selectedStem.id}
+                  stemName={selectedStem.name}
+                  buffer={buffers[selectedStem.id] ?? null}
+                  duration={playback.maxDuration}
+                  region={region}
+                  onRegionChange={setRegion}
+                  enabledFixCount={enabledSelectedStemFixCount}
+                  onPreviewChain={() => queue.previewStemChain(selectedStem.id)}
+                />
+              )}
 
-          <div className="flex flex-col gap-4">
+              {hasEverAnalyzed ? (
+                <FixQueue
+                  stemName={selectedStem?.name ?? null}
+                  stemFixes={selectedStemFixes}
+                  masterFixes={queue.masterFixes}
+                  analyzing={queue.analyzing}
+                  onToggle={queue.toggleFix}
+                  onAdjust={setDrawerFix}
+                  onHear={queue.previewSingleFix}
+                />
+              ) : (
+                <p className="text-sm text-text/45 py-4 text-center">
+                  Loaded from a previous run — press{' '}
+                  <span className="text-text/70 font-medium">Start analysis</span> above to detect
+                  fixes for these stems.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-4">
+          {hasEverAnalyzed && (
             <ResultSidebar
               enabledCount={queue.enabledCount}
               totalCount={queue.fixes.length}
@@ -194,10 +226,10 @@ export default function AudioProcessingTab({
               }}
               onAccepted={onApplied}
             />
-            <LyricsCard songId={songId} />
-          </div>
+          )}
+          <LyricsCard songId={songId} />
         </div>
-      )}
+      </div>
 
       {drawerFix && (
         <AdvancedDrawer

@@ -24,6 +24,8 @@ interface StemConsoleProps {
   maxDuration: number;
   onTogglePlay: () => void;
   separating: boolean;
+  analyzed: boolean;
+  analysisNote: string | null;
   onReseparate: () => void;
 }
 
@@ -45,20 +47,37 @@ export default function StemConsole({
   maxDuration,
   onTogglePlay,
   separating,
+  analyzed,
+  analysisNote,
   onReseparate,
 }: StemConsoleProps) {
   return (
-    <div className="bg-raised border border-white/8 rounded-xl p-4">
+    <div className="bg-raised border border-white/8 rounded-xl p-4 relative">
       <div className="flex items-start justify-between gap-3 mb-3">
         <div>
           <div className="flex items-center gap-2">
             <h3 className="font-semibold text-text">Stem console</h3>
-            <span className="font-mono text-[9.5px] tracking-wide text-confirm bg-confirm/15 px-1.5 py-0.5 rounded">
-              SEPARATED · ANALYZED
-            </span>
+            {separating ? (
+              <span className="flex items-center gap-1.5 font-mono text-[9.5px] tracking-wide text-attention bg-attention/15 px-1.5 py-0.5 rounded">
+                <span className="w-1.5 h-1.5 rounded-full bg-attention animate-pulse" />
+                ANALYZING…
+              </span>
+            ) : analyzed ? (
+              <span className="font-mono text-[9.5px] tracking-wide text-confirm bg-confirm/15 px-1.5 py-0.5 rounded">
+                SEPARATED · ANALYZED
+              </span>
+            ) : (
+              <span className="font-mono text-[9.5px] tracking-wide text-text/50 bg-white/8 px-1.5 py-0.5 rounded">
+                SEPARATED
+              </span>
+            )}
           </div>
           <p className="text-xs text-text/45 mt-1">
-            Each stem is analyzed on its own — a hiss fix that saves the vocal can wreck the cymbals.
+            {separating
+              ? analysisNote ?? 'Analyzing — the stems and fixes below are from the previous run.'
+              : analyzed
+                ? 'Each stem is analyzed on its own — a hiss fix that saves the vocal can wreck the cymbals.'
+                : 'Loaded from a previous run — press Start analysis above to detect fixes.'}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-none">
@@ -81,7 +100,11 @@ export default function StemConsole({
         </div>
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div
+        className={`flex flex-col gap-2 transition-opacity ${
+          separating ? 'opacity-40 pointer-events-none select-none' : ''
+        }`}
+      >
         {stems.map((stem) => {
           const c = controls[stem.id];
           const selected = stem.id === selectedStemId;
@@ -101,7 +124,11 @@ export default function StemConsole({
                   <span className="font-semibold text-sm text-text capitalize">{stem.name}</span>
                 </div>
                 <div className="font-mono text-[10px] text-text/35 mt-0.5">
-                  {fixes.length > 0 ? `${fixes.length} fix${fixes.length === 1 ? '' : 'es'}` : 'clean'}
+                  {fixes.length > 0
+                    ? `${fixes.length} fix${fixes.length === 1 ? '' : 'es'}`
+                    : analyzed
+                      ? 'clean'
+                      : 'not analyzed yet'}
                 </div>
               </div>
 
@@ -117,7 +144,9 @@ export default function StemConsole({
 
               <div className="flex-1 flex flex-wrap gap-1.5 min-w-0">
                 {fixes.length === 0 ? (
-                  <span className="font-mono text-[10px] text-text/30">no fixes detected</span>
+                  <span className="font-mono text-[10px] text-text/30">
+                    {analyzed ? 'no fixes detected' : 'not analyzed yet'}
+                  </span>
                 ) : (
                   fixes.map((f) => (
                     <span
