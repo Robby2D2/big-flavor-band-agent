@@ -53,11 +53,13 @@ _RESULT = {
 def _stub_extract(monkeypatch, calls, result=None):
     """Replace the Whisper/Demucs call with a recorder."""
     def fake(audio_path, min_confidence=0.5, vocals_path=None, separate_vocals=True,
-             word_timestamps=True):
+             word_timestamps=True, extractor=None):
         calls.append({
             "audio_path": audio_path,
             "vocals_path": vocals_path,
             "separate_vocals": separate_vocals,
+            "word_timestamps": word_timestamps,
+            "extractor": extractor,
         })
         return result or _RESULT
 
@@ -153,6 +155,46 @@ async def test_no_lyrics_detected_fails_without_writing_timings(monkeypatch):
     status = manager.status(5)
     assert status["status"] == lyrics_jobs.STATUS_FAILED
     assert status["error"] == "No lyrics detected"
+    assert db.saved_timings == []
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_reuses_a_supplied_extractor(monkeypatch):
+    """The backfill script loads Whisper once and hands it to every song."""
+    calls = []
+    _stub_extract(monkeypatch, calls)
+    sentinel = object()
+
+    summary = await lyrics_jobs.extract_and_store(
+        5, "/audio/5.mp3", FakeRag(), FakeDB(), extractor=sentinel
+    )
+
+    assert calls[0]["extractor"] is sentinel
+    assert summary["line_count"] == 1
+    assert summary["audio_source"] == lyrics_jobs.AUDIO_SOURCE_VOCALS
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_always_asks_for_word_timestamps(monkeypatch):
+    """Words are captured now so the catalog backfill never has to re-run."""
+    calls = []
+    _stub_extract(monkeypatch, calls)
+
+    await lyrics_jobs.extract_and_store(5, "/audio/5.mp3", FakeRag(), FakeDB())
+
+    assert calls[0]["word_timestamps"] is True
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_raises_on_empty_transcript(monkeypatch):
+    """An empty transcript is a failure to report, not a result to store."""
+    calls = []
+    _stub_extract(monkeypatch, calls, result={**_RESULT, "lyrics": ""})
+    db = FakeDB()
+
+    with pytest.raises(RuntimeError, match="No lyrics detected"):
+        await lyrics_jobs.extract_and_store(5, "/audio/5.mp3", FakeRag(), db)
+
     assert db.saved_timings == []
 
 

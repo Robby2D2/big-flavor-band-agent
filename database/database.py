@@ -440,6 +440,29 @@ class DatabaseManager:
             row = await conn.fetchrow(query, song_id)
         return row["path"] if row else None
 
+    async def list_lyric_timing_coverage(self) -> List[Dict[str, Any]]:
+        """Per-song timed-lyric coverage, for the backfill script and status reports.
+
+        One row per song: its id/title plus whether it has a timing record and
+        what state that record is in. Songs are returned in id order so a
+        resumed backfill walks the catalog the same way every run.
+        """
+        query = """
+            SELECT
+                s.id,
+                s.title,
+                (t.song_id IS NOT NULL) AS has_timings,
+                t.status AS timing_status,
+                t.audio_source,
+                t.format_version
+            FROM songs s
+            LEFT JOIN song_lyric_timings t ON t.song_id = s.id
+            ORDER BY s.id
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return [dict(row) for row in rows]
+
     # Song version operations (issue #30 — cleanup audition/publish loop)
     async def ensure_song_versions_table(self) -> None:
         """Create the song_versions table if missing. Idempotent.

@@ -125,6 +125,7 @@ def _blocking_extract(
     vocals_path: Optional[str] = None,
     separate_vocals: bool = True,
     word_timestamps: bool = True,
+    extractor=None,
 ) -> Dict[str, Any]:
     """Transcribe lyrics from an audio file (blocking; run in a threadpool).
 
@@ -132,6 +133,12 @@ def _blocking_extract(
     directly when given, otherwise Demucs separates the mix in-process unless
     ``separate_vocals`` is off. Returns the lyric text, the per-segment timings,
     and which audio the transcription actually ran against.
+
+    ``extractor`` lets a caller supply an already-constructed ``LyricsExtractor``
+    instead of building one per call. A single request doesn't care, but loading
+    Whisper large-v3 takes tens of seconds, so a catalog-wide backfill that built
+    one per song would spend hours doing nothing but loading models — the batch
+    script passes one in and reuses it across every track.
     """
     from src.rag.lyrics_extractor import LyricsExtractor
 
@@ -139,12 +146,13 @@ def _blocking_extract(
     reuse_stem = vocals_path is not None
     needs_demucs = separate_vocals and not reuse_stem
 
-    extractor = LyricsExtractor(
-        whisper_model_size=WHISPER_MODEL,
-        use_gpu=True,
-        min_confidence=min_confidence,
-        load_demucs=needs_demucs,
-    )
+    if extractor is None:
+        extractor = LyricsExtractor(
+            whisper_model_size=WHISPER_MODEL,
+            use_gpu=True,
+            min_confidence=min_confidence,
+            load_demucs=needs_demucs,
+        )
     if not extractor.is_available():
         raise RuntimeError("Lyrics extractor dependencies not installed")
 
@@ -165,6 +173,84 @@ def _blocking_extract(
         "lines": result.get("segments") or [],
         "audio_source": AUDIO_SOURCE_VOCALS if isolated else AUDIO_SOURCE_MIX,
         "model": WHISPER_MODEL,
+    }
+
+
+async def resolve_vocals_path(song_id: int, db) -> Optional[str]:
+    """Path of a reusable, still-present vocals stem for the song, if any.
+
+    A recorded stem whose file has since been cleaned up is treated as absent,
+    so the caller separates again rather than failing on a missing path.
+    """
+    if db is None:
+        return None
+    try:
+        path = await db.get_vocals_stem_path(song_id)
+    except Exception:  # a stem lookup must never fail the extraction
+        logger.warning("Vocals-stem lookup failed for song %s", song_id, exc_info=True)
+        return None
+    if path and os.path.exists(path):
+        logger.info("Reusing separated vocals stem for song %s: %s", song_id, path)
+        return path
+    if path:
+        logger.info(
+            "Vocals stem recorded for song %s but missing on disk (%s); re-separating",
+            song_id, path,
+        )
+    return None
+
+
+async def extract_and_store(
+    song_id: int,
+    audio_path: str,
+    rag,
+    db=None,
+    separate_vocals: bool = True,
+    extractor=None,
+) -> Dict[str, Any]:
+    """Transcribe one song and persist its lyrics + timings. Returns a summary.
+
+    The single seam both the background job (``LyricsJobManager``) and the
+    catalog backfill script go through, so the two can't drift on which audio is
+    transcribed or how the result is stored.
+
+    Raises ``RuntimeError`` when nothing was transcribed — an empty transcript is
+    a failure to report, not a result to store. ``db`` is optional; without it
+    the lyric text is still indexed but timings have nowhere to go.
+    """
+    vocals_path = await resolve_vocals_path(song_id, db)
+    result = await run_in_threadpool(
+        _blocking_extract,
+        audio_path,
+        0.5,
+        vocals_path,
+        separate_vocals,
+        True,
+        extractor,
+    )
+
+    lyrics = result["lyrics"]
+    if not lyrics:
+        raise RuntimeError("No lyrics detected")
+
+    await index_lyrics_text(rag, song_id, lyrics)
+
+    if db is not None and result["lines"]:
+        await db.save_lyric_timings(
+            song_id,
+            result["lines"],
+            source="whisper",
+            model=result["model"],
+            audio_source=result["audio_source"],
+            format_version=TIMINGS_FORMAT_VERSION,
+        )
+
+    return {
+        "song_id": song_id,
+        "lyrics": lyrics,
+        "line_count": len(result["lines"]),
+        "audio_source": result["audio_source"],
+        "model": result["model"],
     }
 
 
@@ -200,25 +286,6 @@ class LyricsJobManager:
         task.add_done_callback(lambda _t: self._tasks.pop(song_id, None))
         return True
 
-    async def _resolve_vocals_path(self, song_id: int, db) -> Optional[str]:
-        """Path of a reusable, still-present vocals stem for the song, if any."""
-        if db is None:
-            return None
-        try:
-            path = await db.get_vocals_stem_path(song_id)
-        except Exception:  # a stem lookup must never fail the extraction
-            logger.warning("Vocals-stem lookup failed for song %s", song_id, exc_info=True)
-            return None
-        if path and os.path.exists(path):
-            logger.info("Reusing separated vocals stem for song %s: %s", song_id, path)
-            return path
-        if path:
-            logger.info(
-                "Vocals stem recorded for song %s but missing on disk (%s); re-separating",
-                song_id, path,
-            )
-        return None
-
     async def _run(
         self,
         song_id: int,
@@ -229,35 +296,13 @@ class LyricsJobManager:
     ) -> None:
         """Run one extraction job, recording status. Never raises."""
         try:
-            vocals_path = await self._resolve_vocals_path(song_id, db)
-            result = await run_in_threadpool(
-                _blocking_extract,
-                audio_path,
-                0.5,
-                vocals_path,
-                separate_vocals,
+            summary = await extract_and_store(
+                song_id, audio_path, rag, db, separate_vocals
             )
-            lyrics = result["lyrics"]
-            if not lyrics:
-                self._status[song_id] = {"status": STATUS_FAILED, "error": "No lyrics detected"}
-                return
-
-            await index_lyrics_text(rag, song_id, lyrics)
-
-            if db is not None and result["lines"]:
-                await db.save_lyric_timings(
-                    song_id,
-                    result["lines"],
-                    source="whisper",
-                    model=result["model"],
-                    audio_source=result["audio_source"],
-                    format_version=TIMINGS_FORMAT_VERSION,
-                )
-
             self._status[song_id] = {"status": STATUS_COMPLETE, "error": None}
             logger.info(
                 "Lyric extraction complete for song %s (%d lines, source=%s)",
-                song_id, len(result["lines"]), result["audio_source"],
+                song_id, summary["line_count"], summary["audio_source"],
             )
         except Exception as exc:
             logger.exception("Lyric extraction failed for song %s", song_id)

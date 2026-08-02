@@ -136,6 +136,16 @@ good timings) and the player then falls back to static lyrics. Read paths: **lis
 `GET /api/songs/{id}/lyrics/timed` (search router) for playback, and the editor-gated
 `GET/PUT /api/produce/songs/{id}/lyrics` which also carries `timings`.
 
+`lyrics_jobs.extract_and_store()` is the single seam for "transcribe one song and persist it" — both the
+background job (`LyricsJobManager`) and the catalog backfill script go through it, so the UI's
+"Re-extract" button and a batch run can't diverge. `scripts/backfill_lyric_timings.py` drives it over the
+whole catalog and is **resumable by construction**: the DB is the checkpoint (a song with a
+`song_lyric_timings` row is done), with a JSON ledger only for failures so a permanently broken track
+isn't retried forever. It loads Whisper **once** and passes the extractor into every call — the
+per-request path correctly builds one per call, which across ~1,300 songs would be hours of pure model
+loading. It refuses to run when the text embedding model is missing, since storing lyrics re-embeds them
+and a zero-vector fallback across the catalog would silently destroy lyric search.
+
 Search modes: audio similarity, natural-language/text, lyric, tempo (BPM), and hybrid. `pgvector`
 provides the vector similarity; SQL search functions live in `database/sql/` and
 `database/update_search_functions.sql`.

@@ -97,6 +97,18 @@ the joined text. Line-level sync therefore cost no extra compute.
 - **Known gap:** `npm run lint` is broken repo-wide — Next 16 removed `next lint`, so the script now
   reads "lint" as a directory name and errors. Pre-existing and unrelated to this work, but it means the
   documented frontend lint gate isn't running; needs a migration to flat-config `eslint .`.
+- **Backfill (added same day):** `scripts/backfill_lyric_timings.py` re-extracts the catalog. Design
+  points worth keeping: (1) `lyrics_jobs.extract_and_store()` was factored out as the *one* seam both
+  `LyricsJobManager._run` and the script call, so the UI button and the batch can't drift; (2) the
+  script loads Whisper **once** and passes the extractor down via `_blocking_extract(extractor=…)` —
+  the per-request path builds one per call, which over ~1,300 songs is hours of pure model loading;
+  (3) resumability needs no state file — a `song_lyric_timings` row *is* the checkpoint, so a JSON
+  ledger is only needed for failures (so a broken track isn't retried every resume); (4) SIGINT stops
+  after the current song rather than mid-write. **The non-obvious hazard it guards:** storing lyrics
+  re-embeds them, and `_embed_text` silently falls back to a zero vector when sentence-transformers
+  is missing (as it is in the host venv) — a catalog-wide run there would flatten every lyric
+  embedding and destroy lyric search, so the script hard-refuses (exit 2) unless the model loaded.
+  Run it in-container: `docker exec -it bigflavor-backend python -m scripts.backfill_lyric_timings`.
 
 ---
 
