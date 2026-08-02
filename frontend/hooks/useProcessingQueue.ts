@@ -5,9 +5,28 @@ import { fixCopyFor } from '@/components/produce/audio/fixCopy';
 
 export type Confidence = 'high' | 'worth_a_listen' | null;
 
+export interface StemInstrument {
+  label: string;
+  score: number;
+}
+
 export interface StemInfo {
   id: number;
+  /** The Demucs source name — vocals/drums/bass/guitar/piano/other. */
   name: string;
+  /** The producer's own label for it, when they've relabelled the stem. */
+  displayName: string | null;
+  /** What the tagger heard in this stem, strongest first. */
+  instruments: StemInstrument[];
+  /** The stem came back effectively empty (an instrument the band doesn't play). */
+  silent: boolean;
+  /** Tagging has run — distinguishes "nothing recognised" from "never tagged". */
+  tagged: boolean;
+}
+
+/** The label to show for a stem: the producer's, else what Demucs called it. */
+export function stemLabel(stem: StemInfo): string {
+  return stem.displayName?.trim() || stem.name;
 }
 
 export interface FixEntry {
@@ -47,6 +66,13 @@ const ANALYZE_CONCURRENCY = 3;
 export const FULL_MIX_STEM_ID = -1;
 export const FULL_MIX_STEM_NAME = 'Full mix';
 
+// Instrument tagging runs after a separation job reports complete (so the
+// console can show waveforms straight away), which means a freshly separated
+// set arrives untagged and the labels land a little later. Poll for them for a
+// bounded while rather than making the producer reload the page.
+const TAG_POLL_MS = 6000;
+const TAG_POLL_ATTEMPTS = 20;
+
 interface StemSetRow {
   id: number;
   status: string;
@@ -54,11 +80,26 @@ interface StemSetRow {
   stems: StemInfo[];
 }
 
+/** Shape one API stem row (snake_case, tags possibly absent) into a StemInfo. */
+function toStemInfo(raw: any): StemInfo {
+  return {
+    id: raw.id,
+    name: raw.name,
+    displayName: raw.display_name ?? null,
+    instruments: raw.instruments ?? [],
+    silent: Boolean(raw.silent),
+    tagged: Boolean(raw.tagged),
+  };
+}
+
 async function fetchStemSets(songId: number): Promise<StemSetRow[]> {
   const res = await fetch(`/api/produce/songs/${songId}/stems`);
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || data.error || 'Failed to load stems');
-  return data.stem_sets || [];
+  return (data.stem_sets || []).map((set: any) => ({
+    ...set,
+    stems: (set.stems || []).map(toStemInfo),
+  }));
 }
 
 function latestComplete(sets: StemSetRow[]): StemSetRow | undefined {
@@ -69,6 +110,31 @@ function latestComplete(sets: StemSetRow[]): StemSetRow | undefined {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fold freshly-fetched tag/label data into the stems already on screen,
+ * returning the same array when nothing changed — a poll that finds no new
+ * labels shouldn't churn every consumer of `stems`.
+ */
+function mergeStemTags(current: StemInfo[], incoming: StemInfo[]): StemInfo[] {
+  const byId = new Map(incoming.map((s) => [s.id, s]));
+  let changed = false;
+  const merged = current.map((stem) => {
+    const next = byId.get(stem.id);
+    if (
+      !next ||
+      (next.tagged === stem.tagged &&
+        next.silent === stem.silent &&
+        next.displayName === stem.displayName &&
+        next.instruments.length === stem.instruments.length)
+    ) {
+      return stem;
+    }
+    changed = true;
+    return { ...stem, ...next };
+  });
+  return changed ? merged : current;
 }
 
 /** Run `jobs` a few at a time, keeping only the fixes that came back. */
@@ -120,6 +186,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // now — both keyed by stem id, with FULL_MIX_STEM_ID for the whole mix.
   const [analyzedStemIds, setAnalyzedStemIds] = useState<Set<number>>(new Set());
   const [analyzingStemIds, setAnalyzingStemIds] = useState<Set<number>>(new Set());
+  const [identifyingStemIds, setIdentifyingStemIds] = useState<Set<number>>(new Set());
 
   // Optimistic preload: a stem set from an earlier session may already sit
   // complete on disk. Show it (waveforms, playback) the moment the tab
@@ -143,6 +210,35 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       cancelled = true;
     };
   }, [songId]);
+
+  // Instrument labels land after separation reports complete, so refresh them
+  // in the background while any stem is still untagged. Bounded: tagging that
+  // failed leaves a stem untagged forever, and the per-stem Identify button is
+  // the retry path for that, not an endless poll.
+  const untaggedCount = stems.filter((s) => !s.tagged).length;
+  useEffect(() => {
+    if (untaggedCount === 0) return;
+    let cancelled = false;
+    let attempts = 0;
+    const timer = setInterval(async () => {
+      attempts += 1;
+      if (attempts > TAG_POLL_ATTEMPTS) {
+        clearInterval(timer);
+        return;
+      }
+      try {
+        const complete = latestComplete(await fetchStemSets(songId));
+        if (!complete || cancelled) return;
+        setStems((prev) => mergeStemTags(prev, complete.stems));
+      } catch {
+        // Transient — the next tick tries again, and the bound ends it.
+      }
+    }, TAG_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [songId, untaggedCount]);
 
   // `forceNew=false` (normal "Start analysis"): reuse an existing complete
   // stem set if one exists, else kick off separation and wait for it.
@@ -320,6 +416,51 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // Start analysis which reuses an already-complete stem set.
   const reseparateAndAnalyze = useCallback(() => runAnalysis(true), [runAnalysis]);
 
+  /**
+   * Relabel a stem — Demucs can only call a banjo "other", so the producer
+   * gets the last word on what a stem is. An empty name clears the override
+   * back to the Demucs source name.
+   */
+  const renameStem = useCallback(async (stemId: number, displayName: string) => {
+    const trimmed = displayName.trim();
+    // Optimistic: renaming is a label edit, and bouncing back on a failed
+    // request is less jarring than a field that lags every keystroke.
+    setStems((prev) =>
+      prev.map((s) => (s.id === stemId ? { ...s, displayName: trimmed || null } : s))
+    );
+    try {
+      const res = await fetch(`/api/produce/stems/${stemId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || 'Failed to rename stem');
+      setStems((prev) => prev.map((s) => (s.id === stemId ? toStemInfo(data.stem) : s)));
+    } catch (err) {
+      setError((err as Error).message);
+      const complete = latestComplete(await fetchStemSets(songId).catch(() => []));
+      if (complete) setStems((prev) => mergeStemTags(prev, complete.stems));
+    }
+  }, [songId]);
+
+  /** Re-run instrument detection on one stem (the retry path for a failed tag). */
+  const identifyStem = useCallback(async (stemId: number) => {
+    setIdentifyingStemIds((prev) => new Set(prev).add(stemId));
+    try {
+      const data = await postJson(`/api/produce/stems/${stemId}/identify`, {});
+      setStems((prev) => prev.map((s) => (s.id === stemId ? toStemInfo(data.stem) : s)));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIdentifyingStemIds((prev) => {
+        const next = new Set(prev);
+        next.delete(stemId);
+        return next;
+      });
+    }
+  }, []);
+
   const toggleFix = useCallback((id: string) => {
     setFixes((prev) => prev.map((f) => (f.id === id ? { ...f, enabled: !f.enabled } : f)));
   }, []);
@@ -350,7 +491,19 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
 
   /** The console's rows: the whole song first, then each separated stem. */
   const consoleStems = useMemo<StemInfo[]>(
-    () => [{ id: FULL_MIX_STEM_ID, name: FULL_MIX_STEM_NAME }, ...stems],
+    () => [
+      {
+        id: FULL_MIX_STEM_ID,
+        name: FULL_MIX_STEM_NAME,
+        displayName: null,
+        // The whole song is every instrument by definition — tagging it would
+        // just list the union of the stems, so it's never tagged or relabelled.
+        instruments: [],
+        silent: false,
+        tagged: true,
+      },
+      ...stems,
+    ],
     [stems]
   );
   const enabledCount = useMemo(() => fixes.filter((f) => f.enabled).length, [fixes]);
@@ -448,6 +601,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     analyzed,
     analyzedStemIds,
     analyzingStemIds,
+    identifyingStemIds,
     analysisNote,
     error,
     fixes,
@@ -457,6 +611,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     startAnalysis,
     reseparateAndAnalyze,
     analyzeStem,
+    renameStem,
+    identifyStem,
     toggleFix,
     updateFixParams,
     resetFixParams,

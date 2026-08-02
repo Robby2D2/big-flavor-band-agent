@@ -1,7 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useProcessingQueue, FixEntry, FULL_MIX_STEM_ID } from '@/hooks/useProcessingQueue';
+import {
+  useProcessingQueue,
+  FixEntry,
+  FULL_MIX_STEM_ID,
+  stemLabel,
+} from '@/hooks/useProcessingQueue';
 import { decodeAudio, Region } from '../audioEngine';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
@@ -219,6 +224,9 @@ export default function AudioProcessingTab({
                 analyzedStemIds={queue.analyzedStemIds}
                 analyzingStemIds={queue.analyzingStemIds}
                 onAnalyzeStem={queue.analyzeStem}
+                identifyingStemIds={queue.identifyingStemIds}
+                onIdentifyStem={queue.identifyStem}
+                onRenameStem={queue.renameStem}
                 playing={playback.playing}
                 playhead={playback.playhead}
                 maxDuration={playback.maxDuration}
@@ -233,7 +241,8 @@ export default function AudioProcessingTab({
               {selectedStem && (
                 <StemDetailPanel
                   stemId={selectedStem.id}
-                  stemName={selectedStem.name}
+                  stemName={stemLabel(selectedStem)}
+                  sourceName={selectedStem.name}
                   audioSrc={
                     fullMixSelected
                       ? `/api/produce/versions/${sourceVersionId}/audio`
@@ -250,7 +259,7 @@ export default function AudioProcessingTab({
 
               {hasEverAnalyzed ? (
                 <FixQueue
-                  stemName={selectedStem?.name ?? null}
+                  stemName={selectedStem ? stemLabel(selectedStem) : null}
                   scopeLabel={fullMixSelected ? 'FULL MIX' : 'THIS STEM'}
                   stemFixes={selectedStemFixes}
                   // The full-mix row already *is* the master bucket — don't

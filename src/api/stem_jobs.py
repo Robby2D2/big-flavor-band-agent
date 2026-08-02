@@ -14,11 +14,11 @@ blocks the event loop.
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 from fastapi.concurrency import run_in_threadpool
 
-from src.production import stem_separation
+from src.production import instrument_tagging, stem_separation
 from database import DatabaseManager
 
 logger = logging.getLogger("backend-api")
@@ -64,10 +64,16 @@ class StemJobManager:
             stems = await run_in_threadpool(
                 stem_separation.separate_stems, source_path, output_dir, model_name
             )
-            for stem in stems:
+            rows = [
                 await db.add_stem(stem_set_id, stem["name"], stem["path"])
+                for stem in stems
+            ]
             await db.set_stem_set_status(stem_set_id, STATUS_COMPLETE)
             logger.info("Stem set %s complete (%d stems)", stem_set_id, len(stems))
+            # Tagging is a labelling pass over stems that already exist, so it
+            # runs after the set is marked complete — the console shows the
+            # waveforms immediately and the instrument labels fill in behind.
+            await tag_stems(rows, db)
         except Exception as exc:  # separation failure must be visible via status
             logger.exception("Stem separation failed for stem set %s", stem_set_id)
             # Best-effort cleanup of any partial output so a failed run leaves no
@@ -77,6 +83,27 @@ class StemJobManager:
             except Exception:
                 logger.warning("Could not clean up partial stem output %s", output_dir)
             await db.set_stem_set_status(stem_set_id, STATUS_FAILED, str(exc))
+
+
+async def tag_stems(stems: List[Dict], db: DatabaseManager) -> None:
+    """Identify and record the instruments in each stem. Best-effort.
+
+    A tagging failure must never fail (or roll back) a separation that already
+    produced usable stems — the labels are an aid to naming what a stem holds,
+    not part of the audio. Failures are logged and leave ``instrument_tags``
+    NULL, which the API reports as "not identified" and a producer can retry
+    per stem.
+    """
+    for stem in stems:
+        try:
+            tags = await run_in_threadpool(
+                instrument_tagging.identify_instruments, stem["path"]
+            )
+            await db.set_stem_instrument_tags(stem["id"], tags)
+        except Exception:
+            logger.exception(
+                "Instrument tagging failed for stem %s (%s)", stem["id"], stem["name"]
+            )
 
 
 def _remove_dir(path: str) -> None:

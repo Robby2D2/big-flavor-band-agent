@@ -11,6 +11,46 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-08-02 — Stem console: full mix as a row, a real transport, and instrument tagging for stems Demucs can only call "other"
+Two related pieces of work on `/produce/[songId]` → Audio processing.
+
+**Console + transport.** The full mix is now the console's first row — a frontend-only pseudo-stem
+(`FULL_MIX_STEM_ID = -1`) whose fixes *are* the master-scoped fixes, so the whole song is played,
+analyzed and fixed through the same UI as its parts and no backend code knows it exists. It starts
+**muted** (the stems already sum to it). "Play stems" became a media-player transport: play/pause
+holds the playhead, `seek` restarts every source at a shared origin so stems stay sample-synced
+across a scrub, and the full-track waveform takes a click or drag. `WaveformView` gained `onSeek`
+(mutually exclusive with `selectable` — a drag can't both scrub and draw a region). Dropped
+`toggleAudition`/`auditionId` from `useStemPlayback`: dead code, never consumed.
+Also fixed two things the console said while working: stem audio was decoded serially and committed
+only once *every* file landed (so a saved stem set sat empty for a long time showing "not analyzed
+yet" twice) — now fanned out with per-row commits, a spinner per row, and a `decodedUrls` ref so
+re-analysis doesn't re-download; and rows can be analyzed one at a time, which made "clean" vs
+"not analyzed" honest per row instead of one global flag.
+
+**Instrument tagging (the banjo problem).** User asked whether other instruments (banjo, mandolin)
+could be auto-detected and split out. They can't be *split*: Demucs' source list is baked into the
+model weights, so `htdemucs_6s` emits exactly vocals/drums/bass/guitar/piano/other and adding names
+to `stemColors.ts` changes only a swatch colour. But nothing is lost — the stems sum back to the
+mix, so a banjo is present, just inside `other`. The gap is **naming, not coverage**, so we tag
+rather than separate: `src/production/instrument_tagging.py` runs an AudioSet tagger
+(`MIT/ast-finetuned-audioset-10-10-0.4593`) over each stem, maps AudioSet's comma-separated display
+names ("Violin, fiddle") onto a curated vocabulary, and takes the **max** across evenly-spaced
+non-silent windows — mean would wash out an instrument that only plays one section. `silent: true`
+is a real answer (a band with no piano still gets a piano stem). Producer can override the label
+(`song_stems.display_name`, migration `10`); `name` stays the Demucs source name because that's what
+the fix tools resolve against. Tagging runs *after* the set is marked complete, best-effort, so it
+can't fail a separation or delay the waveforms. Verified live in-container on song 1650: guitar stem
+→ Guitar/Electric guitar, vocals → Vocal/Male vocal, `other` → Flute/Organ/Fiddle.
+The rejected alternatives (query-based separation à la AudioSep; fine-tuning Demucs on isolated
+multitracks the band doesn't have) are recorded in ARCHITECTURE.md's decisions log.
+
+> Note: `docker-compose.yml` gained `HF_HOME` + an `hf_models` volume so the HF checkpoints (CLAP,
+> the tagger) stop re-downloading on every recreate. That needs `docker-compose up -d backend`, not
+> a plain `docker restart`.
+
+---
+
 ### 2026-08-01 — Claude Design "Console" redesign of the Audio Processing tab: dark theme + per-stem review queue
 Implemented a full Claude Design mockup (imported as a `claude.ai/design` canvas export, `claudedesign.zip`)
 that replaced the `/produce/[songId]` Audio processing tab's "checkbox list of tools + Gentle/Moderate/

@@ -20,6 +20,7 @@ audio or trigger a re-index of the original. Editor-gated, consistent with the
 existing tools endpoint (issue #1).
 """
 import json
+import logging
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -36,8 +37,10 @@ from src.auth import require_role
 from src.api.dependencies import get_agent, get_db, get_rag
 from src.api import radio_service
 from src.api.region_tools import build_region_tool_args
-from src.production import stem_separation
+from src.production import instrument_tagging, stem_separation
 from database import DatabaseManager
+
+logger = logging.getLogger("backend-api")
 
 router = APIRouter()
 
@@ -94,6 +97,11 @@ class StemSeparateRequest(BaseModel):
     # When set, separate this version's audio instead of the catalog original. The
     # version must belong to the song.
     source_version_id: Optional[int] = None
+
+
+class RenameStemRequest(BaseModel):
+    """Relabel a stem. An empty/omitted name clears back to the Demucs source name."""
+    display_name: Optional[str] = None
 
 
 class StemAdjustment(BaseModel):
@@ -1007,6 +1015,27 @@ def _stem_set_output_dir(song_id: int, stem_set_id: int) -> Path:
     return _produced_dir() / str(song_id) / STEMS_SUBDIR / str(stem_set_id)
 
 
+def _stem_view(stem: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a song_stems row for the API.
+
+    ``name`` stays the Demucs source name (what the separator produced);
+    ``display_name`` is the producer's own label for it, and ``instruments`` is
+    what the tagger heard — the two together are how a stem Demucs could only
+    call "other" gets identified as the banjo.
+    """
+    tags = stem.get("instrument_tags")
+    if isinstance(tags, str):  # asyncpg returns JSONB as text
+        tags = json.loads(tags)
+    return {
+        "id": stem["id"],
+        "name": stem["name"],
+        "display_name": stem.get("display_name"),
+        "instruments": (tags or {}).get("instruments", []),
+        "silent": bool((tags or {}).get("silent")),
+        "tagged": stem.get("tagged_at") is not None,
+    }
+
+
 def _stem_set_view(stem_set: Dict[str, Any]) -> Dict[str, Any]:
     """Shape a song_stem_sets row for the API (job status + provenance)."""
     created_at = stem_set.get("created_at")
@@ -1070,11 +1099,63 @@ async def list_song_stems(
     for stem_set in stem_sets:
         stems = await db.list_stems(stem_set["id"])
         view = _stem_set_view(stem_set)
-        view["stems"] = [
-            {"id": s["id"], "name": s["name"]} for s in stems
-        ]
+        view["stems"] = [_stem_view(s) for s in stems]
         views.append(view)
     return {"song_id": song_id, "stem_sets": views}
+
+
+@router.patch("/api/produce/stems/{stem_id}")
+async def rename_stem(
+    stem_id: int,
+    request: RenameStemRequest,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Relabel a stem — "other" is really the banjo.
+
+    Only the producer-facing label changes; the Demucs source name and the file
+    on disk are untouched, so a relabelled stem still resolves and applies the
+    same way. Sending an empty name clears the override.
+    """
+    name = (request.display_name or "").strip()
+    if len(name) > 64:
+        raise HTTPException(status_code=400, detail="Name must be 64 characters or fewer")
+    updated = await db.set_stem_display_name(stem_id, name or None)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Stem not found")
+    return {"stem": _stem_view(updated)}
+
+
+@router.post("/api/produce/stems/{stem_id}/identify")
+async def identify_stem_instruments(
+    stem_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Detect which instruments are audible in one stem, and record them.
+
+    Tagging normally runs automatically once separation finishes; this is the
+    retry/refresh path for a stem set separated before tagging existed, or one
+    whose tagging failed. Inference is CPU/GPU-bound, so it runs off the event
+    loop.
+    """
+    stem = await db.get_stem(stem_id)
+    if stem is None:
+        raise HTTPException(status_code=404, detail="Stem not found")
+    path = Path(stem["path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Stem audio file missing")
+
+    try:
+        tags = await run_in_threadpool(instrument_tagging.identify_instruments, str(path))
+    except Exception as exc:
+        logger.exception("Instrument tagging failed for stem %s", stem_id)
+        raise HTTPException(
+            status_code=503, detail=f"Instrument tagging unavailable: {exc}"
+        ) from exc
+
+    updated = await db.set_stem_instrument_tags(stem_id, tags)
+    return {"stem": _stem_view(updated or stem)}
 
 
 @router.get("/api/produce/stems/{stem_id}/audio")

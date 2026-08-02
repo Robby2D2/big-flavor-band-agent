@@ -606,10 +606,18 @@ class DatabaseManager:
                 stem_set_id INTEGER NOT NULL REFERENCES song_stem_sets(id) ON DELETE CASCADE,
                 name VARCHAR(32) NOT NULL,
                 path TEXT NOT NULL,
+                display_name VARCHAR(64),
+                instrument_tags JSONB,
+                tagged_at TIMESTAMP,
                 UNIQUE (stem_set_id, name)
             );
             CREATE INDEX IF NOT EXISTS idx_song_stems_stem_set_id
                 ON song_stems (stem_set_id);
+            -- Deployments that created the table before instrument tagging
+            -- existed; added idempotently so this stays a single source of DDL.
+            ALTER TABLE song_stems ADD COLUMN IF NOT EXISTS display_name VARCHAR(64);
+            ALTER TABLE song_stems ADD COLUMN IF NOT EXISTS instrument_tags JSONB;
+            ALTER TABLE song_stems ADD COLUMN IF NOT EXISTS tagged_at TIMESTAMP;
         """
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
@@ -684,6 +692,37 @@ class DatabaseManager:
         query = "SELECT * FROM song_stems WHERE id = $1"
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(query, stem_id)
+        return dict(row) if row else None
+
+    async def set_stem_display_name(
+        self, stem_id: int, display_name: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Set (or clear, with None) a stem's producer-facing label.
+
+        Cleared means the stem falls back to the Demucs source name — the
+        producer is relabelling what a stem *is* ("other" is really the banjo),
+        never renaming the file on disk.
+        """
+        query = """
+            UPDATE song_stems SET display_name = $2
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, stem_id, display_name)
+        return dict(row) if row else None
+
+    async def set_stem_instrument_tags(
+        self, stem_id: int, tags: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Record the instruments detected in a stem (see instrument_tagging)."""
+        query = """
+            UPDATE song_stems SET instrument_tags = $2, tagged_at = CURRENT_TIMESTAMP
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, stem_id, json.dumps(tags) if tags is not None else None
+            )
         return dict(row) if row else None
 
     # Audio analysis operations

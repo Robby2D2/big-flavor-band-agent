@@ -3,14 +3,11 @@
 import WaveformView from '../WaveformView';
 import { formatTime } from '../audioEngine';
 import type { StemPlaybackControl } from './useStemPlayback';
-import type { FixEntry } from '@/hooks/useProcessingQueue';
+import type { FixEntry, StemInfo } from '@/hooks/useProcessingQueue';
 import { FULL_MIX_STEM_ID } from '@/hooks/useProcessingQueue';
 import { stemColor } from './stemColors';
-
-interface StemInfo {
-  id: number;
-  name: string;
-}
+import Spinner from './Spinner';
+import StemRow from './StemRow';
 
 interface StemConsoleProps {
   /** Console rows: the full mix first, then each separated stem. */
@@ -26,6 +23,9 @@ interface StemConsoleProps {
   analyzedStemIds: Set<number>;
   analyzingStemIds: Set<number>;
   onAnalyzeStem: (stemId: number) => void;
+  identifyingStemIds: Set<number>;
+  onIdentifyStem: (stemId: number) => void;
+  onRenameStem: (stemId: number, displayName: string) => void;
   playing: boolean;
   playhead: number;
   maxDuration: number;
@@ -37,20 +37,12 @@ interface StemConsoleProps {
   onReseparate: () => void;
 }
 
-function Spinner({ className = '' }: { className?: string }) {
-  return (
-    <span
-      className={`inline-block rounded-full border-2 border-signal/25 border-t-signal animate-spin ${className}`}
-    />
-  );
-}
-
 /**
  * The merged stem console: a transport across the whole song on top, then one
- * row per part — the full mix first, then each separated stem — with its own
- * chain of detected fixes as pills and mute/solo/gain. Picking a row here is
- * what scopes the fix queue below it, and the full mix is a row like any other
- * so the whole song can be played, analyzed and fixed alongside its parts.
+ * row per part — the full mix first, then each separated stem. Picking a row
+ * here is what scopes the fix queue below it, and the full mix is a row like
+ * any other so the whole song can be played, analyzed and fixed alongside its
+ * parts.
  */
 export default function StemConsole({
   stems,
@@ -64,6 +56,9 @@ export default function StemConsole({
   analyzedStemIds,
   analyzingStemIds,
   onAnalyzeStem,
+  identifyingStemIds,
+  onIdentifyStem,
+  onRenameStem,
   playing,
   playhead,
   maxDuration,
@@ -161,146 +156,29 @@ export default function StemConsole({
           separating ? 'opacity-40 pointer-events-none select-none' : ''
         }`}
       >
-        {stems.map((stem) => {
-          const c = controls[stem.id];
-          const selected = stem.id === selectedStemId;
-          const isFullMix = stem.id === FULL_MIX_STEM_ID;
-          const color = stemColor(stem.name);
-          const fixes = fixesForStem(stem.id);
-          const buffer = buffers[stem.id] ?? null;
-          const loading = !buffer && loadingStemIds.has(stem.id);
-          const rowAnalyzing = analyzingStemIds.has(stem.id);
-          const rowAnalyzed = analyzedStemIds.has(stem.id);
-          return (
-            <div
-              key={stem.id}
-              onClick={() => onSelectStem(stem.id)}
-              className={`rounded-lg border px-3 py-2.5 flex items-center gap-3 cursor-pointer transition-colors ${
-                selected ? 'bg-white/[0.06] border-white/25' : 'bg-well border-white/7 hover:bg-white/[0.03]'
-              } ${isFullMix ? 'border-dashed' : ''}`}
-            >
-              <div className="w-32 flex-none">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-sm" style={{ background: color }} />
-                  <span className="font-semibold text-sm text-text capitalize">{stem.name}</span>
-                </div>
-                <div className="font-mono text-[10px] text-text/35 mt-0.5">
-                  {loading
-                    ? 'loading…'
-                    : rowAnalyzing
-                      ? 'analyzing…'
-                      : fixes.length > 0
-                        ? `${fixes.length} fix${fixes.length === 1 ? '' : 'es'}`
-                        : rowAnalyzed
-                          ? 'clean'
-                          : isFullMix
-                            ? 'whole song'
-                            : 'not analyzed'}
-                </div>
-              </div>
-
-              <div
-                className="w-36 h-8 flex-none relative"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <WaveformView
-                  buffer={buffer}
-                  duration={maxDuration}
-                  height={32}
-                  playhead={playhead}
-                  onSeek={onSeek}
-                  waveColor={color}
-                />
-                {loading && (
-                  <span className="absolute inset-0 flex items-center justify-center">
-                    <Spinner className="w-3.5 h-3.5" />
-                  </span>
-                )}
-              </div>
-
-              <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0">
-                {rowAnalyzing ? (
-                  <span className="flex items-center gap-1.5 font-mono text-[10px] text-text/45">
-                    <Spinner className="w-3 h-3" />
-                    analyzing…
-                  </span>
-                ) : fixes.length > 0 ? (
-                  fixes.map((f) => (
-                    <span
-                      key={f.id}
-                      className={`text-[10.5px] font-semibold px-2 py-0.5 rounded-md border ${
-                        f.enabled
-                          ? 'text-signal border-signal/35 bg-signal/10'
-                          : 'text-text/35 border-white/10 bg-transparent'
-                      }`}
-                    >
-                      {f.title}
-                    </span>
-                  ))
-                ) : rowAnalyzed ? (
-                  <span className="font-mono text-[10px] text-text/30">no fixes detected</span>
-                ) : (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAnalyzeStem(stem.id);
-                    }}
-                    disabled={separating}
-                    className="text-[10.5px] font-semibold text-text/70 border border-white/14 rounded-md px-2 py-0.5 hover:bg-white/5 disabled:opacity-40"
-                  >
-                    Analyze {isFullMix ? 'full mix' : 'this stem'}
-                  </button>
-                )}
-              </div>
-
-              <div
-                className="flex items-center gap-2 flex-none"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {rowAnalyzed && !rowAnalyzing && (
-                  <button
-                    onClick={() => onAnalyzeStem(stem.id)}
-                    disabled={separating}
-                    title="Re-analyze just this part"
-                    className="font-mono text-[10px] px-1.5 py-0.5 rounded text-text/40 hover:text-text/70 disabled:opacity-40"
-                  >
-                    RE-ANALYZE
-                  </button>
-                )}
-                <button
-                  onClick={() => setControl(stem.id, { solo: !c?.solo })}
-                  className={`font-mono text-[10px] px-1.5 py-0.5 rounded ${
-                    c?.solo ? 'text-attention' : 'text-text/40 hover:text-text/70'
-                  }`}
-                >
-                  SOLO
-                </button>
-                <button
-                  onClick={() => setControl(stem.id, { mute: !c?.mute })}
-                  title={
-                    isFullMix
-                      ? 'The full mix starts muted — the stems below already add up to it. Un-mute or solo it to hear the mix itself.'
-                      : undefined
-                  }
-                  className={`font-mono text-[10px] px-1.5 py-0.5 rounded ${
-                    c?.mute ? 'text-red-400' : 'text-text/40 hover:text-text/70'
-                  }`}
-                >
-                  MUTE
-                </button>
-                <input
-                  type="range"
-                  min={0}
-                  max={1.5}
-                  step={0.05}
-                  value={c?.gain ?? 1}
-                  onChange={(e) => setControl(stem.id, { gain: Number(e.target.value) })}
-                  className="w-16"
-                />
-              </div>
-            </div>
-          );
-        })}
+        {stems.map((stem) => (
+          <StemRow
+            key={stem.id}
+            stem={stem}
+            buffer={buffers[stem.id] ?? null}
+            loading={!buffers[stem.id] && loadingStemIds.has(stem.id)}
+            control={controls[stem.id]}
+            setControl={(patch) => setControl(stem.id, patch)}
+            selected={stem.id === selectedStemId}
+            onSelect={() => onSelectStem(stem.id)}
+            fixes={fixesForStem(stem.id)}
+            analyzed={analyzedStemIds.has(stem.id)}
+            analyzing={analyzingStemIds.has(stem.id)}
+            onAnalyze={() => onAnalyzeStem(stem.id)}
+            identifying={identifyingStemIds.has(stem.id)}
+            onIdentify={() => onIdentifyStem(stem.id)}
+            onRename={(displayName) => onRenameStem(stem.id, displayName)}
+            playhead={playhead}
+            maxDuration={maxDuration}
+            onSeek={onSeek}
+            disabled={separating}
+          />
+        ))}
       </div>
     </div>
   );
