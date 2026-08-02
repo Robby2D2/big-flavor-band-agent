@@ -100,6 +100,10 @@ services:
       - ./src:/app/src:ro
       - ./database:/app/database:ro
       - ./backend_api.py:/app/backend_api.py:ro
+      # One-off/maintenance scripts (e.g. the lyric-timings catalog backfill),
+      # run via `docker exec bigflavor-backend python -m scripts.<name>` — same
+      # hot-reload pattern as src/database above.
+      - ./scripts:/app/scripts:ro
       # Shared playlist directory for Liquidsoap integration
       - ./streaming/playlist:/app/streaming/playlist
       # Persistent Demucs model-weights cache (issue #67) — same pattern as the

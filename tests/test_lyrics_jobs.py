@@ -17,7 +17,7 @@ class FakeRag:
         self.text_embedding_model = None
         self.stored = []
 
-    async def store_text_embedding(self, song_id, content_type, content, embedding):
+    async def index_text_content(self, song_id, content_type, content, embedding):
         self.stored.append((song_id, content_type, content))
 
 

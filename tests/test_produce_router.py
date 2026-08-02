@@ -79,7 +79,7 @@ class FakeRag:
         self.indexed.append((audio_path, song_id))
         return True
 
-    async def store_text_embedding(self, song_id, content_type, content, embedding):
+    async def index_text_content(self, song_id, content_type, content, embedding):
         self.text_embeddings.append((song_id, content_type, content, embedding))
         return True
 

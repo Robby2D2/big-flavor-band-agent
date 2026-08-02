@@ -74,7 +74,7 @@ async def index_lyrics_text(rag, song_id: int, text: str) -> None:
     persist identically and keep lyric search consistent.
     """
     embedding = await run_in_threadpool(_embed_text, rag, text)
-    await rag.store_text_embedding(song_id, "lyrics", text, embedding)
+    await rag.index_text_content(song_id, "lyrics", text, embedding)
 
 
 def lyrics_signature(text: str) -> str:
