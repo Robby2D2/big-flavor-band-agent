@@ -8,6 +8,12 @@ set -e
 # whatever the host mount brings in. Fix ownership of the writable mounts
 # here, as root, before dropping to appuser, so a fresh clone / fresh mount
 # doesn't repeat the "PermissionError writing playlist" bug.
-chown -R appuser:appuser /app/streaming/playlist /app/audio_library/produced 2>/dev/null || true
+#
+# Same issue applies to the demucs_models/hf_models named volumes (mounted
+# at /app/.cache/torch and /app/.cache/huggingface, see docker-compose.yml)
+# — Docker creates a fresh named volume's mount point owned by root, so
+# without this chown, torch.hub/huggingface downloads under it fail with
+# "PermissionError: [Errno 13] Permission denied: '/app/.cache/torch/hub'".
+chown -R appuser:appuser /app/streaming/playlist /app/audio_library/produced /app/.cache/torch /app/.cache/huggingface 2>/dev/null || true
 
 exec gosu appuser "$@"
