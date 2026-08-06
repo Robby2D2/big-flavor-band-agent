@@ -75,6 +75,50 @@ def test_summarize_scores_ignores_unmapped_classes():
 
 # ---- summarize_for_display ----
 
+# ---- is_silent ----
+
+def _clip(peak: float, rms_fraction: float = 0.3, n: int = 16000):
+    """A clip with a given peak amplitude and some body beneath it."""
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    samples = rng.uniform(-peak * rms_fraction, peak * rms_fraction, n).astype("float32")
+    samples[0] = peak
+    return samples
+
+
+def test_is_silent_flags_an_empty_demucs_stem():
+    """Real measurement: an empty stem peaks around -56..-52 dBFS."""
+    assert tagging.is_silent(_clip(0.00154)) is True  # -56 dBFS, a real bass stem
+    assert tagging.is_silent(_clip(0.00258)) is True  # -52 dBFS, a real piano stem
+
+
+def test_is_silent_keeps_a_quiet_but_present_instrument():
+    """The case RMS would get wrong.
+
+    A sparse real part measured -54.7 dBFS RMS — within 6 dB of an empty stem —
+    but peaked at -23.2 dBFS. Judging on peak is what keeps it visible.
+    """
+    assert tagging.is_silent(_clip(0.069)) is False  # -23.2 dBFS, a real piano stem
+
+
+def test_is_silent_on_digital_silence_and_empty_input():
+    import numpy as np
+
+    assert tagging.is_silent(np.zeros(16000, dtype="float32")) is True
+    assert tagging.is_silent(np.array([], dtype="float32")) is True
+
+
+def test_is_silent_threshold_sits_between_the_measured_populations():
+    """Guards the margin: the gate must clear both populations, not just pass today."""
+    loudest_empty = 0.00258  # -52 dBFS
+    quietest_real = 0.069  # -23.2 dBFS
+    assert loudest_empty < tagging.SILENCE_PEAK < quietest_real
+    # At least 10 dB of headroom either side, so ordinary variation can't flip it.
+    assert tagging.SILENCE_PEAK / loudest_empty > 3
+    assert quietest_real / tagging.SILENCE_PEAK > 3
+
+
 def test_summarize_for_display_distinguishes_silent_from_untagged():
     # An empty Demucs stem (the band has no piano) is a real answer, not a
     # failure, and must not read the same as "we never looked".

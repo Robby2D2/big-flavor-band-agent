@@ -228,7 +228,14 @@ trained on, `src/production/instrument_tagging.py` *labels* each stem with an Au
 mapping AudioSet's comma-separated display names onto a curated producer-facing vocabulary. Scores
 are taken as the **max** across evenly-spaced non-silent windows, not the mean — an instrument that
 only plays one section must still be reported. An all-silent stem returns `silent: true`, which is a
-real answer (a band with no piano still gets a piano stem). Tagging runs in `stem_jobs.py` *after*
+real answer (a band with no piano still gets a piano stem) and the console hides those rows entirely.
+**Silence is judged on peak, not RMS** (`is_silent`, `SILENCE_PEAK` = -40 dBFS): an empty Demucs stem
+is low-level bleed rather than digital silence, and measured across real separations empty stems peak
+at -56..-52 dBFS while the quietest genuinely-present instrument peaks at -23 dBFS. RMS cannot make
+that call — a sparse real piano measured -54.7 dBFS RMS, within 6 dB of an empty stem, while its peak
+stayed ~30 dB clear. The check runs *before* windowing, because bleed clears the per-window
+`SILENCE_RMS` gate and would otherwise be scored as present-but-unrecognised. Tagging runs in
+`stem_jobs.py` *after*
 the set is marked complete, best-effort: a tagging failure never fails a separation that produced
 usable stems. `song_stems.display_name` lets a producer override the label by hand
 (`PATCH /api/produce/stems/{id}`); `POST /api/produce/stems/{id}/identify` is the per-stem retry.

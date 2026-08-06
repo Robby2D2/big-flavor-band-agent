@@ -52,6 +52,28 @@ prefetched at all (it starts muted). Honest limit: this fixes bandwidth and deco
 Also: `frontend` dev dependencies (vitest et al.) were declared but never installed, so the existing
 `lyricTimings`/`LyricsFollower` tests had never actually run. `npm install` fixed it; 33 tests pass.
 
+**Two bugs the live check caught that the tests could not.** Both are worth remembering as a pattern:
+a monkeypatched dependency means the real command is never exercised.
+1. **ffmpeg picks its muxer from the output filename's extension.** The encode writes to a `.part`
+   temp file so the publish is an atomic rename — but ffmpeg can't infer a format from `.part`, so
+   *every* real transcode failed and `/preview` 503'd. Fixed with an explicit `-f ogg`. The test
+   asserted the temp suffix but never that the command could produce output.
+2. **A container restart is required for a hot-reload change to reach the running uvicorn.** The
+   first re-measurement still logged the pre-fix command line because the process had the old module
+   loaded — `./src` is volume-mounted, but the import is not re-evaluated.
+
+**Empty stems were still displaying** (the original request that started this work). The console hides
+stems tagged `silent`, but `instrument_tagging` judged silence on per-window RMS against a -80 dBFS
+floor, and an empty Demucs stem is *bleed*, not digital silence — song 1140's bass and piano measured
+-61 dBFS RMS, ~9x over that gate, so they scored as present-but-unrecognised. Now judged on **peak**
+via a new pure `is_silent()`: empty stems peak -56..-52 dBFS, the quietest genuinely-present
+instrument peaks -23.2 dBFS, so `SILENCE_PEAK` = -40 dBFS sits mid-gap. RMS provably cannot do this —
+1650's sparse-but-real piano is -54.7 dBFS RMS (within 6 dB of empty) but -23.2 dBFS peak. Verified
+against all 12 stems on disk; re-tag existing rows with `POST /api/produce/stems/{id}/identify`.
+
+Net measured effect on a produce tab open for song 1140: **262.7 MB -> 11.2 MB (23.5x)**, since the
+two hidden stems are no longer fetched at all, and waveforms paint from 45 KB of peaks.
+
 ### 2026-08-02 — Stem console: full mix as a row, a real transport, and instrument tagging for stems Demucs can only call "other"
 Two related pieces of work on `/produce/[songId]` → Audio processing.
 

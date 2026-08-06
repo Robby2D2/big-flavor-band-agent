@@ -34,6 +34,15 @@ MAX_WINDOWS = 8
 # Below this RMS a window is silence — scoring it just dilutes the result, and
 # for an empty Demucs stem *every* window is like this.
 SILENCE_RMS = 1e-4
+
+# Whole-stem silence is judged on *peak*, not RMS. An empty Demucs stem is never
+# digital silence, it's low-level bleed, and measured across real separations
+# those peak around -56..-52 dBFS while the quietest genuinely-present
+# instrument peaks at -23 dBFS. RMS can't make that call: a sparse real part (a
+# piano hit a few times in a song) measured -54.7 dBFS RMS, within 6 dB of an
+# empty stem, while its peak stayed ~30 dB clear. -40 dBFS sits in the middle of
+# that gap with wide margin on both sides.
+SILENCE_PEAK = 0.01
 MIN_SCORE = 0.10
 MAX_LABELS = 4
 
@@ -170,6 +179,21 @@ def _load(model_name: str) -> Tuple[Any, Any, Dict[int, str]]:
     return _CACHE[model_name]
 
 
+def is_silent(samples: Any) -> bool:
+    """Whether a clip is an *empty* stem rather than merely a quiet one.
+
+    The distinction the console depends on: an empty stem is hidden entirely, so
+    calling a real-but-sparse instrument silent would make it disappear. Judged
+    on peak for the reason given at ``SILENCE_PEAK``. Kept as its own pure
+    function so the threshold behaviour is testable without loading a model.
+    """
+    import numpy as np
+
+    if samples.size == 0:
+        return True
+    return float(np.abs(samples).max()) < SILENCE_PEAK
+
+
 def _windows(samples: Any, window_length: int) -> List[Any]:
     """Evenly spaced non-silent windows across a clip, in file order."""
     import numpy as np
@@ -208,6 +232,13 @@ def identify_instruments(
     extractor, model, label_index = _load(model_name)
 
     samples, _ = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
+    # Checked before windowing: an empty stem's bleed is loud enough to clear
+    # the per-window RMS gate below, so without this the tagger scores noise and
+    # reports the stem as present-but-unrecognised.
+    if is_silent(samples):
+        logger.info("Instrument tagging: %s is silent", audio_path)
+        return {"instruments": [], "silent": True, "model": model_name}
+
     windows = _windows(samples, int(WINDOW_SECONDS * SAMPLE_RATE))
     if not windows:
         logger.info("Instrument tagging: %s is silent", audio_path)
