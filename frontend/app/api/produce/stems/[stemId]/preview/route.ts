@@ -4,8 +4,9 @@ import { backendAuthHeaders } from '@/lib/backend';
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8000';
 
-// Stream a single stem's audio so each part can be decoded and auditioned
-// independently in the stem mixer (issue #70).
+// A compressed (Opus) copy of one stem, for browser playback only — roughly 15x
+// smaller than the uncompressed Demucs WAV the console used to download for
+// every stem. `/audio` still serves the real file for the A/B fidelity check.
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ stemId: string }> }
@@ -21,14 +22,14 @@ export async function GET(
     }
 
     const response = await fetch(
-      `${AGENT_API_URL}/api/produce/stems/${stemId}/audio`,
+      `${AGENT_API_URL}/api/produce/stems/${stemId}/preview`,
       { method: 'GET', headers }
     );
 
     if (!response.ok) {
       const errorText = await response.text();
       return NextResponse.json(
-        { error: errorText || 'Stem audio not found' },
+        { error: errorText || 'Stem preview not found' },
         { status: response.status }
       );
     }
@@ -42,9 +43,8 @@ export async function GET(
     if (contentRange) responseHeaders.set('Content-Range', contentRange);
     const acceptRanges = response.headers.get('accept-ranges');
     if (acceptRanges) responseHeaders.set('Accept-Ranges', acceptRanges);
-    // A given stem id's audio file never changes after separation completes,
-    // so the browser can cache it indefinitely instead of re-downloading and
-    // re-decoding the whole song every time the produce tab is opened.
+    // Same reasoning as the stem audio route: a stem id's audio never changes,
+    // so its preview is safe to cache indefinitely.
     responseHeaders.set('Cache-Control', 'private, max-age=31536000, immutable');
 
     return new NextResponse(response.body, {
@@ -52,7 +52,7 @@ export async function GET(
       headers: responseHeaders,
     });
   } catch (error: any) {
-    console.error('Stem audio streaming error:', error);
+    console.error('Stem preview streaming error:', error);
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
       { status: error.message?.includes('Forbidden') ? 403 : 500 }

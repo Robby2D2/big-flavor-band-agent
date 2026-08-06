@@ -18,7 +18,12 @@ from typing import Dict, List
 
 from fastapi.concurrency import run_in_threadpool
 
-from src.production import instrument_tagging, stem_separation
+from src.production import (
+    audio_preview,
+    instrument_tagging,
+    stem_separation,
+    waveform_peaks,
+)
 from database import DatabaseManager
 
 logger = logging.getLogger("backend-api")
@@ -70,9 +75,12 @@ class StemJobManager:
             ]
             await db.set_stem_set_status(stem_set_id, STATUS_COMPLETE)
             logger.info("Stem set %s complete (%d stems)", stem_set_id, len(stems))
-            # Tagging is a labelling pass over stems that already exist, so it
-            # runs after the set is marked complete — the console shows the
-            # waveforms immediately and the instrument labels fill in behind.
+            # The passes below all run over stems that already exist, after the
+            # set is marked complete, in the order the console needs them:
+            # peaks to draw anything at all, previews to press play, and the
+            # instrument labels — purely cosmetic — last.
+            await warm_stem_peaks(rows, db)
+            await warm_stem_previews(rows)
             await tag_stems(rows, db)
         except Exception as exc:  # separation failure must be visible via status
             logger.exception("Stem separation failed for stem set %s", stem_set_id)
@@ -83,6 +91,47 @@ class StemJobManager:
             except Exception:
                 logger.warning("Could not clean up partial stem output %s", output_dir)
             await db.set_stem_set_status(stem_set_id, STATUS_FAILED, str(exc))
+
+
+async def warm_stem_peaks(stems: List[Dict], db: DatabaseManager) -> None:
+    """Precompute each stem's waveform drawing envelope. Best-effort.
+
+    The console fetches these on open and computes any that are missing, so this
+    only decides whether the *first* open of a fresh set pays for it. A failure
+    must never fail a separation that produced usable stems — it just leaves
+    ``waveform_peaks`` NULL for the endpoint to fill in on demand.
+    """
+    for stem in stems:
+        try:
+            peaks = await run_in_threadpool(
+                waveform_peaks.compute_peaks, stem["path"]
+            )
+            await db.set_stem_waveform_peaks(stem["id"], peaks)
+        except Exception:
+            logger.exception(
+                "Waveform peaks failed for stem %s (%s)", stem["id"], stem["name"]
+            )
+
+
+async def warm_stem_previews(stems: List[Dict]) -> None:
+    """Pre-transcode each stem's compressed playback copy. Best-effort.
+
+    No DB write — the file on disk is the whole cache. Like peaks, the endpoint
+    builds any that are missing, so a failure here only means the first producer
+    to press play waits for the encode.
+    """
+    for stem in stems:
+        try:
+            source = Path(stem["path"])
+            await run_in_threadpool(
+                audio_preview.build_preview,
+                str(source),
+                str(audio_preview.stem_preview_path(source)),
+            )
+        except Exception:
+            logger.exception(
+                "Preview transcode failed for stem %s (%s)", stem["id"], stem["name"]
+            )
 
 
 async def tag_stems(stems: List[Dict], db: DatabaseManager) -> None:

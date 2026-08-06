@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { computePeaks, Region } from './audioEngine';
+import { Peaks, resamplePeaks, Region } from './audioEngine';
 
 interface WaveformViewProps {
-  buffer: AudioBuffer | null;
+  /** The server's drawing envelope, resampled here to the canvas width. */
+  peaks: Peaks | null;
   duration: number;
   height?: number;
   /** Enable drag-to-select. When false the waveform is display-only (stem rows). */
@@ -39,11 +40,12 @@ const DEFAULT_WAVE = '#60a5fa';
 
 /**
  * Canvas waveform with optional drag region-select, beat markers, and a
- * playhead. Peaks are computed from the AudioBuffer itself (no external lib), so
- * the same component draws the full mix and each stem row (issue #70).
+ * playhead (no external lib), so the same component draws the full mix and each
+ * stem row (issue #70). Peaks come from the server already reduced to a min/max
+ * envelope — drawing never needs the audio itself.
  */
 export default function WaveformView({
-  buffer,
+  peaks: sourcePeaks,
   duration,
   height = 96,
   selectable = false,
@@ -75,8 +77,8 @@ export default function WaveformView({
   }, []);
 
   const peaks = useMemo(
-    () => (buffer ? computePeaks(buffer, width) : null),
-    [buffer, width]
+    () => (sourcePeaks ? resamplePeaks(sourcePeaks, width) : null),
+    [sourcePeaks, width]
   );
 
   useEffect(() => {

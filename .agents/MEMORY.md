@@ -11,6 +11,47 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-08-04 — Stem console loaded ~260 MB per tab open to draw waveforms; now ~15 KB of peaks + Opus playback copies
+**The measurement that drove this:** stems are uncompressed Demucs WAV — `produced/1140/stems/9/bass.wav`
+is 43.8 MB, a six-stem set ~262 MB, and a *cleaned* version (if selected as the source) 62 MB. All of
+it was downloaded and `decodeAudioData`'d on every produce-tab open. But `WaveformView` only ever fed
+`computePeaks(buffer, width)` — a per-pixel min/max envelope. ~260 MB was moving to draw ~15 KB.
+
+Split into two independent server resources:
+- **`src/production/waveform_peaks.py`** — 2000-bucket min/max envelope, quantised to ints in ±127,
+  cached in a new `waveform_peaks` JSONB column on both `song_stems` and `song_versions`. Streams via
+  `sf.blocks` rather than `librosa.load`: loading whole files would spike ~85 MB per concurrent call
+  on a box also running Demucs. Verified bit-identical to a naive full-load pass (the block-seam
+  handling is the only tricky part — bucket boundaries don't align with read boundaries). Measured
+  0.86 s cold / **0.005 s warm** on a 43 MB stem.
+- **`src/production/audio_preview.py`** — ffmpeg → Opus at 96k for browser playback only, ~15x
+  smaller. `/audio` still serves the real WAV and is what every DSP tool and the A/B fidelity control
+  reads.
+
+**Three design points worth keeping:**
+1. **`version` is checked on read.** A cached envelope from an older `PEAKS_FORMAT_VERSION` is treated
+   as absent. That is what made "no backfill script" safe — bumping the constant re-derives the whole
+   catalog lazily.
+2. **Preview paths key off the source file path, never a row id.** Produce never overwrites audio in
+   place (a re-clean writes a new timestamped file; a re-separation a new set dir), so a path-keyed
+   preview physically cannot go stale — no invalidation logic at all. Version previews live in a
+   shared `produced/previews/` because the catalog mount is read-only.
+3. **A row id can outlive its audio.** `replace_song_version_audio` swaps `audio_path` under a stable
+   version id, and `add_stem`'s `ON CONFLICT` reuses a row on a retried job — both now NULL
+   `waveform_peaks`. Same reason the version peaks/preview proxies are uncached while the stem ones
+   are `immutable`.
+
+**The frontend trap:** `maxDuration` was derived *solely* from decoded buffers, and it gates the
+transport, every `WaveformView`'s `duration`, and all seek/region math. Drawing before decoding meant
+duration had to come from the server (it ships in the peaks payload). Related: `useStemPlayback.play()`
+silently no-ops with no buffers, so the transport is now gated on `playbackReady` — otherwise the
+button looks live during the prefetch window and does nothing. The full mix's *audio* is no longer
+prefetched at all (it starts muted). Honest limit: this fixes bandwidth and decode time, **not** the
+~640 MB of `AudioBuffer` RAM — `decodeAudioData` yields float32 PCM whatever the source codec.
+
+Also: `frontend` dev dependencies (vitest et al.) were declared but never installed, so the existing
+`lyricTimings`/`LyricsFollower` tests had never actually run. `npm install` fixed it; 33 tests pass.
+
 ### 2026-08-02 — Stem console: full mix as a row, a real transport, and instrument tagging for stems Demucs can only call "other"
 Two related pieces of work on `/produce/[songId]` → Audio processing.
 

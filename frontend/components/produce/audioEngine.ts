@@ -43,31 +43,78 @@ export interface Peaks {
   width: number;
 }
 
+/** The server's cached drawing envelope (src/production/waveform_peaks.py). */
+export interface PeaksPayload {
+  version: number;
+  resolution: number;
+  scale: number;
+  duration_seconds: number;
+  sample_rate: number;
+  channels: number;
+  min: number[];
+  max: number[];
+}
+
+export interface WaveformPeaks {
+  peaks: Peaks;
+  /**
+   * The source's true duration. Comes from the server rather than a decoded
+   * buffer so waveforms and the transport work before any audio has arrived —
+   * and so a lossy playback copy's few-ms drift never moves the timeline.
+   */
+  duration: number;
+}
+
 /**
- * Reduce an AudioBuffer's first channel to per-pixel min/max peaks for drawing.
- * Cheap enough to run on the client for a full song at typical widths.
+ * Fetch a waveform envelope from the server and unpack it for drawing.
+ *
+ * Replaces decoding whole audio files client-side: the envelope is a few KB
+ * against ~44MB for one uncompressed stem.
  */
-export function computePeaks(buffer: AudioBuffer, width: number): Peaks {
+export async function fetchPeaks(url: string): Promise<WaveformPeaks> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to load waveform (${response.status})`);
+  }
+  const payload = (await response.json()).peaks as PeaksPayload;
+  const width = payload.min.length;
+  const min = new Float32Array(width);
+  const max = new Float32Array(width);
+  for (let i = 0; i < width; i++) {
+    min[i] = payload.min[i] / payload.scale;
+    max[i] = payload.max[i] / payload.scale;
+  }
+  return {
+    peaks: { min, max, width },
+    duration: payload.duration_seconds,
+  };
+}
+
+/**
+ * Resample a server envelope to an arbitrary canvas width.
+ *
+ * Downsampling takes the min of mins and max of maxes over each output pixel's
+ * source range, which is exactly the envelope of the union — so peaks are never
+ * softened by averaging. This runs on every resize, and at ~2000 source buckets
+ * it costs a few thousand operations rather than the full-song sample scan the
+ * old client-side implementation did.
+ */
+export function resamplePeaks(source: Peaks, width: number): Peaks {
   const safeWidth = Math.max(1, Math.floor(width));
-  const data = buffer.getChannelData(0);
-  const total = data.length;
+  if (safeWidth === source.width) return source;
+
   const min = new Float32Array(safeWidth);
   const max = new Float32Array(safeWidth);
-  const step = total / safeWidth;
+  const step = source.width / safeWidth;
 
   for (let i = 0; i < safeWidth; i++) {
     const start = Math.floor(i * step);
-    const end = Math.min(total, Math.floor((i + 1) * step));
-    let lo = 1.0;
-    let hi = -1.0;
-    for (let j = start; j < end; j++) {
-      const v = data[j];
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-    }
-    if (end <= start) {
-      lo = 0;
-      hi = 0;
+    const end = Math.min(source.width, Math.max(start + 1, Math.floor((i + 1) * step)));
+    let lo = source.min[start];
+    let hi = source.max[start];
+    for (let j = start + 1; j < end; j++) {
+      if (source.min[j] < lo) lo = source.min[j];
+      if (source.max[j] > hi) hi = source.max[j];
     }
     min[i] = lo;
     max[i] = hi;

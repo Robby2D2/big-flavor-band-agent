@@ -234,6 +234,40 @@ usable stems. `song_stems.display_name` lets a producer override the label by ha
 (`PATCH /api/produce/stems/{id}`); `POST /api/produce/stems/{id}/identify` is the per-stem retry.
 `name` always stays the Demucs source name, because that is what the fix tools resolve against.
 
+**Waveforms and playback audio are separate fetches (2026-08):** the console used to download and
+decode every stem's whole audio file, purely so it could draw waveforms — and Demucs writes
+uncompressed WAV, so a six-stem set was **~260 MB per tab open** (plus ~640 MB of decoded
+`AudioBuffer`). Drawing only ever needed a min/max envelope. Those are now two independent server
+resources:
+
+- **Peaks** — `src/production/waveform_peaks.py` reduces a file to a fixed 2000-bucket min/max
+  envelope, quantised to ints in ±127 (~15 KB of JSON). Cached in `song_stems.waveform_peaks` /
+  `song_versions.waveform_peaks` (JSONB), served by `GET /api/produce/{stems,versions}/{id}/peaks`,
+  and warmed by `stem_jobs.warm_stem_peaks` after a separation. The payload carries a `version` field
+  that is **checked on read**, so bumping `PEAKS_FORMAT_VERSION` self-invalidates every cached row
+  instead of needing a backfill. It also carries `duration_seconds`, which is now what scales the
+  transport — the timeline exists before any audio has decoded.
+- **Previews** — `src/production/audio_preview.py` transcodes to Opus via ffmpeg (~15x smaller) for
+  *browser playback only*, served by `GET /api/produce/{stems,versions}/{id}/preview`. Two rules keep
+  this cache invalidation-free: the preview path is derived from the **source file's path**, never a
+  row id (produce never overwrites audio in place), and nothing is written outside `produced/`
+  (the catalog mount is read-only). Already-compressed sources (the catalog MP3s) are passed through
+  rather than re-encoded.
+
+`/audio` still serves the real file and is what every DSP tool — and `StemDetailPanel`'s A/B fidelity
+control — reads; the lossy copies never enter the production path. On the client, `WaveformView` now
+takes a `Peaks` envelope instead of an `AudioBuffer` and `resamplePeaks` reduces it to the canvas
+width (a few thousand ops per resize, against a full-song sample scan before). Because waveforms
+arrive well ahead of audio, the transport is gated on `playbackReady` — `useStemPlayback.play()` is a
+silent no-op with no decoded buffers, so an enabled-but-dead play button was the regression to avoid.
+The full-mix row's *audio* is no longer prefetched at all: it starts muted, so its buffer is only
+fetched if the producer un-mutes or solos it.
+
+Two invalidation points exist because a row id can outlive the audio behind it:
+`replace_song_version_audio` and `add_stem`'s `ON CONFLICT` both clear `waveform_peaks`. This is also
+why the version peaks/preview proxy routes are **uncached** while the stem ones are `immutable` — a
+re-separation mints new stem ids, but a re-clean keeps the version id.
+
 ---
 
 ## Frontend Theming

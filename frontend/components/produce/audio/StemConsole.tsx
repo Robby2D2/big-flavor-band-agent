@@ -3,6 +3,7 @@
 import WaveformView from '../WaveformView';
 import { formatTime } from '../audioEngine';
 import type { StemPlaybackControl } from './useStemPlayback';
+import type { WaveformPeaks } from '../audioEngine';
 import type { FixEntry, StemInfo } from '@/hooks/useProcessingQueue';
 import { FULL_MIX_STEM_ID } from '@/hooks/useProcessingQueue';
 import { stemColor } from './stemColors';
@@ -12,9 +13,12 @@ import StemRow from './StemRow';
 interface StemConsoleProps {
   /** Console rows: the full mix first, then each separated stem. */
   stems: StemInfo[];
-  buffers: Record<number, AudioBuffer>;
-  /** Rows whose audio is still being fetched/decoded. */
-  loadingStemIds: Set<number>;
+  /** Server-computed drawing envelopes, keyed by row id. */
+  peaks: Record<number, WaveformPeaks>;
+  /** Rows whose waveform is still being fetched. */
+  peaksLoadingIds: Set<number>;
+  /** Whether any playback audio has decoded yet — the transport needs one. */
+  playbackReady: boolean;
   controls: Record<number, StemPlaybackControl>;
   setControl: (id: number, patch: Partial<StemPlaybackControl>) => void;
   selectedStemId: number | null;
@@ -46,8 +50,9 @@ interface StemConsoleProps {
  */
 export default function StemConsole({
   stems,
-  buffers,
-  loadingStemIds,
+  peaks,
+  peaksLoadingIds,
+  playbackReady,
   controls,
   setControl,
   selectedStemId,
@@ -69,8 +74,8 @@ export default function StemConsole({
   analysisNote,
   onReseparate,
 }: StemConsoleProps) {
-  const fullMixBuffer = buffers[FULL_MIX_STEM_ID] ?? null;
-  const fullMixLoading = !fullMixBuffer && loadingStemIds.has(FULL_MIX_STEM_ID);
+  const fullMixPeaks = peaks[FULL_MIX_STEM_ID]?.peaks ?? null;
+  const fullMixLoading = !fullMixPeaks && peaksLoadingIds.has(FULL_MIX_STEM_ID);
 
   return (
     <div className="bg-raised border border-white/8 rounded-xl p-4 relative">
@@ -115,11 +120,15 @@ export default function StemConsole({
       <div className="flex items-center gap-3 bg-well border border-white/7 rounded-lg px-3 py-2.5 mb-3">
         <button
           onClick={onTogglePlay}
-          disabled={maxDuration === 0}
-          aria-label={playing ? 'Pause' : 'Play'}
+          // The waveforms arrive well before the audio does, so without the
+          // playbackReady gate the button would look live and do nothing.
+          disabled={maxDuration === 0 || !playbackReady}
+          aria-label={playing ? 'Pause' : playbackReady ? 'Play' : 'Preparing playback'}
           className="flex-none w-9 h-9 rounded-full bg-signal text-canvas flex items-center justify-center hover:opacity-90 disabled:opacity-40"
         >
-          {playing ? (
+          {maxDuration > 0 && !playbackReady ? (
+            <Spinner className="w-3.5 h-3.5" />
+          ) : playing ? (
             <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
               <rect x="1.5" y="1" width="3.25" height="10" rx="0.75" />
               <rect x="7.25" y="1" width="3.25" height="10" rx="0.75" />
@@ -135,7 +144,7 @@ export default function StemConsole({
         </span>
         <div className="flex-1 min-w-0 relative">
           <WaveformView
-            buffer={fullMixBuffer}
+            peaks={fullMixPeaks}
             duration={maxDuration}
             height={48}
             playhead={playhead}
@@ -145,7 +154,7 @@ export default function StemConsole({
           {fullMixLoading && (
             <span className="absolute inset-0 flex items-center justify-center gap-2 font-mono text-[10px] text-text/45">
               <Spinner className="w-3.5 h-3.5" />
-              loading full track…
+              loading waveform…
             </span>
           )}
         </div>
@@ -156,12 +165,12 @@ export default function StemConsole({
           separating ? 'opacity-40 pointer-events-none select-none' : ''
         }`}
       >
-        {stems.map((stem) => (
+        {stems.filter((stem) => !stem.silent).map((stem) => (
           <StemRow
             key={stem.id}
             stem={stem}
-            buffer={buffers[stem.id] ?? null}
-            loading={!buffers[stem.id] && loadingStemIds.has(stem.id)}
+            peaks={peaks[stem.id]?.peaks ?? null}
+            loading={!peaks[stem.id] && peaksLoadingIds.has(stem.id)}
             control={controls[stem.id]}
             setControl={(patch) => setControl(stem.id, patch)}
             selected={stem.id === selectedStemId}

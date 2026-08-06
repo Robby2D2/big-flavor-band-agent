@@ -22,7 +22,12 @@ export interface StemPlaybackControl {
 export function useStemPlayback(
   stems: { id: number; name: string }[],
   buffers: Record<number, AudioBuffer>,
-  controls: Record<number, StemPlaybackControl>
+  controls: Record<number, StemPlaybackControl>,
+  /**
+   * Song length as reported by the server's waveform envelopes, so the
+   * timeline exists before any audio has been decoded.
+   */
+  durationHint = 0
 ) {
   const [playing, setPlaying] = useState(false);
   const [playhead, setPlayhead] = useState(0);
@@ -35,9 +40,16 @@ export function useStemPlayback(
   const playheadRef = useRef(0);
   const playingRef = useRef(false);
 
+  // max() rather than preferring the hint: playback still works if the
+  // envelopes failed to load, and a lossy playback copy that decodes a few ms
+  // longer than the source can't truncate the transport.
   const maxDuration = useMemo(
-    () => Object.values(buffers).reduce((m, b) => Math.max(m, b.duration), 0),
-    [buffers]
+    () =>
+      Math.max(
+        durationHint,
+        Object.values(buffers).reduce((m, b) => Math.max(m, b.duration), 0)
+      ),
+    [buffers, durationHint]
   );
 
   const anySolo = useMemo(() => Object.values(controls).some((c) => c.solo), [controls]);

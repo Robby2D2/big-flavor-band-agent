@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import WaveformView from '../WaveformView';
-import { formatTime, Region } from '../audioEngine';
+import { formatTime, Peaks, Region } from '../audioEngine';
 import { stemColor } from './stemColors';
 
 interface StemDetailPanelProps {
@@ -11,9 +11,15 @@ interface StemDetailPanelProps {
   stemName: string;
   /** The Demucs source name, which is what the color scheme is keyed on. */
   sourceName: string;
-  /** Audio URL for the "A · as recorded" side (a stem file, or the full mix). */
+  /**
+   * Audio URL for the "A · as recorded" side (a stem file, or the full mix).
+   * Deliberately the real source file, not the compressed playback copy the
+   * console mixes: this control exists to judge the DSP, and "B" is a freshly
+   * rendered WAV, so a lossy A would not be a fair comparison. `preload="none"`
+   * keeps it free until the producer actually presses play.
+   */
   audioSrc: string;
-  buffer: AudioBuffer | null;
+  peaks: Peaks | null;
   duration: number;
   region: Region | null;
   onRegionChange: (region: Region | null) => void;
@@ -32,7 +38,7 @@ export default function StemDetailPanel({
   stemName,
   sourceName,
   audioSrc,
-  buffer,
+  peaks,
   duration,
   region,
   onRegionChange,
@@ -101,7 +107,7 @@ export default function StemDetailPanel({
       {previewError && <p className="text-xs text-red-400 mb-2">{previewError}</p>}
 
       <WaveformView
-        buffer={buffer}
+        peaks={peaks}
         duration={duration}
         selectable
         region={region}

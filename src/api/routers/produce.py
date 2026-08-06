@@ -37,7 +37,12 @@ from src.auth import require_role
 from src.api.dependencies import get_agent, get_db, get_rag
 from src.api import radio_service
 from src.api.region_tools import build_region_tool_args
-from src.production import instrument_tagging, stem_separation
+from src.production import (
+    audio_preview,
+    instrument_tagging,
+    stem_separation,
+    waveform_peaks,
+)
 from database import DatabaseManager
 
 logger = logging.getLogger("backend-api")
@@ -322,6 +327,67 @@ def _measure_audio(file_path: str) -> Optional[Dict[str, Any]]:
         }
     except Exception:
         return None
+
+
+def _usable_cached_peaks(raw: Any) -> Optional[Dict[str, Any]]:
+    """Return a cached waveform envelope only if it's the current format.
+
+    Anything written by an older ``PEAKS_FORMAT_VERSION`` is treated as absent
+    and recomputed, which is what lets the payload shape change without a
+    backfill over every stem and version in the catalog.
+    """
+    if isinstance(raw, str):  # asyncpg returns JSONB as text
+        raw = json.loads(raw)
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("version") != waveform_peaks.PEAKS_FORMAT_VERSION:
+        return None
+    return raw
+
+
+async def _compute_peaks_or_503(audio_path: Path, label: str) -> Dict[str, Any]:
+    """Compute a waveform envelope off the event loop, or fail with a 503."""
+    try:
+        return await run_in_threadpool(waveform_peaks.compute_peaks, str(audio_path))
+    except Exception as exc:
+        logger.exception("Waveform peaks failed for %s", label)
+        raise HTTPException(
+            status_code=503, detail=f"Waveform peaks unavailable: {exc}"
+        ) from exc
+
+
+async def _serve_preview_or_503(
+    source: Path, preview: Path, label: str
+) -> FileResponse:
+    """Build (or reuse) a compressed playback copy and serve it.
+
+    Returns the *source* file's response when it is already compressed, which is
+    what ``build_preview`` reports by handing back the source path.
+    """
+    try:
+        served = await run_in_threadpool(
+            audio_preview.build_preview, str(source), str(preview)
+        )
+    except FileNotFoundError as exc:
+        logger.exception("ffmpeg unavailable building preview for %s", label)
+        raise HTTPException(
+            status_code=503, detail="Audio preview unavailable: ffmpeg is not installed"
+        ) from exc
+    except Exception as exc:
+        logger.exception("Preview transcode failed for %s", label)
+        raise HTTPException(
+            status_code=503, detail=f"Audio preview unavailable: {exc}"
+        ) from exc
+
+    served_path = Path(served)
+    media_type = (
+        audio_preview.PREVIEW_MEDIA_TYPE
+        if served_path.suffix.lower() == audio_preview.PREVIEW_SUFFIX
+        else None
+    )
+    return FileResponse(
+        served_path, media_type=media_type, headers={"Content-Disposition": "inline"}
+    )
 
 
 def _noise_reduction_db(cleanup_result: Dict[str, Any]) -> Optional[float]:
@@ -725,6 +791,57 @@ async def stream_version_audio(
     if not path.exists():
         raise HTTPException(status_code=404, detail="Version audio file missing")
     return FileResponse(path, headers={"Content-Disposition": "inline"})
+
+
+@router.get("/api/produce/versions/{version_id}/peaks")
+async def version_waveform_peaks(
+    version_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Return the waveform drawing envelope for a version, computing it once.
+
+    Lets the console paint a version's waveform from ~15 KB of JSON instead of
+    downloading and decoding the whole file. Cached on the row; the cache is
+    cleared whenever the version's audio is replaced.
+    """
+    version = await db.get_song_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    cached = _usable_cached_peaks(version.get("waveform_peaks"))
+    if cached is not None:
+        return {"peaks": cached}
+
+    path = Path(version["audio_path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Version audio file missing")
+
+    peaks = await _compute_peaks_or_503(path, f"version {version_id}")
+    await db.set_song_version_waveform_peaks(version_id, peaks)
+    return {"peaks": peaks}
+
+
+@router.get("/api/produce/versions/{version_id}/preview")
+async def stream_version_preview(
+    version_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Stream a compressed playback copy of a version's audio.
+
+    For auditioning in the browser only — ``/audio`` still serves the real file,
+    which is what every DSP tool and the A/B fidelity comparison read.
+    """
+    version = await db.get_song_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    path = Path(version["audio_path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Version audio file missing")
+
+    preview = audio_preview.version_preview_path(path, _produced_dir())
+    return await _serve_preview_or_503(path, preview, f"version {version_id}")
 
 
 @router.post("/api/produce/versions/{version_id}/default")
@@ -1200,6 +1317,59 @@ async def stream_stem_audio(
     if not await run_in_threadpool(path.exists):
         raise HTTPException(status_code=404, detail="Stem audio file missing")
     return FileResponse(path, headers={"Content-Disposition": "inline"})
+
+
+@router.get("/api/produce/stems/{stem_id}/peaks")
+async def stem_waveform_peaks(
+    stem_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Return the waveform drawing envelope for one stem, computing it once.
+
+    The console draws a waveform per stem; before this it decoded every stem's
+    whole audio file to do it, which for a six-stem set of uncompressed Demucs
+    WAVs was ~260 MB per tab open. Cached on the stem row after the first call
+    and warmed by the separation job, so this is normally a DB read.
+    """
+    stem = await db.get_stem(stem_id)
+    if stem is None:
+        raise HTTPException(status_code=404, detail="Stem not found")
+
+    cached = _usable_cached_peaks(stem.get("waveform_peaks"))
+    if cached is not None:
+        return {"peaks": cached}
+
+    path = Path(stem["path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Stem audio file missing")
+
+    peaks = await _compute_peaks_or_503(path, f"stem {stem_id}")
+    await db.set_stem_waveform_peaks(stem_id, peaks)
+    return {"peaks": peaks}
+
+
+@router.get("/api/produce/stems/{stem_id}/preview")
+async def stream_stem_preview(
+    stem_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Stream a compressed playback copy of one stem.
+
+    The console decodes every stem at once to play them in sync, which over
+    uncompressed Demucs WAVs meant ~260 MB a set. This is ~15x smaller and is
+    only ever used for listening — ``/audio`` still serves the real file.
+    """
+    stem = await db.get_stem(stem_id)
+    if stem is None:
+        raise HTTPException(status_code=404, detail="Stem not found")
+    path = Path(stem["path"])
+    if not await run_in_threadpool(path.exists):
+        raise HTTPException(status_code=404, detail="Stem audio file missing")
+
+    preview = audio_preview.stem_preview_path(path)
+    return await _serve_preview_or_503(path, preview, f"stem {stem_id}")
 
 
 @router.post("/api/produce/stems/{set_id}/render")

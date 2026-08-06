@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import WaveformView from '../WaveformView';
+import type { Peaks } from '../audioEngine';
 import type { StemPlaybackControl } from './useStemPlayback';
 import type { FixEntry, StemInfo } from '@/hooks/useProcessingQueue';
 import { FULL_MIX_STEM_ID, stemLabel } from '@/hooks/useProcessingQueue';
@@ -10,7 +11,8 @@ import Spinner from './Spinner';
 
 interface StemRowProps {
   stem: StemInfo;
-  buffer: AudioBuffer | null;
+  peaks: Peaks | null;
+  /** The waveform is still being fetched. */
   loading: boolean;
   control: StemPlaybackControl | undefined;
   setControl: (patch: Partial<StemPlaybackControl>) => void;
@@ -41,7 +43,7 @@ interface StemRowProps {
  */
 export default function StemRow({
   stem,
-  buffer,
+  peaks,
   loading,
   control,
   setControl,
@@ -138,8 +140,6 @@ export default function StemRow({
             'identifying…'
           ) : isFullMix ? (
             'whole song'
-          ) : stem.silent ? (
-            <span className="text-text/25">silent — nothing in this stem</span>
           ) : stem.instruments.length > 0 ? (
             <span title={stem.instruments.map((i) => `${i.label} ${i.score}`).join(', ')}>
               {stem.instruments.map((i) => i.label).join(' · ')}
@@ -162,7 +162,7 @@ export default function StemRow({
 
       <div className="w-36 h-8 flex-none relative" onClick={(e) => e.stopPropagation()}>
         <WaveformView
-          buffer={buffer}
+          peaks={peaks}
           duration={maxDuration}
           height={32}
           playhead={playhead}

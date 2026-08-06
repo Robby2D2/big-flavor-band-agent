@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useProcessingQueue,
   FixEntry,
   FULL_MIX_STEM_ID,
   stemLabel,
 } from '@/hooks/useProcessingQueue';
-import { decodeAudio, Region } from '../audioEngine';
+import { decodeAudio, fetchPeaks, Region, WaveformPeaks } from '../audioEngine';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
 import VersionBar from './VersionBar';
@@ -57,37 +57,65 @@ export default function AudioProcessingTab({
 
   const queue = useProcessingQueue(songId, sourceVersionId);
 
+  const [peaks, setPeaks] = useState<Record<number, WaveformPeaks>>({});
+  const [peaksLoadingIds, setPeaksLoadingIds] = useState<Set<number>>(new Set());
+  const [peaksError, setPeaksError] = useState<string | null>(null);
   const [buffers, setBuffers] = useState<Record<number, AudioBuffer>>({});
-  const [loadingStemIds, setLoadingStemIds] = useState<Set<number>>(new Set());
   const [controls, setControls] = useState<Record<number, StemPlaybackControl>>({});
   const [region, setRegion] = useState<Region | null>(null);
   const [drawerFix, setDrawerFix] = useState<FixEntry | null>(null);
-  const [decodeError, setDecodeError] = useState<string | null>(null);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
-  // Decode the full mix and each stem once, for the transport, the console
-  // sparklines, playback, and the selected row's detail waveform. Decoding is
-  // fanned out rather than run one after another — a full stem set is several
-  // whole-song files, and serially they took long enough that the console sat
-  // there looking empty.
+  const fetchedPeakUrls = useRef<Map<number, string>>(new Map());
   const decodedUrls = useRef<Map<number, string>>(new Map());
-  const stemIdsKey = queue.stems.map((s) => s.id).join(',');
+
+  // Confirmed-silent stems never get a row in the console (see StemConsole),
+  // so there is nothing to draw or play for them.
+  const audibleStems = queue.stems.filter((s) => !s.silent);
+  const stemIdsKey = audibleStems.map((s) => s.id).join(',');
+
+  const targets = useMemo(
+    () =>
+      sourceVersionId == null
+        ? []
+        : [
+            {
+              id: FULL_MIX_STEM_ID,
+              peaks: `/api/produce/versions/${sourceVersionId}/peaks`,
+              audio: `/api/produce/versions/${sourceVersionId}/preview`,
+            },
+            ...audibleStems.map((s) => ({
+              id: s.id,
+              peaks: `/api/produce/stems/${s.id}/peaks`,
+              audio: `/api/produce/stems/${s.id}/preview`,
+            })),
+          ],
+    // `stemIdsKey` stands in for queue.stems: a fresh array arrives on every
+    // analysis pass, but only a different set of stem ids should refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sourceVersionId, stemIdsKey]
+  );
+
+  // Waveforms: a few KB per row, so this is what the console actually waits on.
+  // Everything visible — the transport, the sparklines, the detail waveform,
+  // and the timeline itself — comes from here rather than from decoded audio.
   useEffect(() => {
-    if (sourceVersionId == null) return;
-    const targets = [
-      { id: FULL_MIX_STEM_ID, url: `/api/produce/versions/${sourceVersionId}/audio` },
-      ...queue.stems.map((s) => ({ id: s.id, url: `/api/produce/stems/${s.id}/audio` })),
-    ];
+    if (targets.length === 0) return;
     const targetIds = new Set(targets.map((t) => t.id));
 
     // Drop anything that is no longer a console row (a re-separation replacing
     // the stem set), and keep what is still current — including the user's
     // mute/solo/gain for rows that survived.
+    for (const id of Array.from(fetchedPeakUrls.current.keys())) {
+      if (!targetIds.has(id)) fetchedPeakUrls.current.delete(id);
+    }
     for (const id of Array.from(decodedUrls.current.keys())) {
       if (!targetIds.has(id)) decodedUrls.current.delete(id);
     }
-    setBuffers((prev) =>
-      Object.fromEntries(Object.entries(prev).filter(([id]) => targetIds.has(Number(id))))
-    );
+    const keepCurrent = <T,>(prev: Record<number, T>) =>
+      Object.fromEntries(Object.entries(prev).filter(([id]) => targetIds.has(Number(id))));
+    setPeaks(keepCurrent);
+    setBuffers(keepCurrent);
     setControls((prev) =>
       Object.fromEntries(
         targets.map((t) => [
@@ -99,24 +127,24 @@ export default function AudioProcessingTab({
       )
     );
 
-    const pending = targets.filter((t) => decodedUrls.current.get(t.id) !== t.url);
+    const pending = targets.filter((t) => fetchedPeakUrls.current.get(t.id) !== t.peaks);
     if (pending.length === 0) return;
 
     let cancelled = false;
-    setDecodeError(null);
-    setLoadingStemIds(new Set(pending.map((t) => t.id)));
+    setPeaksError(null);
+    setPeaksLoadingIds(new Set(pending.map((t) => t.id)));
     void Promise.all(
       pending.map(async (t) => {
         try {
-          const buffer = await decodeAudio(t.url);
+          const loaded = await fetchPeaks(t.peaks);
           if (cancelled) return;
-          decodedUrls.current.set(t.id, t.url);
-          setBuffers((prev) => ({ ...prev, [t.id]: buffer }));
+          fetchedPeakUrls.current.set(t.id, t.peaks);
+          setPeaks((prev) => ({ ...prev, [t.id]: loaded }));
         } catch (err) {
-          if (!cancelled) setDecodeError((err as Error).message);
+          if (!cancelled) setPeaksError((err as Error).message);
         } finally {
           if (!cancelled) {
-            setLoadingStemIds((prev) => {
+            setPeaksLoadingIds((prev) => {
               const next = new Set(prev);
               next.delete(t.id);
               return next;
@@ -128,17 +156,60 @@ export default function AudioProcessingTab({
     return () => {
       cancelled = true;
     };
-    // `stemIdsKey` stands in for queue.stems: a fresh array arrives on every
-    // analysis pass, but only a different set of stem ids should re-decode.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceVersionId, stemIdsKey]);
+  }, [targets]);
+
+  // Playback audio, prefetched behind the waveforms. These are compressed
+  // copies (~15x smaller than the source WAVs), decoded up front so pressing
+  // play is instant — but nothing on screen waits for them.
+  useEffect(() => {
+    // The mix channel starts muted and the stems already sum to it, so its
+    // audio is only needed if the producer un-mutes or solos that row.
+    const wanted = targets.filter(
+      (t) => t.id !== FULL_MIX_STEM_ID || !controls[t.id]?.mute || controls[t.id]?.solo
+    );
+    const pending = wanted.filter((t) => decodedUrls.current.get(t.id) !== t.audio);
+    if (pending.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(
+      pending.map(async (t) => {
+        // Claim it up front so a re-render mid-decode doesn't start a second one.
+        decodedUrls.current.set(t.id, t.audio);
+        try {
+          const buffer = await decodeAudio(t.audio);
+          if (cancelled) return;
+          setBuffers((prev) => ({ ...prev, [t.id]: buffer }));
+        } catch (err) {
+          decodedUrls.current.delete(t.id);
+          if (!cancelled) setPlaybackError((err as Error).message);
+        }
+      })
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [targets, controls]);
 
   useEffect(() => {
     queue.ensureToolParams();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue.analyzed]);
 
-  const playback = useStemPlayback(queue.consoleStems, buffers, controls);
+  // The timeline comes from the waveform envelopes, so the transport is scaled
+  // correctly before any audio has finished decoding.
+  const serverMaxDuration = useMemo(
+    () => Object.values(peaks).reduce((m, p) => Math.max(m, p.duration), 0),
+    [peaks]
+  );
+  const playback = useStemPlayback(
+    queue.consoleStems,
+    buffers,
+    controls,
+    serverMaxDuration
+  );
+  // play() silently does nothing with no decoded buffers, so the transport has
+  // to stay disabled until at least one has landed.
+  const playbackReady = Object.keys(buffers).length > 0;
 
   const setControl = (id: number, patch: Partial<StemPlaybackControl>) => {
     setControls((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -179,9 +250,16 @@ export default function AudioProcessingTab({
           {queue.error}
         </div>
       )}
-      {decodeError && (
+      {peaksError && (
         <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded-lg text-sm">
-          {decodeError}
+          {peaksError}
+        </div>
+      )}
+      {/* Kept quieter than a waveform failure: the console is fully usable for
+          reviewing and accepting fixes, it just can't play them back. */}
+      {playbackError && (
+        <div className="p-3 bg-amber-500/10 border border-amber-500/30 text-amber-200 rounded-lg text-sm">
+          Playback audio unavailable — {playbackError}
         </div>
       )}
 
@@ -214,8 +292,9 @@ export default function AudioProcessingTab({
             <>
               <StemConsole
                 stems={queue.consoleStems}
-                buffers={buffers}
-                loadingStemIds={loadingStemIds}
+                peaks={peaks}
+                peaksLoadingIds={peaksLoadingIds}
+                playbackReady={playbackReady}
                 controls={controls}
                 setControl={setControl}
                 selectedStemId={queue.selectedStemId}
@@ -248,7 +327,7 @@ export default function AudioProcessingTab({
                       ? `/api/produce/versions/${sourceVersionId}/audio`
                       : `/api/produce/stems/${selectedStem.id}/audio`
                   }
-                  buffer={buffers[selectedStem.id] ?? null}
+                  peaks={peaks[selectedStem.id]?.peaks ?? null}
                   duration={playback.maxDuration}
                   region={region}
                   onRegionChange={setRegion}

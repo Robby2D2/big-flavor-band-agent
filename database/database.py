@@ -481,12 +481,14 @@ class DatabaseManager:
                 name VARCHAR(120),
                 is_published BOOLEAN NOT NULL DEFAULT FALSE,
                 metrics JSONB,
+                waveform_peaks JSONB,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (audio_path)
             );
             -- Older deployments created the table before the name column existed
             -- (issue #43); add it idempotently so this stays a single source of DDL.
             ALTER TABLE song_versions ADD COLUMN IF NOT EXISTS name VARCHAR(120);
+            ALTER TABLE song_versions ADD COLUMN IF NOT EXISTS waveform_peaks JSONB;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_song_versions_one_published
                 ON song_versions (song_id) WHERE is_published;
             CREATE INDEX IF NOT EXISTS idx_song_versions_song_id
@@ -646,10 +648,14 @@ class DatabaseManager:
         row, same position, same "Produced" timestamp), looking like the re-run did
         nothing even though the file was regenerated. Returns the updated row, or
         None if the version no longer exists.
+
+        Clears ``waveform_peaks``: the row id survives but the audio behind it
+        does not, so a cached drawing envelope would describe the old file.
         """
         query = """
             UPDATE song_versions
-            SET audio_path = $2, metrics = $3, created_at = CURRENT_TIMESTAMP
+            SET audio_path = $2, metrics = $3, waveform_peaks = NULL,
+                created_at = CURRENT_TIMESTAMP
             WHERE id = $1
             RETURNING *
         """
@@ -757,6 +763,7 @@ class DatabaseManager:
                 display_name VARCHAR(64),
                 instrument_tags JSONB,
                 tagged_at TIMESTAMP,
+                waveform_peaks JSONB,
                 UNIQUE (stem_set_id, name)
             );
             CREATE INDEX IF NOT EXISTS idx_song_stems_stem_set_id
@@ -766,6 +773,7 @@ class DatabaseManager:
             ALTER TABLE song_stems ADD COLUMN IF NOT EXISTS display_name VARCHAR(64);
             ALTER TABLE song_stems ADD COLUMN IF NOT EXISTS instrument_tags JSONB;
             ALTER TABLE song_stems ADD COLUMN IF NOT EXISTS tagged_at TIMESTAMP;
+            ALTER TABLE song_stems ADD COLUMN IF NOT EXISTS waveform_peaks JSONB;
         """
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
@@ -818,10 +826,14 @@ class DatabaseManager:
         self, stem_set_id: int, name: str, path: str
     ) -> Dict[str, Any]:
         """Record one separated stem file for a stem set. Returns the inserted row."""
+        # A re-run against the same set reuses the row, so the cached drawing
+        # envelope has to go with the old file — it describes audio that is no
+        # longer there.
         query = """
             INSERT INTO song_stems (stem_set_id, name, path)
             VALUES ($1, $2, $3)
-            ON CONFLICT (stem_set_id, name) DO UPDATE SET path = EXCLUDED.path
+            ON CONFLICT (stem_set_id, name) DO UPDATE
+                SET path = EXCLUDED.path, waveform_peaks = NULL
             RETURNING *
         """
         async with self.pool.acquire() as conn:
@@ -870,6 +882,38 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 query, stem_id, json.dumps(tags) if tags is not None else None
+            )
+        return dict(row) if row else None
+
+    async def set_stem_waveform_peaks(
+        self, stem_id: int, peaks: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Cache a stem's waveform drawing envelope (see waveform_peaks).
+
+        No companion timestamp, unlike instrument tagging: an envelope always
+        describes the audio, so the payload's presence is the whole state.
+        """
+        query = """
+            UPDATE song_stems SET waveform_peaks = $2
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, stem_id, json.dumps(peaks) if peaks is not None else None
+            )
+        return dict(row) if row else None
+
+    async def set_song_version_waveform_peaks(
+        self, version_id: int, peaks: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Cache a version's waveform drawing envelope (see waveform_peaks)."""
+        query = """
+            UPDATE song_versions SET waveform_peaks = $2
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, version_id, json.dumps(peaks) if peaks is not None else None
             )
         return dict(row) if row else None
 

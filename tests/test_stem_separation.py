@@ -25,7 +25,12 @@ import backend_api
 from src.api import radio_service
 from src.api import stem_jobs
 from src.api.routers import produce
-from src.production import stem_separation
+from src.production import (
+    audio_preview,
+    instrument_tagging,
+    stem_separation,
+    waveform_peaks,
+)
 from src.api.dependencies import get_db
 
 
@@ -153,8 +158,21 @@ class FakeDB:
     async def add_stem(self, stem_set_id, name, path):
         sid = self._next_stem
         self._next_stem += 1
-        row = {"id": sid, "stem_set_id": stem_set_id, "name": name, "path": path}
+        row = {
+            "id": sid,
+            "stem_set_id": stem_set_id,
+            "name": name,
+            "path": path,
+            "waveform_peaks": None,
+        }
         self.stems[sid] = row
+        return row
+
+    async def set_stem_waveform_peaks(self, stem_id, peaks):
+        row = self.stems.get(stem_id)
+        if row is None:
+            return None
+        row["waveform_peaks"] = peaks
         return row
 
     async def list_stems(self, stem_set_id):
@@ -187,6 +205,8 @@ def test_stem_endpoints_require_service_secret(stem_client):
     assert client.post("/api/produce/stems/separate", json={"song_id": 5}).status_code == 401
     assert client.get("/api/produce/songs/5/stems").status_code == 401
     assert client.get("/api/produce/stems/1/audio").status_code == 401
+    assert client.get("/api/produce/stems/1/peaks").status_code == 401
+    assert client.get("/api/produce/stems/1/preview").status_code == 401
     assert client.post("/api/produce/stems/1/render", json={}).status_code == 401
 
 
@@ -292,6 +312,224 @@ def test_render_produces_candidate_under_produced(stem_client, monkeypatch, tmp_
     # Candidate lands under produced/ so it plugs into approve()/discard() as-is.
     assert produce.PRODUCED_SUBDIR in str(candidate)
     assert candidate.exists()
+
+
+# ---- waveform peaks: the drawing envelope the console fetches instead of audio ----
+
+def _stub_post_separation_passes(monkeypatch):
+    """Keep the tagger and ffmpeg out of job tests, the way Demucs is kept out.
+
+    ``_run`` warms peaks, then previews, then tags. Without this the real
+    AudioSet model is downloaded and run (turning a sub-second test into a
+    minute) and ffmpeg is invoked for real.
+    """
+    monkeypatch.setattr(
+        instrument_tagging, "identify_instruments", lambda path: {"instruments": []}
+    )
+    monkeypatch.setattr(
+        audio_preview, "build_preview", lambda source, output: str(source)
+    )
+
+
+def _complete_set_with_stem(db, tmp_path, name="vocals"):
+    """Create a complete stem set with one real tone file on disk."""
+    audio = tmp_path / f"{name}.wav"
+    _write_tone(audio, 220.0, seconds=0.5)
+    stem_set = await_run(db.create_stem_set(5, "htdemucs_6s"))
+    await_run(db.set_stem_set_status(stem_set["id"], "complete"))
+    return await_run(db.add_stem(stem_set["id"], name, str(audio)))
+
+
+def test_peaks_computed_once_then_served_from_cache(stem_client, monkeypatch, tmp_path):
+    """The first request computes and persists; the second must not recompute."""
+    client, db, _ = stem_client
+    stem = _complete_set_with_stem(db, tmp_path)
+
+    first = client.get(
+        f"/api/produce/stems/{stem['id']}/peaks", headers=_editor_headers(monkeypatch)
+    )
+    assert first.status_code == 200, first.text
+    payload = first.json()["peaks"]
+    assert payload["version"] == waveform_peaks.PEAKS_FORMAT_VERSION
+    assert len(payload["min"]) == len(payload["max"]) == payload["resolution"]
+    assert db.stems[stem["id"]]["waveform_peaks"] is not None
+
+    # With the computation sabotaged, an identical response proves the cached
+    # payload was served rather than recomputed.
+    def boom(*args, **kwargs):
+        raise RuntimeError("should not recompute")
+
+    monkeypatch.setattr(waveform_peaks, "compute_peaks", boom)
+    second = client.get(
+        f"/api/produce/stems/{stem['id']}/peaks", headers=_editor_headers(monkeypatch)
+    )
+    assert second.status_code == 200
+    assert second.json()["peaks"] == payload
+
+
+def test_peaks_recomputed_when_cached_format_is_stale(stem_client, monkeypatch, tmp_path):
+    """An envelope from an older format version is ignored, not served.
+
+    This is what lets the payload shape change without a backfill over the
+    whole catalog.
+    """
+    client, db, _ = stem_client
+    stem = _complete_set_with_stem(db, tmp_path)
+    db.stems[stem["id"]]["waveform_peaks"] = {"version": 0, "min": [], "max": []}
+
+    resp = client.get(
+        f"/api/produce/stems/{stem['id']}/peaks", headers=_editor_headers(monkeypatch)
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["peaks"]["version"] == waveform_peaks.PEAKS_FORMAT_VERSION
+    assert resp.json()["peaks"]["min"], "stale cache should have been replaced"
+
+
+def test_peaks_unknown_stem_is_404(stem_client, monkeypatch):
+    client, *_ = stem_client
+    resp = client.get(
+        "/api/produce/stems/9999/peaks", headers=_editor_headers(monkeypatch)
+    )
+    assert resp.status_code == 404
+
+
+def test_peaks_missing_audio_file_is_404(stem_client, monkeypatch, tmp_path):
+    client, db, _ = stem_client
+    stem_set = await_run(db.create_stem_set(5, "htdemucs_6s"))
+    stem = await_run(
+        db.add_stem(stem_set["id"], "vocals", str(tmp_path / "not-written.wav"))
+    )
+
+    resp = client.get(
+        f"/api/produce/stems/{stem['id']}/peaks", headers=_editor_headers(monkeypatch)
+    )
+    assert resp.status_code == 404
+
+
+def test_peaks_compute_failure_is_503(stem_client, monkeypatch, tmp_path):
+    """An unreadable file surfaces as 503, not a 500 traceback."""
+    client, db, _ = stem_client
+    stem = _complete_set_with_stem(db, tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("libsndfile said no")
+
+    monkeypatch.setattr(waveform_peaks, "compute_peaks", boom)
+    resp = client.get(
+        f"/api/produce/stems/{stem['id']}/peaks", headers=_editor_headers(monkeypatch)
+    )
+    assert resp.status_code == 503
+
+
+# ---- compressed playback copies ----
+
+def test_stem_preview_is_built_once_and_served(stem_client, monkeypatch, tmp_path):
+    client, db, _ = stem_client
+    stem = _complete_set_with_stem(db, tmp_path)
+    built = []
+
+    def fake_build(source, output):
+        built.append(source)
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_bytes(b"fake-opus-bytes")
+        return output
+
+    monkeypatch.setattr(audio_preview, "build_preview", fake_build)
+    headers = _editor_headers(monkeypatch)
+
+    first = client.get(f"/api/produce/stems/{stem['id']}/preview", headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.headers["content-type"].startswith(audio_preview.PREVIEW_MEDIA_TYPE)
+    assert first.content == b"fake-opus-bytes"
+
+    second = client.get(f"/api/produce/stems/{stem['id']}/preview", headers=headers)
+    assert second.status_code == 200
+    # build_preview owns the "already built?" check, so the route calls it each
+    # time — what matters is that the same preview file is served back.
+    assert second.content == first.content
+
+
+def test_stem_preview_unknown_stem_is_404(stem_client, monkeypatch):
+    client, *_ = stem_client
+    resp = client.get(
+        "/api/produce/stems/9999/preview", headers=_editor_headers(monkeypatch)
+    )
+    assert resp.status_code == 404
+
+
+def test_stem_preview_without_ffmpeg_is_503(stem_client, monkeypatch, tmp_path):
+    """Outside Docker there is no ffmpeg; that must read as unavailable, not a crash."""
+    client, db, _ = stem_client
+    stem = _complete_set_with_stem(db, tmp_path)
+
+    def no_ffmpeg(*args, **kwargs):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(audio_preview, "build_preview", no_ffmpeg)
+    resp = client.get(
+        f"/api/produce/stems/{stem['id']}/preview", headers=_editor_headers(monkeypatch)
+    )
+    assert resp.status_code == 503
+    assert "ffmpeg" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_job_warms_peaks_after_completion(monkeypatch, tmp_path):
+    """A finished separation leaves every stem's envelope already cached."""
+    db = FakeDB()
+    stem_set = await db.create_stem_set(5, "htdemucs_6s")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake_separate(source_path, output_dir, model_name):
+        made = []
+        for name, freq in (("vocals", 220.0), ("drums", 440.0)):
+            path = Path(output_dir) / f"{name}.wav"
+            _write_tone(path, freq, seconds=0.5)
+            made.append({"name": name, "path": str(path)})
+        return made
+
+    monkeypatch.setattr(stem_separation, "separate_stems", fake_separate)
+    _stub_post_separation_passes(monkeypatch)
+
+    await stem_jobs.manager._run(
+        stem_set["id"], "src.wav", str(out_dir), "htdemucs_6s", db
+    )
+
+    assert db.stem_sets[stem_set["id"]]["status"] == "complete"
+    assert len(db.stems) == 2
+    for stem in db.stems.values():
+        assert stem["waveform_peaks"] is not None, stem["name"]
+
+
+@pytest.mark.asyncio
+async def test_peaks_warm_failure_does_not_fail_the_job(monkeypatch, tmp_path):
+    """Warming is best-effort: a failure leaves usable stems and a complete set."""
+    db = FakeDB()
+    stem_set = await db.create_stem_set(5, "htdemucs_6s")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake_separate(source_path, output_dir, model_name):
+        path = Path(output_dir) / "vocals.wav"
+        _write_tone(path, 220.0, seconds=0.5)
+        return [{"name": "vocals", "path": str(path)}]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("peaks blew up")
+
+    monkeypatch.setattr(stem_separation, "separate_stems", fake_separate)
+    monkeypatch.setattr(waveform_peaks, "compute_peaks", boom)
+    _stub_post_separation_passes(monkeypatch)
+
+    await stem_jobs.manager._run(
+        stem_set["id"], "src.wav", str(out_dir), "htdemucs_6s", db
+    )
+
+    assert db.stem_sets[stem_set["id"]]["status"] == "complete"
+    assert len(db.stems) == 1
+    assert db.stems[1]["waveform_peaks"] is None
 
 
 @pytest.mark.asyncio
