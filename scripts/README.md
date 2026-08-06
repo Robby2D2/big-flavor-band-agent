@@ -62,6 +62,7 @@ models and the GPU, and refuse to run without them.
 | Script | What it does |
 |--------|--------------|
 | [`backfill_lyric_timings.py`](backfill_lyric_timings.py) | Re-transcribes the catalog to produce **timed lyrics** (follow-along highlighting): isolated vocals → Whisper → `song_lyric_timings`. Resumable; safe to interrupt. Full runbook: [`docs/LYRICS_TIMINGS_BACKFILL.md`](../docs/LYRICS_TIMINGS_BACKFILL.md). |
+| [`retag_stem_instruments.py`](retag_stem_instruments.py) | Re-runs instrument tagging over every stem in a complete set, refreshing the `silent` verdict the stem console uses to hide empty stems. Run it after changing the silence threshold — tags already in the database keep the old verdict until something re-tags them. `--status` / `--dry-run` first; loads the tagger once for the whole run. |
 
 ## Ollama & GPU setup  **[legacy]**
 
