@@ -158,26 +158,36 @@ export default function AudioProcessingTab({
     };
   }, [targets]);
 
+  // The mix channel starts muted and the stems already sum to it, so its audio
+  // is only worth fetching once the producer un-mutes or solos that row.
+  // Deliberately a boolean rather than reading `controls` inside the effect
+  // below: `controls` is rebuilt as a fresh object on every stem-set change, so
+  // depending on it would restart the fan-out for an unrelated gain tweak.
+  const fullMixControl = controls[FULL_MIX_STEM_ID];
+  const fullMixAudible = !!fullMixControl && (!fullMixControl.mute || fullMixControl.solo);
+
   // Playback audio, prefetched behind the waveforms. These are compressed
   // copies (~15x smaller than the source WAVs), decoded up front so pressing
   // play is instant — but nothing on screen waits for them.
   useEffect(() => {
-    // The mix channel starts muted and the stems already sum to it, so its
-    // audio is only needed if the producer un-mutes or solos that row.
-    const wanted = targets.filter(
-      (t) => t.id !== FULL_MIX_STEM_ID || !controls[t.id]?.mute || controls[t.id]?.solo
-    );
+    const wanted = targets.filter((t) => t.id !== FULL_MIX_STEM_ID || fullMixAudible);
     const pending = wanted.filter((t) => decodedUrls.current.get(t.id) !== t.audio);
     if (pending.length === 0) return;
 
     let cancelled = false;
     void Promise.all(
       pending.map(async (t) => {
-        // Claim it up front so a re-render mid-decode doesn't start a second one.
+        // Claim it up front so a re-render mid-decode doesn't start a second
+        // fetch — but the claim has to be released on every path that doesn't
+        // produce a buffer, or a cancelled run leaves the row permanently
+        // "already fetched" and playback never becomes ready.
         decodedUrls.current.set(t.id, t.audio);
         try {
           const buffer = await decodeAudio(t.audio);
-          if (cancelled) return;
+          if (cancelled) {
+            decodedUrls.current.delete(t.id);
+            return;
+          }
           setBuffers((prev) => ({ ...prev, [t.id]: buffer }));
         } catch (err) {
           decodedUrls.current.delete(t.id);
@@ -188,7 +198,7 @@ export default function AudioProcessingTab({
     return () => {
       cancelled = true;
     };
-  }, [targets, controls]);
+  }, [targets, fullMixAudible]);
 
   useEffect(() => {
     queue.ensureToolParams();
@@ -201,15 +211,113 @@ export default function AudioProcessingTab({
     () => Object.values(peaks).reduce((m, p) => Math.max(m, p.duration), 0),
     [peaks]
   );
+  // What the transport plays for each row: its rendered fix chain when the row
+  // has enabled fixes, otherwise the raw audio. The transport is the only
+  // player on the page, so "with fixes" has to be what you simply hear rather
+  // than a mode you switch into.
+  const [fixedBuffers, setFixedBuffers] = useState<
+    Record<number, { signature: string; buffer: AudioBuffer }>
+  >({});
+  const [renderingFixes, setRenderingFixes] = useState(false);
+
+  /** Identifies a row's enabled chain, so a rendered take can be reused until it changes. */
+  const fixSignature = useMemo(() => {
+    const signatures: Record<number, string> = {};
+    for (const stem of queue.consoleStems) {
+      const enabled = queue
+        .fixesForStem(stem.id)
+        .filter((f) => f.enabled)
+        .map((f) => ({ tool: f.tool, params: f.currentParams }));
+      signatures[stem.id] = enabled.length ? JSON.stringify(enabled) : '';
+    }
+    return signatures;
+  }, [queue.consoleStems, queue.fixesForStem]);
+
+  const effectiveBuffers = useMemo(() => {
+    const merged: Record<number, AudioBuffer> = { ...buffers };
+    for (const [id, rendered] of Object.entries(fixedBuffers)) {
+      // A stale take (the chain changed since it was rendered) falls back to the
+      // raw audio rather than playing something the queue no longer describes.
+      if (rendered.signature && rendered.signature === fixSignature[Number(id)]) {
+        merged[Number(id)] = rendered.buffer;
+      }
+    }
+    return merged;
+  }, [buffers, fixedBuffers, fixSignature]);
+
   const playback = useStemPlayback(
     queue.consoleStems,
-    buffers,
+    effectiveBuffers,
     controls,
     serverMaxDuration
   );
   // play() silently does nothing with no decoded buffers, so the transport has
   // to stay disabled until at least one has landed.
   const playbackReady = Object.keys(buffers).length > 0;
+
+  const playWhenRenderedRef = useRef(false);
+
+  /**
+   * Render any row whose enabled chain isn't already decoded, then start playback.
+   *
+   * Chain-applying is real DSP on the server, so it happens on demand at play
+   * time rather than on every toggle in the fix queue — pressing play is the
+   * point where the producer has actually asked to hear the result.
+   */
+  const handleTogglePlay = async () => {
+    if (playback.playing) {
+      playback.pause();
+      return;
+    }
+
+    const stale = queue.consoleStems.filter((stem) => {
+      const signature = fixSignature[stem.id];
+      if (!signature) return false; // no enabled fixes — the raw audio is correct
+      return fixedBuffers[stem.id]?.signature !== signature;
+    });
+
+    if (stale.length === 0) {
+      void playback.play();
+      return;
+    }
+
+    setRenderingFixes(true);
+    setPlaybackError(null);
+    try {
+      const rendered = await Promise.all(
+        stale.map(async (stem) => {
+          const signature = fixSignature[stem.id];
+          const path = await queue.previewStemChain(stem.id);
+          const buffer = await decodeAudio(
+            `/api/produce/clean/preview?path=${encodeURIComponent(path)}`
+          );
+          return [stem.id, { signature, buffer }] as const;
+        })
+      );
+      // Start playing from the effect below rather than here: `playback.play`
+      // closes over the buffers of the render it came from, so calling it now
+      // would play the pre-render audio we just replaced.
+      playWhenRenderedRef.current = true;
+      setFixedBuffers((prev) => ({ ...prev, ...Object.fromEntries(rendered) }));
+    } catch (err) {
+      // Fall through to playing what we have: the raw stems are still a
+      // truthful rendition of the song, just without the pending fixes.
+      setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
+      void playback.play();
+    } finally {
+      setRenderingFixes(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!playWhenRenderedRef.current) return;
+    playWhenRenderedRef.current = false;
+    void playback.play();
+    // Only the freshly committed buffers should trigger this; `playback` is
+    // deliberately not a dependency, since its identity changes on every tick
+    // of the playhead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveBuffers]);
 
   const setControl = (id: number, patch: Partial<StemPlaybackControl>) => {
     setControls((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -243,6 +351,7 @@ export default function AudioProcessingTab({
         onManageVersions={onManageVersions}
         analyzing={queue.analyzing}
         analysisNote={queue.analysisNote}
+        hasStems={queue.stems.length > 0}
       />
 
       {queue.error && (
@@ -309,7 +418,8 @@ export default function AudioProcessingTab({
                 playing={playback.playing}
                 playhead={playback.playhead}
                 maxDuration={playback.maxDuration}
-                onTogglePlay={playback.toggle}
+                onTogglePlay={handleTogglePlay}
+                renderingFixes={renderingFixes}
                 onSeek={playback.seek}
                 separating={queue.analyzing}
                 analyzed={queue.analyzed}
@@ -319,20 +429,13 @@ export default function AudioProcessingTab({
 
               {selectedStem && (
                 <StemDetailPanel
-                  stemId={selectedStem.id}
                   stemName={stemLabel(selectedStem)}
                   sourceName={selectedStem.name}
-                  audioSrc={
-                    fullMixSelected
-                      ? `/api/produce/versions/${sourceVersionId}/audio`
-                      : `/api/produce/stems/${selectedStem.id}/audio`
-                  }
                   peaks={peaks[selectedStem.id]?.peaks ?? null}
                   duration={playback.maxDuration}
                   region={region}
                   onRegionChange={setRegion}
                   enabledFixCount={enabledSelectedStemFixCount}
-                  onPreviewChain={() => queue.previewStemChain(selectedStem.id)}
                 />
               )}
 

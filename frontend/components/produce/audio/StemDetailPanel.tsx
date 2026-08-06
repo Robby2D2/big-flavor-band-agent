@@ -1,80 +1,42 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import WaveformView from '../WaveformView';
 import { formatTime, Peaks, Region } from '../audioEngine';
 import { stemColor } from './stemColors';
 
 interface StemDetailPanelProps {
-  stemId: number;
   /** What to call this stem — the producer's label when they've set one. */
   stemName: string;
   /** The Demucs source name, which is what the color scheme is keyed on. */
   sourceName: string;
-  /**
-   * Audio URL for the "A · as recorded" side (a stem file, or the full mix).
-   * Deliberately the real source file, not the compressed playback copy the
-   * console mixes: this control exists to judge the DSP, and "B" is a freshly
-   * rendered WAV, so a lossy A would not be a fair comparison. `preload="none"`
-   * keeps it free until the producer actually presses play.
-   */
-  audioSrc: string;
   peaks: Peaks | null;
   duration: number;
   region: Region | null;
   onRegionChange: (region: Region | null) => void;
   enabledFixCount: number;
-  onPreviewChain: () => Promise<string>;
 }
 
 /**
- * The selected stem's own waveform: drag a region to scope the fix queue
- * below to it, and A/B the stem as-recorded against its enabled fix chain
- * rendered on demand (there's no live preview — chain-applying is real DSP
- * work, so "B" is fetched only when asked for).
+ * The selected stem's own waveform: drag a region to scope the fix queue below
+ * it to part of the song.
+ *
+ * There is deliberately no player here. This panel used to A/B the stem
+ * as-recorded against its rendered fix chain, which meant a second transport
+ * playing the same audio as the console's — two players, unsynchronised, for
+ * one song. The console transport is now the only one, and it plays the fix
+ * chain itself, so "with fixes" is what you hear rather than something you
+ * switch to.
  */
 export default function StemDetailPanel({
-  stemId,
   stemName,
   sourceName,
-  audioSrc,
   peaks,
   duration,
   region,
   onRegionChange,
   enabledFixCount,
-  onPreviewChain,
 }: StemDetailPanelProps) {
-  const [mode, setMode] = useState<'A' | 'B'>('A');
-  const [previewPath, setPreviewPath] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const color = stemColor(sourceName);
-
-  // Selecting a different stem, or changing which fixes are enabled,
-  // invalidates any previously rendered "with fixes" preview.
-  useEffect(() => {
-    setPreviewPath(null);
-    setMode('A');
-  }, [stemId, enabledFixCount]);
-
-  const handleShowFixes = async () => {
-    if (previewPath) {
-      setMode('B');
-      return;
-    }
-    setPreviewLoading(true);
-    setPreviewError(null);
-    try {
-      const path = await onPreviewChain();
-      setPreviewPath(path);
-      setMode('B');
-    } catch (err) {
-      setPreviewError((err as Error).message);
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
 
   return (
     <div className="bg-raised border border-signal/20 rounded-xl p-4">
@@ -82,29 +44,13 @@ export default function StemDetailPanel({
         <div className="flex items-center gap-2.5">
           <span className="w-2 h-2 rounded-sm" style={{ background: color }} />
           <h3 className="font-semibold text-text capitalize">{stemName}</h3>
-          <div className="flex p-0.5 bg-well border border-white/8 rounded-lg">
-            <button
-              onClick={() => setMode('A')}
-              className={`font-mono text-[10.5px] font-semibold px-2.5 py-1 rounded-md ${
-                mode === 'A' ? 'bg-confirm text-canvas' : 'text-text/50'
-              }`}
-            >
-              A · as recorded
-            </button>
-            <button
-              onClick={handleShowFixes}
-              disabled={enabledFixCount === 0 || previewLoading}
-              className={`font-mono text-[10.5px] font-semibold px-2.5 py-1 rounded-md disabled:opacity-40 ${
-                mode === 'B' ? 'bg-confirm text-canvas' : 'text-text/50'
-              }`}
-            >
-              {previewLoading ? 'Rendering…' : `B · with fixes${enabledFixCount ? ` (${enabledFixCount})` : ''}`}
-            </button>
-          </div>
+          {enabledFixCount > 0 && (
+            <span className="font-mono text-[9.5px] tracking-wide text-confirm bg-confirm/15 px-1.5 py-0.5 rounded">
+              {enabledFixCount} FIX{enabledFixCount === 1 ? '' : 'ES'} · HEARD IN THE TRANSPORT
+            </span>
+          )}
         </div>
       </div>
-
-      {previewError && <p className="text-xs text-red-400 mb-2">{previewError}</p>}
 
       <WaveformView
         peaks={peaks}
@@ -135,17 +81,6 @@ export default function StemDetailPanel({
           </button>
         )}
       </div>
-
-      <audio
-        controls
-        preload="none"
-        src={
-          mode === 'B' && previewPath
-            ? `/api/produce/clean/preview?path=${encodeURIComponent(previewPath)}`
-            : audioSrc
-        }
-        className="w-full h-9 mt-3"
-      />
     </div>
   );
 }

@@ -34,6 +34,8 @@ interface StemConsoleProps {
   playhead: number;
   maxDuration: number;
   onTogglePlay: () => void;
+  /** A fix chain is being rendered before playback can start. */
+  renderingFixes: boolean;
   onSeek: (seconds: number) => void;
   separating: boolean;
   analyzed: boolean;
@@ -68,6 +70,7 @@ export default function StemConsole({
   playhead,
   maxDuration,
   onTogglePlay,
+  renderingFixes,
   onSeek,
   separating,
   analyzed,
@@ -122,11 +125,13 @@ export default function StemConsole({
           onClick={onTogglePlay}
           // The waveforms arrive well before the audio does, so without the
           // playbackReady gate the button would look live and do nothing.
-          disabled={maxDuration === 0 || !playbackReady}
-          aria-label={playing ? 'Pause' : playbackReady ? 'Play' : 'Preparing playback'}
+          disabled={maxDuration === 0 || !playbackReady || renderingFixes}
+          aria-label={
+            playing ? 'Pause' : renderingFixes ? 'Rendering fixes' : playbackReady ? 'Play' : 'Preparing playback'
+          }
           className="flex-none w-9 h-9 rounded-full bg-signal text-canvas flex items-center justify-center hover:opacity-90 disabled:opacity-40"
         >
-          {maxDuration > 0 && !playbackReady ? (
+          {renderingFixes || (maxDuration > 0 && !playbackReady) ? (
             <Spinner className="w-3.5 h-3.5" />
           ) : playing ? (
             <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
@@ -142,6 +147,9 @@ export default function StemConsole({
         <span className="flex-none font-mono text-xs text-text/55 tabular-nums">
           {formatTime(playhead)} / {formatTime(maxDuration)}
         </span>
+        {renderingFixes && (
+          <span className="flex-none font-mono text-[10px] text-attention">rendering fixes…</span>
+        )}
         <div className="flex-1 min-w-0 relative">
           <WaveformView
             peaks={fullMixPeaks}
