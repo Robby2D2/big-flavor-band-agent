@@ -116,6 +116,10 @@ def test_encode_uses_the_configured_codec_and_leaves_no_part_file(tmp_path, monk
     assert "-nostdin" in cmd, "ffmpeg must not consume the server's stdin"
     assert cmd[-1].endswith(".part"), "encode should go to a temp name"
     assert list(out.parent.glob("*.part")) == []
+    # The temp name has no recognisable extension, so the container format has
+    # to be stated outright — without this ffmpeg cannot choose a muxer and the
+    # encode fails before writing a byte.
+    assert cmd[cmd.index("-f") + 1] == audio_preview.PREVIEW_FORMAT
 
 
 def test_failed_encode_raises_and_cleans_up(tmp_path, monkeypatch):

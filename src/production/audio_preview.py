@@ -34,6 +34,10 @@ PREVIEW_CODEC = "libopus"
 PREVIEW_SUFFIX = ".opus"
 PREVIEW_MEDIA_TYPE = "audio/ogg"
 PREVIEW_BITRATE = "96k"
+# Passed to ffmpeg as -f. Stated explicitly because the encode writes to a
+# ".part" temp file, and ffmpeg otherwise picks the muxer from the output
+# filename's extension — which would be ".part" and fails outright.
+PREVIEW_FORMAT = "ogg"
 
 PREVIEW_SUBDIR = "previews"
 PREVIEW_TIMEOUT_S = 300
@@ -102,6 +106,7 @@ def build_preview(source_path: str, output_path: str) -> str:
                 "-vbr", "on",
                 "-ac", "2",
                 "-ar", "48000",  # Opus's native rate; resampling here is unavoidable
+                "-f", PREVIEW_FORMAT,
                 str(partial),
             ],
             check=True,
