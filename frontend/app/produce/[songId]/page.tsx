@@ -249,10 +249,11 @@ export default function ProduceSongPage({
             <h2 className="text-xl font-semibold text-text mb-1">Audio processing</h2>
             <p className="text-sm text-text/50 mb-4">
               Pick a starting version, then Start analysis — it separates the song
-              into stems and measures each one on its own. Review the detected
-              fixes below, adjust or skip what you don&apos;t want, then accept the
-              rest as a new version. The version you start from is never
-              overwritten.
+              into stems the first time and measures each one on its own; after
+              that it reuses the stems you have (Re-separate makes new ones).
+              Review the detected fixes below, adjust or skip what you don&apos;t
+              want, then accept the rest as a new version. The version you start
+              from is never overwritten.
             </p>
             <AudioProcessingTab
               songId={songId}

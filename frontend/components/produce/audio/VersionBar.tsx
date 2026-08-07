@@ -14,6 +14,8 @@ interface VersionBarProps {
   onManageVersions: () => void;
   analyzing: boolean;
   analysisNote: string | null;
+  /** The song already has stems, so this pass only measures them. */
+  hasStems: boolean;
 }
 
 /**
@@ -30,6 +32,7 @@ export default function VersionBar({
   onManageVersions,
   analyzing,
   analysisNote,
+  hasStems,
 }: VersionBarProps) {
   const current = versions.find((v) => v.id === sourceVersionId);
 
@@ -84,9 +87,13 @@ export default function VersionBar({
       {analysisNote && (
         <p className="basis-full font-mono text-xs text-text/40">{analysisNote}</p>
       )}
+      {/* Says which of the two jobs this press will actually do: with stems
+          already on disk it never re-separates — that's Re-separate's job. */}
       {!analysisNote && (
         <p className="basis-full font-mono text-xs text-text/35">
-          separates stems, then measures each · takes a minute or two
+          {hasStems
+            ? 'measures the stems you already have · use Re-separate below to make new ones'
+            : 'separates stems, then measures each · takes a minute or two'}
         </p>
       )}
     </div>

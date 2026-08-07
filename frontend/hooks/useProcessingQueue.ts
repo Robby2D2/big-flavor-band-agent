@@ -240,18 +240,19 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     };
   }, [songId, untaggedCount]);
 
-  // `forceNew=false` (normal "Start analysis"): reuse an existing complete
-  // stem set if one exists, else kick off separation and wait for it.
+  // `forceNew=false` (normal "Start analysis"): never separate over stems that
+  // already exist — if the song has a complete stem set, reuse it and go
+  // straight to measuring. Demucs costs minutes, so making *new* stems is
+  // "Re-separate"'s job alone; separation here is only the first-time path,
+  // when the song has no usable stems at all.
   // `forceNew=true` ("Re-separate"): always wait for the *newest* set to
   // finish, even if an older one is already complete — otherwise a forced
   // re-separation would short-circuit straight back to the stale stems.
   const waitForStemSet = useCallback(
     async (forceNew: boolean): Promise<StemSetRow> => {
       let sets = await fetchStemSets(songId);
-      if (!forceNew) {
-        const complete = latestComplete(sets);
-        if (complete) return complete;
-      }
+      const existing = latestComplete(sets);
+      if (!forceNew && existing) return existing;
 
       const alreadyRunning = sets.some((s) => IN_FLIGHT.has(s.status));
       if (!alreadyRunning) {

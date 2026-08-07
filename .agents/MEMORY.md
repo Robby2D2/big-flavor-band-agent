@@ -11,6 +11,23 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-08-06 — "Start analysis" never re-separates over existing stems (now stated, and tested)
+The rule the produce tab runs on: **Start analysis separates only when the song has no usable stems;
+making new ones is Re-separate's job.** `useProcessingQueue.waitForStemSet(forceNew)` already
+implemented it — `forceNew=false` returns `latestComplete(sets)` and never POSTs
+`/api/produce/stems/separate` — but nothing said so, and three bits of UI copy promised that Start
+analysis "separates the song into stems" regardless. The copy in `VersionBar` now switches on
+`hasStems` ("measures the stems you already have · use Re-separate below to make new ones") and the
+`/produce/[songId]` blurb says separation is the first-time path.
+
+The load-bearing part is `frontend/__tests__/useProcessingQueue.test.ts` — the first hook test in the
+repo, and the thing that stops a future edit from quietly reintroducing a multi-minute Demucs run on
+every press. Two testing notes for anything else that exercises this hook:
+- **Don't use RTL `waitFor` with `vi.useFakeTimers()`** — it polls on an interval the fake clock
+  freezes, so every assertion hangs to the 5 s test timeout. Await the pass inside `act()` and assert
+  directly; drive the hook's 4 s separation poll with `vi.advanceTimersByTimeAsync()`.
+- Give fake stems `tagged: true`, or the background instrument-tag poll keeps firing through the test.
+
 ### 2026-08-04 — Stem console loaded ~260 MB per tab open to draw waveforms; now ~15 KB of peaks + Opus playback copies
 **The measurement that drove this:** stems are uncompressed Demucs WAV — `produced/1140/stems/9/bass.wav`
 is 43.8 MB, a six-stem set ~262 MB, and a *cleaned* version (if selected as the source) 62 MB. All of
