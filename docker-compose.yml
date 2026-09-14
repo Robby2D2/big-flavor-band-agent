@@ -141,6 +141,7 @@ services:
       # Mount source code for hot reloading
       - ./frontend/app:/app/app:ro
       - ./frontend/components:/app/components:ro
+      - ./frontend/hooks:/app/hooks:ro
       - ./frontend/lib:/app/lib:ro
       - ./frontend/public:/app/public:ro
     ports:

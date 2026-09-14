@@ -158,7 +158,7 @@ docker logs bigflavor-liquidsoap --tail 100   # radio debugging
 
 ### Hot reloading — restart, don't rebuild
 
-`./src`, `./database`, `./backend_api.py` (backend) and `./frontend/{app,components,lib,public}`
+`./src`, `./database`, `./backend_api.py` (backend) and `./frontend/{app,components,hooks,lib,public}`
 (frontend) are mounted read-only. After a code change:
 
 ```bash
