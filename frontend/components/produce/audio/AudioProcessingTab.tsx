@@ -8,6 +8,7 @@ import {
   stemLabel,
 } from '@/hooks/useProcessingQueue';
 import { decodeAudio, fetchPeaks, Region, WaveformPeaks } from '../audioEngine';
+import { mapWithConcurrency } from '@/lib/concurrency';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
 import VersionBar from './VersionBar';
@@ -17,6 +18,16 @@ import FixQueue from './FixQueue';
 import AdvancedDrawer from './AdvancedDrawer';
 import ResultSidebar from './ResultSidebar';
 import LyricsCard from './LyricsCard';
+
+/**
+ * How many stems to render through their fix chains at once.
+ *
+ * The rendering is CPU-bound on the server, so all six stems at once doesn't
+ * finish the batch any sooner — it just stretches every one of those requests
+ * to the length of the whole batch, which is how they end up past the reverse
+ * proxy's read timeout and come back as an error page instead of audio.
+ */
+const RENDER_CONCURRENCY = 2;
 
 interface VersionOption {
   id: number;
@@ -284,16 +295,14 @@ export default function AudioProcessingTab({
     setRenderingFixes(true);
     setPlaybackError(null);
     try {
-      const rendered = await Promise.all(
-        stale.map(async (stem) => {
-          const signature = fixSignature[stem.id];
-          const path = await queue.previewStemChain(stem.id);
-          const buffer = await decodeAudio(
-            `/api/produce/clean/preview?path=${encodeURIComponent(path)}`
-          );
-          return [stem.id, { signature, buffer }] as const;
-        })
-      );
+      const rendered = await mapWithConcurrency(stale, RENDER_CONCURRENCY, async (stem) => {
+        const signature = fixSignature[stem.id];
+        const path = await queue.previewStemChain(stem.id);
+        const buffer = await decodeAudio(
+          `/api/produce/clean/preview?path=${encodeURIComponent(path)}`
+        );
+        return [stem.id, { signature, buffer }] as const;
+      });
       // Start playing from the effect below rather than here: `playback.play`
       // closes over the buffers of the render it came from, so calling it now
       // would play the pre-render audio we just replaced.

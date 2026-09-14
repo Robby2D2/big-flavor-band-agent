@@ -71,6 +71,8 @@ frontend/
                                 #   FixEntry state, accept/preview)
   hooks/useActiveLyric.ts      # Resolves active lyric line/word from a playback time
   lib/lyricTimings.ts          # Timed-lyric types + pure lookup logic (unit-tested under __tests__/)
+  lib/apiJson.ts               # Reads a JSON API body; turns a proxy's HTML error page into a sentence
+  lib/concurrency.ts           # mapWithConcurrency — run a batch of API calls a few at a time
   __tests__/                   # vitest + jsdom + React Testing Library (`npm test`)
 streaming/
   radio.liq                   # Liquidsoap config

@@ -39,7 +39,10 @@ function completeSet(id: number): FakeSet {
  */
 function installFakeApi(sets: FakeSet[]) {
   const calls: string[] = [];
-  const json = (data: unknown) => ({ ok: true, json: async () => data }) as Response;
+  // Served as text, the way the hook reads it (lib/apiJson.ts) — a real
+  // response body is a string, and only the app's own bodies are JSON.
+  const json = (data: unknown) =>
+    ({ ok: true, status: 200, text: async () => JSON.stringify(data) }) as Response;
 
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);

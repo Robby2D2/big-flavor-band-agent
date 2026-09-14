@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fixCopyFor } from '@/components/produce/audio/fixCopy';
+import { readJson } from '@/lib/apiJson';
+import { mapWithConcurrency } from '@/lib/concurrency';
 
 export type Confidence = 'high' | 'worth_a_listen' | null;
 
@@ -94,7 +96,7 @@ function toStemInfo(raw: any): StemInfo {
 
 async function fetchStemSets(songId: number): Promise<StemSetRow[]> {
   const res = await fetch(`/api/produce/songs/${songId}/stems`);
-  const data = await res.json();
+  const data = await readJson(res);
   if (!res.ok) throw new Error(data.detail || data.error || 'Failed to load stems');
   return (data.stem_sets || []).map((set: any) => ({
     ...set,
@@ -141,17 +143,8 @@ function mergeStemTags(current: StemInfo[], incoming: StemInfo[]): StemInfo[] {
 async function runAnalyzeJobs(
   jobs: Array<() => Promise<FixEntry | null>>
 ): Promise<FixEntry[]> {
-  const results: FixEntry[] = [];
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < jobs.length) {
-      const job = jobs[cursor++];
-      const entry = await job();
-      if (entry) results.push(entry);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(ANALYZE_CONCURRENCY, jobs.length) }, worker));
-  return results;
+  const results = await mapWithConcurrency(jobs, ANALYZE_CONCURRENCY, (job) => job());
+  return results.filter((entry): entry is FixEntry => entry !== null);
 }
 
 async function postJson(url: string, body: unknown): Promise<any> {
@@ -160,7 +153,7 @@ async function postJson(url: string, body: unknown): Promise<any> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
+  const data = await readJson(res);
   if (!res.ok) throw new Error(data.detail || data.error || `${url} failed`);
   return data;
 }
@@ -283,8 +276,10 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ song_id: songId, stem_id: stemId }),
       });
-      const data = await res.json();
-      if (!res.ok) return null; // one tool failing to analyze shouldn't sink the whole queue
+      // Checked before reading the body: one tool failing to analyze — or its
+      // response never making it back — shouldn't sink the whole queue.
+      if (!res.ok) return null;
+      const data = await readJson(res);
       const r = data.result;
       if (!r || !r.recommended) return null;
       const copy = fixCopyFor(tool, r.findings, r.reason);
@@ -313,8 +308,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ song_id: songId, source_version_id: sourceVersionId }),
       });
-      const data = await res.json();
       if (!res.ok) return null;
+      const data = await readJson(res);
       const r = data.result;
       if (!r || !r.recommended) return null;
       const copy = fixCopyFor(tool, r.findings, r.reason);
@@ -435,7 +430,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ display_name: trimmed }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok) throw new Error(data.detail || data.error || 'Failed to rename stem');
       setStems((prev) => prev.map((s) => (s.id === stemId ? toStemInfo(data.stem) : s)));
     } catch (err) {
@@ -582,8 +577,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     if (Object.keys(toolParamsByTool).length) return;
     try {
       const res = await fetch('/api/produce/tools');
-      const data = await res.json();
       if (!res.ok) return;
+      const data = await readJson(res);
       const map: Record<string, any[]> = {};
       for (const t of data.tools || []) map[t.name] = t.params || [];
       setToolParamsByTool(map);
