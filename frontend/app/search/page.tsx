@@ -19,6 +19,8 @@ export default function SearchPage() {
   const [currentSong, setCurrentSong] = useState<any>(null);
   const [searchSummary, setSearchSummary] = useState<SearchSummary | null>(null);
   const [similarTo, setSimilarTo] = useState<string | null>(null);
+  // Kept so a result can be explained on demand, after the search has returned.
+  const [lastQuery, setLastQuery] = useState<string>('');
 
   const postJson = async (url: string, body: unknown) => {
     const response = await fetch(url, {
@@ -52,6 +54,7 @@ export default function SearchPage() {
 
     try {
       let data: any;
+      setLastQuery(params.query || '');
 
       switch (params.mode) {
         case 'natural':
@@ -231,6 +234,7 @@ export default function SearchPage() {
                   songs={results}
                   onPlay={handlePlaySong}
                   onFindSimilar={handleFindSimilar}
+                  query={lastQuery}
                 />
               )}
               {results.length === 0 && (

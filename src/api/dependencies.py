@@ -100,6 +100,12 @@ class AgentChatRequest(BaseModel):
     conversation_id: Optional[str] = None
 
 
+class ExplainMatchRequest(BaseModel):
+    """Why did this one song come back for this one query? Asked on demand."""
+    query: str
+    song_id: int
+
+
 class SongRequest(BaseModel):
     song_title: Optional[str] = None
     song_id: Optional[int] = None

@@ -38,6 +38,7 @@ EXPECTED_ROUTES = {
     ("POST", "/api/search/natural"),
     ("POST", "/api/search/text"),
     ("POST", "/api/search/lyrics"),
+    ("POST", "/api/search/explain"),
     ("GET", "/api/songs/{song_id}/lyrics"),
     ("GET", "/api/songs/{song_id}/lyrics/timed"),
     ("POST", "/api/agent/chat"),

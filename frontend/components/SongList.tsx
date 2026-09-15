@@ -27,15 +27,21 @@ interface SongListProps {
   onPlay: (song: Song) => void;
   onAddToQueue?: (song: Song) => void;
   onFindSimilar?: (song: Song) => void;
+  /** The search these songs answered — needed to explain why one matched. */
+  query?: string;
 }
 
-export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar }: SongListProps) {
+export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar, query }: SongListProps) {
   const [addingToQueue, setAddingToQueue] = useState<number | null>(null);
   const [queueMessage, setQueueMessage] = useState<{ id: number; message: string } | null>(null);
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const [lyricsModal, setLyricsModal] = useState<{ song: Song; lyrics: string } | null>(null);
   const [loadingLyrics, setLoadingLyrics] = useState<number | null>(null);
   const [showInfoId, setShowInfoId] = useState<number | null>(null);
+  // Explanations are fetched per song on click and kept for the rest of the
+  // result set's life, so reopening the same tooltip costs nothing.
+  const [explanations, setExplanations] = useState<Record<number, string>>({});
+  const [explaining, setExplaining] = useState<number | null>(null);
 
   const formatDuration = (seconds?: number) => {
     if (!seconds) return 'Unknown';
@@ -80,6 +86,43 @@ export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar }:
     }
   };
 
+  const handleToggleInfo = async (song: Song) => {
+    if (showInfoId === song.id) {
+      setShowInfoId(null);
+      return;
+    }
+
+    setShowInfoId(song.id);
+
+    // A reason that came with the result, or one already fetched, stands.
+    if (song.match_reason || song.commentary || explanations[song.id] || !query) {
+      return;
+    }
+
+    setExplaining(song.id);
+    try {
+      const response = await fetch('/api/search/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, song_id: song.id }),
+      });
+      const data = await response.json().catch(() => ({}));
+      setExplanations((current) => ({
+        ...current,
+        [song.id]: response.ok
+          ? data.reason
+          : data.error || 'Could not explain this match.',
+      }));
+    } catch {
+      setExplanations((current) => ({
+        ...current,
+        [song.id]: 'Could not reach the server for an explanation.',
+      }));
+    } finally {
+      setExplaining(null);
+    }
+  };
+
   const handleViewLyrics = async (song: Song) => {
     setOpenMenuId(null);
     setLoadingLyrics(song.id);
@@ -114,11 +157,11 @@ export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar }:
                     {song.title}
                   </h3>
 
-                  {/* Info icon for match reason */}
-                  {(song.match_reason || song.commentary) && (
+                  {/* Why this matched — explained on demand, not during search */}
+                  {(song.match_reason || song.commentary || query) && (
                     <div className="relative">
                       <button
-                        onClick={() => setShowInfoId(showInfoId === song.id ? null : song.id)}
+                        onClick={() => handleToggleInfo(song)}
                         className="p-1 text-gray-400 hover:text-blue-500 transition-colors"
                         title="Why this matched"
                       >
@@ -129,9 +172,15 @@ export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar }:
 
                       {showInfoId === song.id && (
                         <div className="absolute left-0 top-8 z-20 w-64 p-3 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700">
-                          <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
-                            {song.match_reason || song.commentary}
-                          </p>
+                          {explaining === song.id ? (
+                            <p className="text-sm text-gray-500 dark:text-gray-400 italic">
+                              Working out why…
+                            </p>
+                          ) : (
+                            <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+                              {song.match_reason || song.commentary || explanations[song.id]}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>

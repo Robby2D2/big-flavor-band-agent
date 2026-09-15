@@ -122,9 +122,34 @@ implement `generate_with_tools()` so tool calling works regardless of backend.
 `SongRAGSystem` (`src/rag/big_flavor_rag.py`) is the read/search path and is called **directly** by
 the backend (it is a library, not a service) for speed. It combines:
 - **Audio embeddings** — CLAP + librosa features (`audio_embedding_extractor.py`), stored as pgvector.
-- **Text/metadata embeddings** — `sentence-transformers`.
+- **Text/metadata embeddings** — `sentence-transformers` (all-MiniLM-L6-v2, 384 dims).
 - **Lyrics** — Whisper-transcribed (`lyrics_extractor.py`, large-v3 model), indexed for full-text +
   semantic lyric search.
+
+**Text search ranking (2026-09-15).** `search_by_text_description` blends two signals, and no LLM is
+involved in any of it — a search answers in tens of milliseconds:
+
+- **Semantic** — cosine over `text_embeddings`, which now holds *two* rows per song: `lyrics` and
+  `metadata`. The metadata sentence (`build_metadata_text` in `src/rag/search_text.py`: title, genre,
+  mood, energy, tempo, key) is what lets a song be found by what it **is**. Before it existed only
+  lyrics were embedded, so "melancholic country" could only match songs whose words said so.
+  Backfill with `scripts/backfill_metadata_embeddings.py` — idempotent, re-run after any metadata
+  sweep.
+- **Keyword** — a *bonus*, not a rival score: `tokenize_query` splits the query (the old code matched
+  the whole query as one `ILIKE '%…%'`, so multi-word queries never matched), then exact hits on the
+  controlled vocabularies (genre/mood/energy) add 0.10 each and title substrings 0.05, capped at
+  0.30. The final score is `semantic + bonus`. A flat keyword score used to *replace* the semantic
+  one, which left every song of a genre tied at exactly 0.500 and ordered alphabetically.
+
+Candidates are scored semantically even when they surface only via keywords, so ties break on
+relevance rather than title.
+
+**Match explanations are on demand.** `/api/search/explain` (`src/rag/explain.py`) explains one song
+against one query, when a listener clicks the (i). Search itself used to route through the agent so
+every result carried an LLM-written line — 2-12s per search for ranking the agent did not influence
+(it called this same RAG function and only annotated it), and the lines were ungrounded enough to
+credit a catalogue cover of "Country Roads" to Bob Dylan. The prompt now supplies the song's own
+facts and forbids adding any.
 
 **Timed lyrics (2026-08).** Whisper's per-segment (and per-word) timestamps are persisted to
 `song_lyric_timings` (migration `11`) as one JSONB `lines` document per song, so the UI can highlight

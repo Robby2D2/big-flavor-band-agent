@@ -34,6 +34,8 @@ except ImportError:
     logger_temp = logging.getLogger("rag-system")
     logger_temp.warning("sentence-transformers not available. Text embedding search will not work. Install with: pip install sentence-transformers")
 
+from src.rag.search_text import build_metadata_text, tokenize_query  # noqa: F401
+
 logger = logging.getLogger("rag-system")
 
 # Embedding dimensions of the active models / pgvector schema. The text model is
@@ -687,42 +689,70 @@ class SongRAGSystem:
         query_embedding = self.text_embedding_model.encode(description).tolist()
         # Convert to string format for pgvector: "[1,2,3,...]"
         embedding_str = str(query_embedding)
-        
-        # Hybrid search: combine semantic similarity with keyword matching
+
+        # Keyword tokens for the lexical half. Empty (e.g. an all-stop-word
+        # query) simply means "semantic only" — never "match everything".
+        tokens = tokenize_query(description)
+
+        # Pull a wider net than we return: each song now has up to two embedding
+        # rows (lyrics + metadata), and the keyword half needs real candidates
+        # to compete with. Still a few hundred rows over a 1.3k-song catalog.
+        candidate_limit = min(300, max(limit * 5, 50))
+
         query = """
-            WITH semantic_matches AS (
-                -- Search text embeddings (lyrics) using cosine similarity
-                SELECT 
-                    te.song_id,
-                    te.content_type,
-                    1 - (te.embedding <=> $1::vector) as similarity,
-                    te.content
+            WITH semantic_candidates AS (
+                -- Nearest embeddings of any kind: lyrics, and the metadata
+                -- sentence (genre/mood/energy/tempo) that lets a song be found
+                -- by what it *is* and not only by what its words say.
+                SELECT te.song_id
                 FROM text_embeddings te
-                WHERE te.content_type = 'lyrics'
                 ORDER BY te.embedding <=> $1::vector
-                LIMIT $2
+                LIMIT $4
             ),
-            keyword_matches AS (
-                -- Also do keyword search on metadata
-                SELECT DISTINCT
-                    s.id as song_id,
-                    'metadata' as content_type,
-                    0.5 as similarity,  -- Lower score for keyword matches
-                    COALESCE(s.title || ' ' || s.genre || ' ' || s.mood, '') as content
+            keyword_candidates AS (
+                -- A *bonus*, not a rival score: lexical hits nudge a song up the
+                -- semantic ranking rather than replacing it. A flat keyword score
+                -- would let one incidental title substring outrank a song that
+                -- genuinely reads like the query.
+                --
+                -- Genre/mood/energy are controlled vocabularies, so an exact hit
+                -- there says more than a substring of a free-text title.
+                SELECT s.id AS song_id,
+                       LEAST(
+                           0.30,
+                           0.10 * COUNT(DISTINCT t.token) FILTER (
+                               WHERE s.genre ILIKE t.token
+                                  OR s.mood ILIKE t.token
+                                  OR s.energy ILIKE t.token
+                           )
+                           + 0.05 * COUNT(DISTINCT t.token) FILTER (
+                               WHERE s.title ILIKE '%' || t.token || '%'
+                           )
+                       ) AS keyword_bonus
                 FROM songs s
-                WHERE 
-                    s.title ILIKE $3 OR
-                    s.genre ILIKE $3 OR
-                    s.mood ILIKE $3 OR
-                    s.energy ILIKE $3
-                LIMIT $2
+                JOIN unnest($3::text[]) AS t(token)
+                  ON s.genre ILIKE t.token
+                  OR s.mood ILIKE t.token
+                  OR s.energy ILIKE t.token
+                  OR s.title ILIKE '%' || t.token || '%'
+                GROUP BY s.id
             ),
-            combined_results AS (
-                SELECT * FROM semantic_matches
-                UNION ALL
-                SELECT * FROM keyword_matches
+            candidates AS (
+                SELECT song_id FROM semantic_candidates
+                UNION
+                SELECT song_id FROM keyword_candidates
+            ),
+            scored AS (
+                -- Score every candidate semantically, including ones that only
+                -- surfaced via keywords: without this, songs sharing a genre all
+                -- tie on the same keyword score and fall back to alphabetical.
+                SELECT c.song_id,
+                       COALESCE(MAX(1 - (te.embedding <=> $1::vector)), 0) AS semantic_score
+                FROM candidates c
+                LEFT JOIN text_embeddings te ON te.song_id = c.song_id
+                GROUP BY c.song_id
             )
-            SELECT DISTINCT
+            SELECT
                 s.id,
                 s.title,
                 s.genre,
@@ -736,26 +766,33 @@ class SongRAGSystem:
                 s.created_at,
                 s.updated_at,
                 ae.audio_path,
-                MAX(cr.similarity) as max_similarity,
-                STRING_AGG(DISTINCT cr.content_type, ', ') as match_types
-            FROM combined_results cr
-            JOIN songs s ON cr.song_id = s.id
-            LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-            GROUP BY s.id, s.title, s.genre, s.audio_url, s.mood, s.energy,
-                     s.tempo_bpm, s.key, s.duration_seconds, s.recording_date,
-                     s.created_at, s.updated_at, ae.audio_path
-            ORDER BY MAX(cr.similarity) DESC, s.title
+                -- Semantic relevance leads; lexical agreement lifts it.
+                LEAST(1.0, sc.semantic_score + COALESCE(kc.keyword_bonus, 0)) AS max_similarity,
+                CASE
+                    WHEN kc.song_id IS NULL THEN 'semantic'
+                    ELSE 'semantic, keyword'
+                END AS match_types
+            FROM scored sc
+            JOIN songs s ON s.id = sc.song_id
+            LEFT JOIN keyword_candidates kc ON kc.song_id = sc.song_id
+            LEFT JOIN LATERAL (
+                SELECT ae_inner.audio_path
+                FROM audio_embeddings ae_inner
+                WHERE ae_inner.song_id = s.id
+                LIMIT 1
+            ) ae ON TRUE
+            ORDER BY max_similarity DESC, s.title
             LIMIT $2
         """
-        
-        # Create LIKE pattern for keyword search
-        keyword_pattern = f"%{description}%"
-        
+
         async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch(query, embedding_str, limit, keyword_pattern)
+            rows = await conn.fetch(query, embedding_str, limit, tokens, candidate_limit)
 
         results = [_serialize_row(row) for row in rows]
-        logger.info(f"Text search found {len(results)} results for '{description}' (semantic + keywords)")
+        logger.info(
+            f"Text search found {len(results)} results for '{description}' "
+            f"(semantic + {len(tokens)} keyword tokens)"
+        )
         return results
 
     async def search_text_with_tempo(
