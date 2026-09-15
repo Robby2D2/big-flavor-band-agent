@@ -342,10 +342,17 @@ and the deploy scripts refuse to start without one. Changing the secret logs eve
 
 Two rules hold across the boundary:
 
-- **Every backend route requires the service secret**, including `/api/users` and
-  `/api/users/{id}/role`. Those two were the exception until 2026-09-15 — anything on the Docker
-  network could create users or enumerate roles. They take `require_role("listener")`: BFF-only,
-  but not admin-only, since the BFF calls them for whoever just signed in.
+- **The user routes require the service secret**, like `/api/admin/*`, `/api/produce/*` and
+  `/api/tools/*` before them: `/api/users` and `/api/users/{id}/role` were the exception until
+  2026-09-15 — anything on the Docker network could create users or enumerate roles. They take
+  `require_role("listener")`: BFF-only, but not admin-only, since the BFF calls them for whoever
+  just signed in. **`search.py` and `agent.py` are still unguarded** (and `radio.py` partly), so
+  the boundary is not yet complete — those routes are read-mostly, but the gap is real.
+- **Browser-facing paths need a route handler under `app/api/`.** Only `/api/agent/*` is proxied by
+  a `next.config.js` rewrite; every other backend path the browser calls is a BFF route handler
+  that adds the session check and the service headers. A fetch to a path with neither is a plain
+  Next 404 that surfaces as an empty-looking feature — `frontend/__tests__/bffRoutes.test.ts`
+  resolves every literal `/api/` fetch in client code against disk to catch exactly that.
 - **`requireAuth` fails closed.** A role that cannot be read — backend down, user row missing,
   unknown role — is a refusal. It previously fell through to returning the user whenever the role
   lookup answered with anything but 200, so a backend 404 or 500 passed an admin check.

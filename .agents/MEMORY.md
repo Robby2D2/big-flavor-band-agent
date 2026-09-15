@@ -15,6 +15,41 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-15 — "Lyrics not found" was a BFF route that never existed
+The view-lyrics modal on the search screen had shown "Lyrics not found" for every song since
+`60da3f0` (2025-11-24). Not a data problem and not a regression from the auth work that day: the
+backend held the lyrics all along (`GET /api/songs/1299/lyrics` → 200 with the full text), but
+`SongList.tsx` fetched `/api/songs/{id}/lyrics` and **no route handler was ever created for it**.
+`git log` on that path returns nothing.
+
+Only `/api/agent/*` is proxied by a `next.config.js` rewrite, so every other backend path the
+browser calls needs a handler under `app/api/`. Without one Next answers a plain 404, the
+component's `else` branch runs, and the UI renders a confident, wrong sentence. The sibling
+`/lyrics/timed` route existed, which is what made the gap easy to miss.
+
+- **Fix:** `frontend/app/api/songs/[songId]/lyrics/route.ts`, mirroring its `timed` sibling —
+  `requireAuth(LISTENER)`, proxy, and map Unauthorized/Forbidden to 401/403 so the modal can tell
+  "please log in" apart from "this song has no lyrics".
+- **`frontend/__tests__/bffRoutes.test.ts` guards the whole class of bug:** it walks client-side
+  source for literal `/api/` fetches, normalises `${...}` to a placeholder, and resolves each path
+  against `app/api/` on disk (honouring `[param]` directories and the rewrite prefixes). Verified it
+  actually fails without the fix — it names the offender as
+  `components\SongList.tsx -> /api/songs/${...}/lyrics`. A green test that was never seen red is
+  not a regression guard.
+- `lyricsRoute.test.ts` covers the handler's behaviour: passes lyrics through, asks for `listener`
+  (not `editor`), forwards a backend 404, and maps auth failures.
+
+**Doc correction:** yesterday's ARCHITECTURE entry claimed "every backend route requires the service
+secret". False — `search.py` (9 routes) and `agent.py` (3) have no `require_role` at all, and
+`radio.py` guards 5 of 9. Only admin/produce/tools are fully covered. Corrected in place; closing
+that gap is still open work.
+
+**Dev-server gotcha:** a *new* route file under the read-only `./frontend/app` bind mount is not
+picked up by `next dev`'s watcher — the file is visible inside the container but the route still
+404s until `docker restart bigflavor-frontend`. Editing an existing file hot-reloads fine.
+
+---
+
 ### 2026-09-15 — The session cookie was a claim, not a credential; now it is signed
 Two holes closed, both found while building editor invites. Neither needed a clever exploit.
 
