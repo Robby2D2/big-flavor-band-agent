@@ -135,6 +135,7 @@ services:
       - NODE_ENV=development
       - AGENT_API_URL=http://backend:8000
       - BACKEND_API_SECRET=${BACKEND_API_SECRET:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
     volumes:

@@ -91,7 +91,8 @@ startup: `agent` (`BigFlavorAgent`), `rag` (`SongRAGSystem`), and `db_manager` (
 
 Route groups (see the `@app.*` decorators):
 - **Users / admin** — `/api/users`, `/api/admin/users`, role management (backed by the users table
-  from migration `05`).
+  from migration `05`), plus `/api/admin/invites` and `/api/invites/*` for editor invite links
+  (migration `13`).
 - **Search** — `/api/search/natural`, `/api/search/text`, `/api/search/lyrics`,
   `/api/songs/{id}/lyrics`. These call the RAG system directly (fast path, no LLM round-trip).
 - **Agent / DJ** — `/api/agent/chat` (streaming), `/api/agent/dj/request`, `/api/agent/dj/playlist`.
@@ -301,8 +302,10 @@ token utilities at any time without breaking in the meantime.
   `.env` in commit `caf28a0`).
 - **Schema:** `database/sql/init/*.sql` for the base schema (songs → details → audio embeddings),
   `database/sql/migrations/*.sql` for changes. `song_id` was migrated from string to integer
-  (migration `04`); a users table was added for auth/roles (migration `05`).
-- Apply schema with `database/apply_schema.py`; run migrations with `database/run_migration.py`.
+  (migration `04`); a users table was added for auth/roles (migration `05`), and `user_invites` for
+  editor invite links (migration `13`).
+- Apply schema with `database/apply_schema.py`; run a single migration with
+  `python scripts/run_migration.py <migration-file.sql>`.
 
 ---
 
@@ -331,6 +334,40 @@ Google OAuth (Auth0-style) via NextAuth in the frontend (`app/api/auth/[...googl
 records + roles live in Postgres (migration `05`); admin role management is gated through
 `/api/admin/*`. Setup is documented in `docs/GOOGLE_OAUTH_SETUP_GUIDE.md`.
 
+**The session cookie is signed** (`frontend/lib/session.ts`): `base64url(payload).HMAC-SHA256`
+keyed on `SESSION_SECRET`, with the expiry inside the signed payload. It was previously plain JSON,
+so anyone who could send a `Cookie:` header could claim any `sub` — an admin's included. Verification
+is constant-time and fails closed; a missing `SESSION_SECRET` means no session is issued or accepted,
+and the deploy scripts refuse to start without one. Changing the secret logs everyone out.
+
+Two rules hold across the boundary:
+
+- **Every backend route requires the service secret**, including `/api/users` and
+  `/api/users/{id}/role`. Those two were the exception until 2026-09-15 — anything on the Docker
+  network could create users or enumerate roles. They take `require_role("listener")`: BFF-only,
+  but not admin-only, since the BFF calls them for whoever just signed in.
+- **`requireAuth` fails closed.** A role that cannot be read — backend down, user row missing,
+  unknown role — is a refusal. It previously fell through to returning the user whenever the role
+  lookup answered with anything but 200, so a backend 404 or 500 passed an admin check.
+
+### Editor invites
+
+Anyone who signs in with Google becomes a `listener`. To make someone an **editor** without an
+admin editing the database, an admin creates an invite on `/admin` and copies the link it produces
+(there is no mail infrastructure in this stack, so the admin sends it themselves).
+
+- **Rules** (pure, in `src/invites.py`): single-use, expires after 7 days, revocable, and bound to
+  the invited email — redemption requires signing in with Google as that exact address, so a
+  forwarded link grants nothing. Only `editor` is invitable; `admin` stays a deliberate promotion
+  on the `/admin` role dropdown.
+- **Storage** (`user_invites`, migration `13`): only the SHA-256 hash of the token is stored. The
+  raw token is returned exactly once, at creation, and cannot be shown again.
+- **Flow:** `/invite/<token>` previews the invite → `/api/auth/login?invite=<token>` stashes the
+  token in a short-lived HttpOnly cookie → the Google callback upserts the user, then redeems the
+  invite and lands them on `/invite/accepted`.
+- **Single use** is enforced by the conditional `UPDATE` in `DatabaseManager.redeem_invite`, not by
+  a read-then-write, so concurrent redemptions cannot both win.
+
 ---
 
 ## Deployment
@@ -353,6 +390,8 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2025-11 | Radio = Icecast + Liquidsoap, playlist via shared `.m3u` | Decouple continuous streaming from the request/response API; backend only writes queue state. |
 | 2025-11 | `mksafe()` wrapper on Liquidsoap sources | Without it `fallback` picks `blank()` even with valid playlists (sources look "not ready" at init). |
 | 2025-12 | Auth0/Google OAuth with multiple callback URLs (`6718150`) | One OAuth app serves both dev and prod redirect URLs. |
+| 2026-09 | Session cookies are HMAC-signed with a dedicated `SESSION_SECRET` | An unsigned cookie is not a credential — it is a claim anyone can write. A separate secret from `BACKEND_API_SECRET` so the two blast radii stay separate, and the expiry lives inside the signed payload so a captured cookie cannot be replayed with a fresh `Max-Age`. |
+| 2026-09 | Editor invites are copyable links, not emails (migration `13`) | The stack has no SMTP and adding it means new secrets plus SPF/DKIM work for a handful of invites a year. A link the admin sends themselves needs no new infrastructure. Binding the invite to an email keeps a forwarded link worthless. |
 | 2025-12 | Production Docker environment + nginx SSL (`c633d34`, `00a73fa`) | Make the stack deployable to a real host, not just localhost. |
 | 2026-07 | Per-tool audio registry: one file per tool + `analyze`/`apply` contract | The 3,900-line MCP monolith made adding a tool a 3-place edit and the analyze step all-or-nothing. Every tool — single effects *and* the whole-song `analyze_and_recommend_processing`/`auto_clean_recording` orchestrators — is now a self-contained `AudioTool` under `tools/` with declared params; the server dropped to ~190 lines as a generic host over `REGISTRY` (no audio logic). New `/api/produce/tools/{tool}/{analyze,apply}` surface + ToolPanel give a per-tool "adjust params → analyze → apply" flow; the whole-song one-click clean is preserved, now registry-backed. `region_tools.py`'s param whitelist is derived from the registry. |
 | 2025-12 | Frontend shows raw results, not the agent's prose (`eb3a032`) | Surfacing structured search results is clearer for music discovery than an LLM narration. |

@@ -4,10 +4,95 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
+> Pruned 2026-09-14: the `/produce` per-tool API and stem-console entries (2026-07-31 →
+> 2026-08-02) moved to [memory/produce_console.md](memory/produce_console.md); the 2026-07-12
+> pipeline-concurrency entry moved to [memory/history_2025_2026.md](memory/history_2025_2026.md).
+>
 > Pruned 2026-08-01: routine release-manager version-bump entries moved to
 > [memory/releases.md](memory/releases.md); the 2025-11 project-genesis timeline and two older one-off
 > incident writeups moved to [memory/history_2025_2026.md](memory/history_2025_2026.md). This file now
 > holds only the recent, still-load-bearing entries.
+
+---
+
+### 2026-09-15 — The session cookie was a claim, not a credential; now it is signed
+Two holes closed, both found while building editor invites. Neither needed a clever exploit.
+
+**1. The `appSession` cookie was unsigned JSON.** `{"sub":…,"email":…}`, URL-encoded, and every
+reader just `JSON.parse`d it. `HttpOnly` stops page scripts from *reading* it but does nothing about
+*writing* one — `curl -H "Cookie: appSession=…"` with an admin's Google `sub` was a full admin
+session. Verified against the running stack before the fix and after: the same forged cookie now
+gets 401.
+
+- **`frontend/lib/session.ts`** is the whole fix: `base64url(payload).HMAC-SHA256(payload)` keyed on
+  a new `SESSION_SECRET`, constant-time compare, and **`exp` inside the signed payload** so a
+  captured cookie cannot be replayed with a fresh `Max-Age`. Fails closed everywhere — no secret,
+  bad signature, or past expiry all read as "not signed in".
+- A **separate secret from `BACKEND_API_SECRET`** so the two blast radii stay separate. Distinct
+  values per environment; both `.env` and `.env.production` got one, and the deploy scripts now
+  refuse to start without it. **Changing it logs everyone out** — as did shipping this.
+- `Secure` is set when the request arrived over HTTPS, so prod gets it without breaking
+  `http://localhost`.
+
+**2. `POST /api/users` and `GET /api/users/{id}/role` had no `require_role`.** Unlike every
+`/api/admin/*` route, anything on the Docker network could create users or enumerate anyone's role
+by id. Both now take `require_role("listener")` — BFF-only, not admin-only, since the BFF calls them
+for whoever just signed in. The three BFF call sites now send `backendAuthHeaders('listener')`.
+
+**3. Found while fixing the above: `requireAuth` failed *open*.** The role check ran only inside
+`if (response.ok)`, so a backend 404 or 500 skipped it entirely and returned the user — passing an
+admin check. It now fails closed: an unreadable or unknown role is a refusal.
+
+**Known wart, deliberately left:** an unauthenticated call to a BFF route answers **500**, not 401 —
+the ~45 route handlers all map `error.message.includes('Forbidden') ? 403 : 500`. Access is correctly
+denied either way; fixing the status properly means touching every one of those files.
+
+Verified live: forged old-format cookie → 401; payload swapped to the admin's `sub` with a valid
+signature kept → 401; real editor session → admin route → 403; real admin session → 200 with data;
+user routes → 401 with no/wrong service secret and 200 for the BFF. 81 backend tests pass (10 new),
+58 vitest (14 new, including "the old unsigned format is rejected"), `tsc --noEmit` and
+`npm run build` clean. The four audio-streaming failures in `test_api_routers.py` /
+`test_blocking_io.py` fail on a clean tree too — pre-existing, unrelated.
+
+---
+
+### 2026-09-14 — Editor invites: a copyable link, because there is no mail stack here
+Adding an editor used to mean `UPDATE users SET role='editor'` by hand — the only path, since every
+Google sign-in lands as `listener` and nothing in the app could grant more. Now an admin creates an
+invite on `/admin` and copies a link to send however they like.
+
+**Why a link and not an email.** There is no SMTP, mail library, or mail secret anywhere in this
+stack. Sending mail would mean a new dependency, four new production secrets, and SPF/DKIM records
+or every invite lands in spam — for a handful of invites a year. The admin sending the link
+themselves needs none of that.
+
+- **`src/invites.py`** holds the rules as pure functions (no DB, no I/O) so the things that actually
+  gate access are unit-testable: 7-day expiry, single use, revocable, and **bound to the invited
+  email** — you must sign in with Google as that exact address, so a forwarded link is worthless.
+  Only `editor` is invitable; `admin` stays a deliberate promotion on the role dropdown.
+- **Only the SHA-256 hash of the token is stored** (`user_invites`, migration `13`). The raw token
+  is returned exactly once, at creation, so a database dump cannot be replayed into editor access —
+  and the admin UI says the link will not be shown again.
+- **Single use is the `WHERE` clause**, not a read-then-write: `DatabaseManager.redeem_invite`
+  guards on `redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP` in the
+  `UPDATE` itself, so two concurrent redemptions cannot both succeed.
+- **Crossing the OAuth round-trip:** `/invite/<token>` → `/api/auth/login?invite=…` stashes the
+  token in a 10-minute HttpOnly/Lax cookie → the callback upserts the user, redeems, and redirects
+  to `/invite/accepted`. A cookie rather than the OAuth `state` param, because `state` is unused
+  here today and repurposing it would have meant rewriting the auth route's CSRF story too.
+- The callback now tracks whether the user upsert **succeeded** — a role can only be granted to a
+  user row that exists, and that save was previously fire-and-forget.
+- `scripts/run_migration.py` was hardcoded to migration `05`; it now takes the filename as an
+  argument and lists what is available when the name is wrong.
+
+Verified end-to-end against the live stack (no curl in the backend image — drive it with `python -m`
++ `httpx` inside the container): create → preview → wrong-email reject → redeem → re-redeem reject,
+plus 403 for a non-admin creator and 400 for an `admin`-role invite. 46 backend tests, 44 vitest,
+`tsc --noEmit` and `npm run build` all green; test rows cleaned up afterwards.
+
+**Still open (pre-existing, not introduced here):** the `appSession` cookie is unsigned JSON, so
+anyone who can set a cookie and knows an admin's Google `sub` gets admin; and `POST /api/users` /
+`GET /api/users/{id}/role` carry no `require_role`, unlike every `/api/admin/*` route.
 
 ---
 
@@ -118,265 +203,3 @@ against all 12 stems on disk; re-tag existing rows with `POST /api/produce/stems
 Net measured effect on a produce tab open for song 1140: **262.7 MB -> 11.2 MB (23.5x)**, since the
 two hidden stems are no longer fetched at all, and waveforms paint from 45 KB of peaks.
 
-### 2026-08-02 — Stem console: full mix as a row, a real transport, and instrument tagging for stems Demucs can only call "other"
-Two related pieces of work on `/produce/[songId]` → Audio processing.
-
-**Console + transport.** The full mix is now the console's first row — a frontend-only pseudo-stem
-(`FULL_MIX_STEM_ID = -1`) whose fixes *are* the master-scoped fixes, so the whole song is played,
-analyzed and fixed through the same UI as its parts and no backend code knows it exists. It starts
-**muted** (the stems already sum to it). "Play stems" became a media-player transport: play/pause
-holds the playhead, `seek` restarts every source at a shared origin so stems stay sample-synced
-across a scrub, and the full-track waveform takes a click or drag. `WaveformView` gained `onSeek`
-(mutually exclusive with `selectable` — a drag can't both scrub and draw a region). Dropped
-`toggleAudition`/`auditionId` from `useStemPlayback`: dead code, never consumed.
-Also fixed two things the console said while working: stem audio was decoded serially and committed
-only once *every* file landed (so a saved stem set sat empty for a long time showing "not analyzed
-yet" twice) — now fanned out with per-row commits, a spinner per row, and a `decodedUrls` ref so
-re-analysis doesn't re-download; and rows can be analyzed one at a time, which made "clean" vs
-"not analyzed" honest per row instead of one global flag.
-
-**Instrument tagging (the banjo problem).** User asked whether other instruments (banjo, mandolin)
-could be auto-detected and split out. They can't be *split*: Demucs' source list is baked into the
-model weights, so `htdemucs_6s` emits exactly vocals/drums/bass/guitar/piano/other and adding names
-to `stemColors.ts` changes only a swatch colour. But nothing is lost — the stems sum back to the
-mix, so a banjo is present, just inside `other`. The gap is **naming, not coverage**, so we tag
-rather than separate: `src/production/instrument_tagging.py` runs an AudioSet tagger
-(`MIT/ast-finetuned-audioset-10-10-0.4593`) over each stem, maps AudioSet's comma-separated display
-names ("Violin, fiddle") onto a curated vocabulary, and takes the **max** across evenly-spaced
-non-silent windows — mean would wash out an instrument that only plays one section. `silent: true`
-is a real answer (a band with no piano still gets a piano stem). Producer can override the label
-(`song_stems.display_name`, migration `10`); `name` stays the Demucs source name because that's what
-the fix tools resolve against. Tagging runs *after* the set is marked complete, best-effort, so it
-can't fail a separation or delay the waveforms. Verified live in-container on song 1650: guitar stem
-→ Guitar/Electric guitar, vocals → Vocal/Male vocal, `other` → Flute/Organ/Fiddle.
-The rejected alternatives (query-based separation à la AudioSep; fine-tuning Demucs on isolated
-multitracks the band doesn't have) are recorded in ARCHITECTURE.md's decisions log.
-
-> Note: `docker-compose.yml` gained `HF_HOME` + an `hf_models` volume so the HF checkpoints (CLAP,
-> the tagger) stop re-downloading on every recreate. That needs `docker-compose up -d backend`, not
-> a plain `docker restart`.
-
-### 2026-08-02 — Timed lyrics (phase 1): follow-along highlighting + vocal-isolated transcription + vitest
-Lyrics can now be followed along while a song plays. The enabling discovery: **Whisper was already
-computing the timings and we were throwing them away** — `lyrics_extractor.transcribe_audio()` built a
-`segments` list with `start`/`end`/`text`/`confidence`, and `lyrics_jobs._blocking_extract` returned only
-the joined text. Line-level sync therefore cost no extra compute.
-- **Storage:** new `song_lyric_timings` table (migration `11`, plus `ensure_song_lyric_timings_table()`
-  called from the lifespan like `song_versions`/`song_stems`). One JSONB `lines` document per song
-  (UNIQUE on song_id) — always read whole for playback, never queried by field. Lyric **text** stays in
-  `text_embeddings` (content_type `lyrics`) as the single search source of truth; timings are a derived
-  sidecar. Deliberately *not* a second `text_embeddings` row: that table is keyed
-  `UNIQUE(song_id, content_type)` around an embedding column and lyric search filters on content_type.
-- **Vocal isolation, pulled forward from phase 2** at the user's request, so the ~1,300-song
-  re-extraction only has to run once. Extraction now prefers isolated vocals: it reuses an existing
-  completed `vocals` stem (issue #67's `song_stem_sets`/`song_stems`, via `db.get_vocals_stem_path()`)
-  when the file is still on disk, else runs Demucs in-job; the raw mix is only a fallback.
-  `word_timestamps=True` was pulled forward for the same reason — the words are persisted now even
-  though phase 1's UI only lights up lines.
-- **Two real bugs found in `lyrics_extractor.py` while wiring this up:** (1) `separate_vocals()` picked
-  the vocals stem by hardcoded index `sources[3]`, which silently transcribes the wrong stem for any
-  model whose source order differs — now looked up by name; (2) `extract_lyrics()` gated separation on
-  `self.demucs is not None`, making `separate_vocals=True` a **silent no-op** whenever the extractor was
-  built with `load_demucs=False` (exactly how the job constructs it) — `separate_vocals()` lazy-loads,
-  so the gate is gone.
-- **Staleness:** hand-editing lyrics invalidates timings, so `PUT .../lyrics` compares
-  `lyrics_jobs.lyrics_signature()` (case/punctuation/whitespace-normalized word sequence) and marks the
-  record `stale`. Reflow and capitalization edits deliberately keep timings `current`. Stale timings are
-  hidden during playback rather than highlighting the wrong words; `LyricsPanel` surfaces the state.
-- **API:** new **listener-scoped** `GET /api/songs/{id}/lyrics/timed` (in the search router, next to the
-  existing public lyrics route) + a matching BFF route. This is the point that would have been easy to
-  get wrong: the editor lyric routes live under `/api/produce/*` behind `require_role("editor")`, which
-  would have locked every ordinary listener out of their own player. The produce GET/PUT also return
-  `timings` for the editor.
-- **Frontend:** pure logic in `lib/lyricTimings.ts` (`findActiveLine` binary search, `findDisplayLine`
-  which holds the last line through instrumental gaps, `findActiveWord`, `isFollowable`), `useActiveLyric`
-  hook, and a time-source-agnostic `LyricsFollower` component (takes seconds, not a player — so the same
-  component can serve the `<audio>` player, the produce page's AudioContext `playhead`, and the radio's
-  polled position). Wired into `AudioPlayer` behind a Lyrics toggle, driven by **rAF** rather than
-  `timeupdate` (which only fires ~4x/sec — fine for a seek bar, visibly behind for words).
-  Manual-scroll detection suspends autoscroll for 4s with a "Jump to current" button.
-- **Testing:** added **vitest** — the project's first frontend test runner (`vitest.config.mts` + jsdom +
-  React Testing Library, `npm test`). 26 frontend tests. Backend: new `tests/test_lyrics_jobs.py` plus
-  timed-lyrics cases in `test_produce_router.py`/`test_api_routers.py`.
-- **Fixed in passing:** `tests/test_lifespan.py` was already failing on `main` — its `FakeDatabaseManager`
-  never gained `ensure_song_stems_tables` after issue #67, so the lifespan tests died with AttributeError.
-  The fake now covers all three ensure-calls and asserts them, so it can't silently rot again.
-- **Known gap:** `npm run lint` is broken repo-wide — Next 16 removed `next lint`, so the script now
-  reads "lint" as a directory name and errors. Pre-existing and unrelated to this work, but it means the
-  documented frontend lint gate isn't running; needs a migration to flat-config `eslint .`.
-- **Backfill (added same day):** `scripts/backfill_lyric_timings.py` re-extracts the catalog. Design
-  points worth keeping: (1) `lyrics_jobs.extract_and_store()` was factored out as the *one* seam both
-  `LyricsJobManager._run` and the script call, so the UI button and the batch can't drift; (2) the
-  script loads Whisper **once** and passes the extractor down via `_blocking_extract(extractor=…)` —
-  the per-request path builds one per call, which over ~1,300 songs is hours of pure model loading;
-  (3) resumability needs no state file — a `song_lyric_timings` row *is* the checkpoint, so a JSON
-  ledger is only needed for failures (so a broken track isn't retried every resume); (4) SIGINT stops
-  after the current song rather than mid-write. **The non-obvious hazard it guards:** storing lyrics
-  re-embeds them, and `_embed_text` silently falls back to a zero vector when sentence-transformers
-  is missing (as it is in the host venv) — a catalog-wide run there would flatten every lyric
-  embedding and destroy lyric search, so the script hard-refuses (exit 2) unless the model loaded.
-  Run it in-container: `docker exec -it bigflavor-backend python -m scripts.backfill_lyric_timings`.
-
----
-
-### 2026-08-01 — Claude Design "Console" redesign of the Audio Processing tab: dark theme + per-stem review queue
-Implemented a full Claude Design mockup (imported as a `claude.ai/design` canvas export, `claudedesign.zip`)
-that replaced the `/produce/[songId]` Audio processing tab's "checkbox list of tools + Gentle/Moderate/
-Aggressive intensity dial" with a dark "Console" studio theme and a **review-queue** workflow: one
-analysis pass produces one card per detected fix, each pre-filled with the tool's own real measured
-numbers (not an intensity bucket), grouped by stem, with per-card Accept/Adjust/Skip and a single
-"Accept all & save version." User explicitly chose the larger scope on both open questions: build
-real **per-stem** analyze/apply (not whole-song-only), and a **whole-app** dark theme (not just this
-tab). Delivered in four phases, each independently verified.
-- **Phase A (theme foundation):** `frontend/tailwind.config.ts` → `darkMode: 'class'` + Console color
-  tokens (`canvas/panel/raised/well/signal/confirm/attention/text` + `stem.{vocals,drums,bass,other,
-  guitar,piano}`); `app/layout.tsx` loads IBM Plex Sans/Mono via `next/font/google` and sets a
-  permanent `className="dark"` on `<html>` (no light/dark toggle — the mockup has no light variant);
-  `globals.css` simplified to unconditional dark `--background`/`--foreground`; deleted the dead,
-  unimported `app/tailwind.css` (leftover Tailwind v4 file). `Header.tsx`/`UserButton.tsx` restyled
-  onto the tokens. Flipping `darkMode:'class'` also makes every pre-existing `dark:gray-900`-style
-  class elsewhere in the app activate unconditionally (previously gated on OS `prefers-color-scheme`).
-- **Phase B (backend, no DSP changes needed):** `AudioTool.analyze()`/`apply()`
-  (`src/production/toolkit.py`) turned out to already be file-path-agnostic — they only ever see a
-  `file_path`, never "the song." So per-stem support was pure router work in
-  `src/api/routers/produce.py`: `ToolRunRequest` gained `stem_id`; new `_resolve_tool_source_path`
-  resolves a stem's own audio file (via `db.get_stem`→`db.get_stem_set`, 404 on song-ownership
-  mismatch) ahead of the existing version-based resolution; stem-scoped `apply` is always a
-  preview-only render (never creates a version). New `StemFixSpec` + `_chain_apply_tools` sequentially
-  chain-apply a list of fixes (step N's output feeds step N+1); new routes
-  `POST /api/produce/stems/{stem_id}/preview-chain` (audition one stem's enabled fix chain) and
-  `POST /api/produce/accept-fixes` (chain-apply every stem's fixes, remix at unity gain via the
-  existing `stem_separation.remix_stems`, then chain-apply master-bucket fixes — `preview=true` for
-  "Preview full mix first," `preview=false` to save a version, matching the existing
-  `save_candidate_version` seam). New `AudioTool.confidence_tier(value, high, worth, higher_is_worse)`
-  static helper buckets a tool's own measured magnitude into `"high"`/`"worth_a_listen"`/`None`; added
-  a `confidence` key to the 7 tools with real `analyze()` overrides (reduce_noise, apply_eq,
-  remove_hum, trim_silence, normalize_audio, apply_mastering, correct_beats — thresholds tuned
-  per-tool, e.g. noise floor dB, EQ adjustment count, beat-detection's own `mean_confidence`).
-  `correct_pitch`/`match_tempo`/`remove_artifacts` still have no `analyze()` override (always
-  `recommended: False`) and so never produce a fix card — unchanged, pre-existing, out of scope.
-  New `tests/test_produce_stem_tools.py` (7 tests: confidence tiering both directions, stem-ownership
-  404, chain-apply empty-passthrough and output-feeds-next-input wiring) — all pass, plus the existing
-  30 production tests unaffected.
-- **Phase C (frontend, new component tree):** Retired `MultitrackEditor.tsx` (1319 lines) and
-  `StemMixer.tsx` (524 lines) — deleted outright, no remaining imports — since the review-queue
-  interaction model is different enough that patching in place would have compounded complexity.
-  New tree under `frontend/components/produce/audio/`: `VersionBar`, `StemConsole` (per-stem
-  sparkline + chain-of-pills + mute/solo/gain), `StemDetailPanel` (A/B waveform, region drag-select),
-  `FixQueue`/`FixCard` (one card per fix, confidence tag, Hear it/Adjust/on-off), `AdvancedDrawer`
-  (per-param sliders driven by `GET /api/produce/tools`' declared param metadata), `ResultSidebar`
-  ("fixes on" count, Accept all & save version, Preview full mix first), `LyricsCard` (thin restyled
-  wrapper — `LyricsPanel`'s fetch/save/re-extract logic reused verbatim, lyrics folded into the
-  sidebar instead of a separate top-level tab), `fixCopy.ts` (tool+findings → plain-English card
-  copy), `stemColors.ts`. `useStemPlayback.ts` extracts `StemMixer`'s sample-synced group-playback
-  engine verbatim (genuinely reusable Web Audio sync logic). `WaveformView.tsx` gained an additive
-  `overlays` prop (colored spans per fix location) alongside its existing `region`/`trimRegion`.
-  New `frontend/hooks/useProcessingQueue.ts` is the data-flow hub: fans out per-stem × per-tool +
-  master-bucket `analyze` calls (capped at 3 concurrent), assembles one `FixEntry` per
-  `recommended:true` result, and drives accept/preview. **Caught and fixed one real bug during
-  self-review:** the "Re-separate" button initially just re-ran analysis against whatever stem set
-  already existed (`waitForStemSet` short-circuited to the latest *complete* set even after kicking
-  off a fresh Demucs job) — fixed by parameterizing it with a `forceNew` flag that polls for the
-  *newest* set by id instead, exposed as a distinct `reseparateAndAnalyze`.
-  Every `POST /api/produce/*` call goes through a Next.js BFF proxy route
-  (`frontend/app/api/produce/**/route.ts`, each whitelisting which body fields it forwards + attaching
-  `backendAuthHeaders`) — **the existing `tools/{tool}/analyze` and `.../apply` proxies did not forward
-  the new `stem_id` field** and had to be updated, and two new proxy routes
-  (`accept-fixes/route.ts`, `stems/[stemId]/preview-chain/route.ts`) had to be created; the candidate-
-  audio streaming URL is `/api/produce/clean/preview?path=` (not `/api/produce/preview`, which has no
-  frontend proxy — a naming trap the old `MultitrackEditor` code had already worked around).
-- **Phase D (sweep + cleanup):** Migrated the remaining light-themed pages
-  (`app/{page,search,radio,edit,admin,admin/produce,produce,produce/[songId]}.tsx`) from ad-hoc
-  `bg-white dark:bg-gray-800`-style pairs onto the Phase A tokens via systematic `replace_all`
-  substitutions of the handful of recurring patterns (`bg-white dark:bg-gray-800`→`bg-panel`,
-  `text-gray-900 dark:text-white`→`text-text`, etc.); left accent-colored elements (blue/green/red
-  buttons and badges) as-is — they already read fine against the dark canvas, and pixel-matching every
-  one wasn't worth the churn this pass.
-- **Verification:** `npm run build` clean after every phase (TypeScript catches prop-shape drift
-  across the new component tree — no runtime type errors slipped through); `next lint`/`npm run lint`
-  is broken repo-wide under Next 16 (`next lint` was removed upstream) — pre-existing, confirmed via
-  `git stash` before this work, not something this change caused. **Docker Desktop was not running in
-  this environment** (`docker ps` failed to connect throughout), so the full interactive workflow
-  (real stem separation, real analyze results, a real Accept-all render) was **not** manually exercised
-  end-to-end — verification leaned on `npm run build`/TypeScript, `pytest` (37 passing: 7 new + 30
-  existing, no regressions), reading the OpenAPI schema to confirm new routes registered, and a
-  careful manual code-flow review (which is what caught the re-separate bug above). A human should do
-  one real walkthrough (pick a version → Start analysis → toggle a few fixes → Accept all) before
-  trusting this in production.
-
-### 2026-07-31 — Per-tool audio API: one file per tool + declare-params → analyze → apply
-Refactored the ~3,900-line `src/production/big_flavor_mcp.py` monolith (where every tool's schema,
-routing, and implementation lived in three separate places) into a **per-tool registry** so adding a
-tool is "add one file", and gave each tool a two-phase **analyze → apply** contract the producer can
-drive per tool. User-approved plan, class-per-tool + full-stack + independent per-tool analyze.
-- **New modules:** `src/production/toolkit.py` (`AudioTool` base, `Param` schema, `ToolContext`,
-  `REGISTRY`, `@register`), `audio_io.py` (load/write/per-channel + WAV subtypes), `analysis.py`
-  (key/beat/pitch/hum/LUFS helpers + `load_for_analysis`/`detect_hum`/`measure_integrated_lufs`/
-  `perform_audio_analysis`), and `tools/*.py` — 13 one-file tools (trim_silence, reduce_noise,
-  remove_hum, apply_eq, remove_artifacts, correct_pitch, correct_beats, match_tempo,
-  normalize_audio, apply_mastering, create_transition, analyze_audio, get_audio_cache_stats).
-- **Server is now a thin host:** `list_tools()`/`dispatch_tool()` are generic loops over `REGISTRY`;
-  `analyze_tool()` runs the read side; a `__getattr__` shim maps `server.<tool>(...)` → the tool's
-  `apply` bound to a shared `ToolContext`, so existing tests + `auto_clean_recording` (which now
-  orchestrates the registry via the shim) keep working unchanged.
-- **Per-tool `analyze()`** (independent, not a shared bundle): trim/noise/hum/eq/normalize/master/
-  beats each inspect only their own concern and return `{recommended, params, findings, reason}`
-  (as of 2026-08-01, also `confidence` — see the entry above); others inherit the base stub.
-- **Monolith retired:** `analyze_and_recommend_processing` and `auto_clean_recording` are registry
-  tools now (`tools/analyze_recommend.py`, `tools/auto_clean.py`, both `hidden_from_editor=True`).
-  The server class dropped from ~3,900 to ~190 lines and carries no audio logic.
-- **Region whitelist folded** onto the registry: `region_tools.py` derives each friendly tool's
-  forwardable params from the target tool's declared `Param`s (single source of truth).
-- Full production test suite passing at the time (143 passed, 1 skipped, 1 pre-existing unrelated
-  failure).
-
-### 2026-07-31 — Restore Pitch correction & Tempo/beat correction to the per-step `/produce` editor (issue #82)
-Fixed a regression where PR #81's `StepKey`/`STEP_DEFS` rework silently dropped Pitch correction and
-Tempo/beat correction from the (now-retired) `MultitrackEditor` UI, even though the backing tools
-(`correct_pitch`, `match_tempo`) still worked. `auto_clean_recording` gained two opt-in steps (no
-analysis recommends either, so both default off): `pitch` (region-scoped, key-aware auto-tune) and
-`tempo` (whole-track time-stretch to an explicit `target_bpm`, forced off under a region like
-Normalize/Master — it has no region parameter). Orchestration-only; neither tool's algorithm changed.
-
-### 2026-07-31 — Per-step tunable cleaning params + unified whole-song/region flow (issue #77 follow-up)
-Replaced the (now-retired) `MultitrackEditor`'s single global Intensity dropdown with per-step
-recommendations and unified "Whole song"/"Region" into one analyze → detected-issues → per-step
-controls → Preview/Clean pipeline (a region is a scope — `start_s`/`end_s` — not a different tool).
-`analyze_and_recommend_processing` returns a per-step `recommended_intensity` derived from its own
-measurements; `auto_clean_recording` gained `step_params` (explicit per-step overrides that always win
-over the aggressiveness-scaled recommendation) and region bounds, with Normalize/Master always
-skipped under a region and Trim routed through `trim_silence`'s own scoped silence-trim so a
-mid-track selection can never delete audio outside it.
-
-### 2026-07-12 — Pipeline concurrency standards ported from soccer-assistant-coach + GitHub Actions sweep
-**AGENTS.md** gained a **Concurrency** section (re-check before write; lost races are benign skips,
-not errors; writers claim / readers re-check; never touch a dirty human working tree) and now
-documents two run environments — local Windows and headless GitHub Actions (`$GITHUB_ACTIONS`=`true`;
-no Docker stack in CI, so agents run targeted pytest + frontend lint/build and honestly report what
-wasn't verified). **developer** got a `dev-agent:claim` protocol + dirty-tree guard + pre-push PR
-re-check; **cpo/pm/qa** re-fetch markers before posting; **release-manager** got a dirty-tree guard +
-tag-idempotency re-check. New `.github/workflows/fix-issue.yml` runs the sweep via
-`anthropics/claude-code-action` on issue-opened/reopened + human comments + manual dispatch.
-
----
-
-## Standing facts worth keeping in working memory
-
-- **LLM calls go through `src/llm/llm_provider.py`** — never `import anthropic` in agent logic. Switch
-  Ollama↔Anthropic via the `LLM_PROVIDER` env var.
-- **DB access goes through `DatabaseManager`** (`database/database.py`, asyncpg); creds from env.
-- **READ = RAG library (in-process), WRITE = MCP server (separate process).** Don't blur them.
-- **Radio invariants:** `mksafe()`-wrapped Liquidsoap sources + the `/app/audio_library` →
-  `/audio_library` playlist path rewrite. Regressing either causes silent dead air.
-- **Hot reload:** restart `bigflavor-backend`, don't rebuild (source is volume-mounted). Liquidsoap
-  config changes need a **no-cache** rebuild.
-- **Schema changes are migrations** under `database/sql/migrations/`, not edits to `init/*.sql`.
-- **Releases are git tags `vX.Y.Z` on `main`** (first: `v0.1.0`, 2026-06-20); patch-bump by default,
-  minor-bump if the range adds a clear feature. No formal test suite yet — see [TESTING.md](TESTING.md).
-- **Frontend theme (as of 2026-08-01):** dark-only "Console" design system, `darkMode: 'class'` +
-  permanent `dark` class on `<html>` — there is no light mode and no toggle. Design tokens live in
-  `frontend/tailwind.config.ts` (`canvas/panel/raised/well/signal/confirm/attention/text`, plus
-  `stem.*` accent colors). Every `frontend/app/api/produce/**/route.ts` is a hand-written BFF proxy
-  that whitelists which body fields it forwards to the backend — adding a field to a backend request
-  model does **not** automatically reach the browser; the matching proxy route needs the same field
-  added explicitly.

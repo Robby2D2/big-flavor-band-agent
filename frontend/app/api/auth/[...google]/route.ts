@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { INVITE_COOKIE, INVITE_COOKIE_MAX_AGE, redeemInvite } from '@/lib/invites';
+import { backendAuthHeaders } from '@/lib/backend';
+import { SESSION_COOKIE, readSessionValue, sessionCookieHeader } from '@/lib/session';
 
 export async function GET(
   request: NextRequest,
@@ -27,13 +30,29 @@ export async function GET(
           `access_type=offline&` +
           `prompt=consent`;
 
-        return NextResponse.redirect(authUrl);
+        const response = NextResponse.redirect(authUrl);
+
+        // Carry an invite token across the Google round-trip so the callback
+        // can redeem it once the user row exists. HttpOnly + Lax: the browser
+        // still sends it on the top-level redirect back from Google, but page
+        // scripts can never read it.
+        const invite = request.nextUrl.searchParams.get('invite');
+        if (invite) {
+          response.cookies.set(INVITE_COOKIE, invite, {
+            httpOnly: true,
+            sameSite: 'lax',
+            path: '/',
+            maxAge: INVITE_COOKIE_MAX_AGE,
+          });
+        }
+
+        return response;
       }
 
       case 'logout': {
         // Clear session cookie and redirect to home
         const response = NextResponse.redirect(baseUrl);
-        response.cookies.delete('appSession');
+        response.cookies.delete(SESSION_COOKIE);
         return response;
       }
 
@@ -90,12 +109,18 @@ export async function GET(
           picture: googleUser.picture,
         };
 
-        // Save user to database via backend API
+        // Save user to database via backend API. Whether this succeeded
+        // decides if an invite can be redeemed below — a role can only be
+        // granted to a user row that exists.
+        let userSaved = false;
         try {
-          await fetch(`${process.env.AGENT_API_URL}/api/users`, {
+          const saveResponse = await fetch(`${process.env.AGENT_API_URL}/api/users`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              // Google has just vouched for this person; 'listener' is what the
+              // upsert grants them anyway.
+              ...backendAuthHeaders('listener'),
             },
             body: JSON.stringify({
               id: user.sub,
@@ -104,79 +129,82 @@ export async function GET(
               picture: user.picture,
             }),
           });
+          userSaved = saveResponse.ok;
         } catch (dbError) {
           console.error('Failed to save user to database:', dbError);
           // Continue anyway - user can still use the app
         }
 
-        // Set session cookie
-        const sessionData = JSON.stringify({
-          sub: user.sub,
-          email: user.email,
-          name: user.name,
-          picture: user.picture,
-        });
+        // Set the signed session cookie. Without SESSION_SECRET this throws
+        // rather than issuing a session nobody can verify.
+        let cookieHeader: string;
+        try {
+          cookieHeader = sessionCookieHeader(user, protocol === 'https');
+        } catch (sessionError) {
+          console.error('Cannot issue a session:', sessionError);
+          return NextResponse.redirect(`${baseUrl}?error=session_not_configured`);
+        }
 
         console.log('[AUTH] Creating session for user:', user.email);
         console.log('[AUTH] Protocol:', protocol, 'Host:', host, 'BaseURL:', baseUrl);
-        console.log('[AUTH] Session data length:', sessionData.length, 'bytes');
 
-        const maxAge = 60 * 60 * 24 * 7; // 7 days
+        // Redeem a pending invite, if this sign-in came from an invite link.
+        const pendingInvite = request.cookies.get(INVITE_COOKIE)?.value;
+        let redirectTo = baseUrl;
 
-        // Manually construct Set-Cookie header for more control
-        const cookieValue = encodeURIComponent(sessionData);
-        const cookieHeader = [
-          `appSession=${cookieValue}`,
-          `Path=/`,
-          `Max-Age=${maxAge}`,
-          `HttpOnly`,
-          `SameSite=Lax`,
-        ].filter(Boolean).join('; ');
+        if (pendingInvite) {
+          const result = userSaved
+            ? await redeemInvite(pendingInvite, user.sub, user.email)
+            : { ok: false as const, error: 'Your account could not be created. Please try again.' };
 
-        console.log('[AUTH] Set-Cookie header:', cookieHeader.substring(0, 100) + '...');
+          redirectTo = result.ok
+            ? `${baseUrl}/invite/accepted?role=${encodeURIComponent(result.role)}`
+            : `${baseUrl}/invite/accepted?error=${encodeURIComponent(result.error)}`;
+        }
 
-        const response = NextResponse.redirect(baseUrl);
+        const response = NextResponse.redirect(redirectTo);
         response.headers.set('Set-Cookie', cookieHeader);
 
-        console.log('[AUTH] Cookie set, redirecting to:', baseUrl);
+        if (pendingInvite) {
+          response.headers.append(
+            'Set-Cookie',
+            `${INVITE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`
+          );
+        }
+
+        console.log('[AUTH] Cookie set, redirecting to:', redirectTo);
         return response;
       }
 
       case 'me': {
-        const sessionCookie = request.cookies.get('appSession');
+        const session = readSessionValue(request.cookies.get(SESSION_COOKIE)?.value);
 
-        if (!sessionCookie) {
+        if (!session) {
           return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
         }
 
+        // Fetch user role from backend
+        let role = 'listener'; // default role
         try {
-          const session = JSON.parse(sessionCookie.value);
-
-          // Session stores user data directly, not nested under 'user'
-          const userSub = session.sub;
-
-          // Fetch user role from backend
-          let role = 'listener'; // default role
-          try {
-            const roleResponse = await fetch(`${process.env.AGENT_API_URL}/api/users/${userSub}/role`);
-            if (roleResponse.ok) {
-              const roleData = await roleResponse.json();
-              role = roleData.role;
-            }
-          } catch (error) {
-            console.error('Failed to fetch user role:', error);
+          const roleResponse = await fetch(
+            `${process.env.AGENT_API_URL}/api/users/${session.sub}/role`,
+            { headers: backendAuthHeaders('listener') }
+          );
+          if (roleResponse.ok) {
+            const roleData = await roleResponse.json();
+            role = roleData.role;
           }
-
-          return NextResponse.json({
-            sub: session.sub,
-            email: session.email,
-            name: session.name,
-            picture: session.picture,
-            role
-          });
-        } catch {
-          return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
+        } catch (error) {
+          console.error('Failed to fetch user role:', error);
         }
+
+        return NextResponse.json({
+          sub: session.sub,
+          email: session.email,
+          name: session.name,
+          picture: session.picture,
+          role
+        });
       }
 
       default:

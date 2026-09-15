@@ -13,14 +13,51 @@ interface User {
   updated_at: string;
 }
 
+interface Invite {
+  id: number;
+  email: string;
+  role: string;
+  status: 'valid' | 'revoked' | 'redeemed' | 'expired';
+  created_at: string;
+  expires_at: string;
+}
+
+const INVITE_STATUS_LABELS: Record<Invite['status'], string> = {
+  valid: 'pending',
+  redeemed: 'accepted',
+  expired: 'expired',
+  revoked: 'revoked',
+};
+
+const getInviteStatusColor = (status: Invite['status']) => {
+  switch (status) {
+    case 'valid':
+      return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200';
+    case 'redeemed':
+      return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
+    default:
+      return 'bg-white/8 text-text/70';
+  }
+};
+
 export default function AdminPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [revoking, setRevoking] = useState<number | null>(null);
+  // Shown once, right after creation — the server only ever returns the token
+  // for a brand-new invite, so a reload loses it for good.
+  const [newInviteUrl, setNewInviteUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     loadUsers();
+    loadInvites();
   }, []);
 
   const loadUsers = async () => {
@@ -70,6 +107,80 @@ export default function AdminPage() {
       alert(`Error updating role: ${err.message}`);
     } finally {
       setUpdating(null);
+    }
+  };
+
+  const loadInvites = async () => {
+    try {
+      const response = await fetch('/api/admin/invites');
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      setInvites(data.invites || []);
+    } catch (err) {
+      console.error('Failed to load invites:', err);
+    }
+  };
+
+  const createInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreating(true);
+    setInviteError(null);
+    setNewInviteUrl(null);
+    setCopied(false);
+
+    try {
+      const response = await fetch('/api/admin/invites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: inviteEmail, role: 'editor' }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create invite');
+      }
+
+      setNewInviteUrl(data.invite_url);
+      setInviteEmail('');
+      await loadInvites();
+    } catch (err: any) {
+      setInviteError(err.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const copyInviteUrl = async () => {
+    if (!newInviteUrl) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(newInviteUrl);
+      setCopied(true);
+    } catch {
+      // Clipboard access needs a secure context; the link stays selectable in
+      // the field either way.
+      setInviteError('Could not copy automatically — select the link and copy it.');
+    }
+  };
+
+  const revokeInvite = async (inviteId: number) => {
+    setRevoking(inviteId);
+    setInviteError(null);
+    try {
+      const response = await fetch(`/api/admin/invites/${inviteId}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to revoke invite');
+      }
+      await loadInvites();
+    } catch (err: any) {
+      setInviteError(err.message);
+    } finally {
+      setRevoking(null);
     }
   };
 
@@ -218,6 +329,130 @@ export default function AdminPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-text/45">
                         {new Date(user.created_at).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="mt-6 bg-panel rounded-lg shadow-lg overflow-hidden">
+          <div className="px-6 py-4 border-b border-white/8">
+            <h2 className="text-xl font-semibold text-text">Editor Invites</h2>
+            <p className="text-sm text-text/55 mt-1">
+              Create a link for someone you want as an editor, then send it to them however you
+              like. They become an editor by signing in with Google as the invited address.
+            </p>
+          </div>
+
+          <div className="px-6 py-4 border-b border-white/8">
+            <form onSubmit={createInvite} className="flex flex-wrap items-center gap-3">
+              <input
+                type="email"
+                required
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                placeholder="friend@example.com"
+                disabled={creating}
+                className="flex-1 min-w-64 text-sm border border-white/14 rounded-lg px-3 py-2 bg-well text-text focus:outline-none focus:border-signal disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={creating}
+                className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {creating ? 'Creating…' : 'Create invite link'}
+              </button>
+            </form>
+
+            {inviteError && (
+              <p className="mt-3 text-sm text-red-600 dark:text-red-400">{inviteError}</p>
+            )}
+
+            {newInviteUrl && (
+              <div className="mt-4 p-4 bg-well rounded-lg border border-white/8">
+                <p className="text-sm text-text mb-2">
+                  Invite link ready — copy it now, it is not shown again.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    readOnly
+                    value={newInviteUrl}
+                    onFocus={(e) => e.target.select()}
+                    className="flex-1 min-w-64 text-sm border border-white/14 rounded-lg px-3 py-2 bg-panel text-text/70"
+                  />
+                  <button
+                    onClick={copyInviteUrl}
+                    className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+                  >
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-well">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
+                    Invited
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
+                    Role
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
+                    Expires
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-text/45 uppercase tracking-wider">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-panel divide-y divide-white/8">
+                {invites.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-4 text-center text-text/45">
+                      No invites yet
+                    </td>
+                  </tr>
+                ) : (
+                  invites.map((invite) => (
+                    <tr key={invite.id} className="hover:bg-white/5">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-text">
+                        {invite.email}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getRoleBadgeColor(invite.role)}`}>
+                          {invite.role}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getInviteStatusColor(invite.status)}`}>
+                          {INVITE_STATUS_LABELS[invite.status]}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-text/45">
+                        {new Date(invite.expires_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        {invite.status === 'valid' ? (
+                          <button
+                            onClick={() => revokeInvite(invite.id)}
+                            disabled={revoking === invite.id}
+                            className="text-red-600 dark:text-red-400 hover:underline disabled:opacity-50"
+                          >
+                            Revoke
+                          </button>
+                        ) : (
+                          <span className="text-text/30">—</span>
+                        )}
                       </td>
                     </tr>
                   ))

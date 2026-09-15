@@ -302,6 +302,95 @@ class DatabaseManager:
 
         return dict(row) if row else None
 
+    # Invites (migration 13) — single-use editor invite links.
+    INVITE_COLUMNS = (
+        "id, email, role, created_by, created_at, expires_at, "
+        "redeemed_at, redeemed_by, revoked_at"
+    )
+
+    async def create_invite(
+        self,
+        token_hash: str,
+        email: str,
+        role: str,
+        created_by: Optional[str],
+        expires_at: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """Store a new invite and return its row (never the token hash)."""
+        query = f"""
+            INSERT INTO user_invites (token_hash, email, role, created_by, expires_at)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING {self.INVITE_COLUMNS}
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, token_hash, email, role, created_by, expires_at)
+
+        return dict(row) if row else None
+
+    async def list_invites(self) -> List[Dict[str, Any]]:
+        """List all invites, newest first. Token hashes are never returned."""
+        query = f"""
+            SELECT {self.INVITE_COLUMNS}
+            FROM user_invites
+            ORDER BY created_at DESC
+        """
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+
+        return [dict(row) for row in rows]
+
+    async def get_invite_by_token_hash(self, token_hash: str) -> Optional[Dict[str, Any]]:
+        """Look an invite up by the hash of its token, or None if unknown."""
+        query = f"""
+            SELECT {self.INVITE_COLUMNS}
+            FROM user_invites
+            WHERE token_hash = $1
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, token_hash)
+
+        return dict(row) if row else None
+
+    async def redeem_invite(self, invite_id: int, user_id: str) -> Optional[Dict[str, Any]]:
+        """Claim an invite for ``user_id``, returning the row, or None if it is
+        no longer claimable.
+
+        The usable-ness conditions live in the WHERE clause rather than in a
+        read-then-write, so two people opening the same link concurrently cannot
+        both redeem it — the second UPDATE matches no row and returns None.
+        """
+        query = f"""
+            UPDATE user_invites
+            SET redeemed_at = CURRENT_TIMESTAMP, redeemed_by = $2
+            WHERE id = $1
+              AND redeemed_at IS NULL
+              AND revoked_at IS NULL
+              AND expires_at > CURRENT_TIMESTAMP
+            RETURNING {self.INVITE_COLUMNS}
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, invite_id, user_id)
+
+        return dict(row) if row else None
+
+    async def revoke_invite(self, invite_id: int) -> Optional[Dict[str, Any]]:
+        """Revoke an unredeemed invite. Returns None if it is already gone or used."""
+        query = f"""
+            UPDATE user_invites
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE id = $1 AND redeemed_at IS NULL AND revoked_at IS NULL
+            RETURNING {self.INVITE_COLUMNS}
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, invite_id)
+
+        return dict(row) if row else None
+
     async def get_song_lyrics(self, song_id: int) -> Optional[str]:
         """Get the transcribed lyrics for a song, or None if not available."""
         query = """

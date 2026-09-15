@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from src.agent.big_flavor_agent import BigFlavorAgent
 from src.rag.big_flavor_rag import SongRAGSystem
 from database import DatabaseManager, RadioStateStore
+from src.invites import DEFAULT_ROLE as DEFAULT_INVITE_ROLE
 
 logger = logging.getLogger("backend-api")
 
@@ -120,6 +121,29 @@ class UserCreate(BaseModel):
 class UpdateRoleRequest(BaseModel):
     user_id: str
     role: str
+
+
+class CreateInviteRequest(BaseModel):
+    """Admin-supplied half of a new invite; the token is generated server-side.
+
+    ``created_by`` is the admin's user id, taken from the verified session by the
+    BFF — the trust boundary is the service secret plus the admin role header,
+    so this only has to be accurate, not unforgeable.
+    """
+    email: str
+    role: str = DEFAULT_INVITE_ROLE
+    created_by: Optional[str] = None
+
+
+class InviteTokenRequest(BaseModel):
+    """Just the token — what the landing page has before anyone signs in."""
+    token: str
+
+
+class RedeemInviteRequest(InviteTokenRequest):
+    """Sent by the BFF after Google sign-in, on behalf of the signed-in user."""
+    user_id: str
+    email: str
 
 
 class AddToQueueRequest(BaseModel):

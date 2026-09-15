@@ -7,6 +7,7 @@ row->dict mapping and parameter passing can be asserted in isolation.
 
 import os
 import sys
+from datetime import datetime, timezone
 
 import pytest
 
@@ -152,3 +153,100 @@ async def test_get_song_lyrics_returns_none_when_missing():
     db = make_manager(conn)
 
     assert await db.get_song_lyrics(999) is None
+
+
+# --- invites (migration 13) ----------------------------------------------
+
+INVITE_ROW = {
+    "id": 7,
+    "email": "friend@example.com",
+    "role": "editor",
+    "created_by": "admin1",
+    "created_at": "t",
+    "expires_at": "t",
+    "redeemed_at": None,
+    "redeemed_by": None,
+    "revoked_at": None,
+}
+
+
+@pytest.mark.asyncio
+async def test_create_invite_passes_params_and_never_returns_the_hash():
+    conn = FakeConnection(fetchrow_result=INVITE_ROW)
+    db = make_manager(conn)
+
+    expires = datetime(2026, 9, 21, tzinfo=timezone.utc)
+    result = await db.create_invite("hash123", "friend@example.com", "editor", "admin1", expires)
+
+    assert result == INVITE_ROW
+    assert "token_hash" not in result
+    query, args = conn.calls[0]
+    assert "INSERT INTO user_invites" in query
+    assert args == ("hash123", "friend@example.com", "editor", "admin1", expires)
+
+
+@pytest.mark.asyncio
+async def test_list_invites_does_not_select_the_token_hash():
+    conn = FakeConnection(fetch_result=[INVITE_ROW])
+    db = make_manager(conn)
+
+    assert await db.list_invites() == [INVITE_ROW]
+    query, _ = conn.calls[0]
+    assert "token_hash" not in query
+    assert "ORDER BY created_at DESC" in query
+
+
+@pytest.mark.asyncio
+async def test_get_invite_by_token_hash_looks_up_by_hash():
+    conn = FakeConnection(fetchrow_result=INVITE_ROW)
+    db = make_manager(conn)
+
+    assert await db.get_invite_by_token_hash("hash123") == INVITE_ROW
+    query, args = conn.calls[0]
+    assert "WHERE token_hash = $1" in query
+    assert args == ("hash123",)
+
+
+@pytest.mark.asyncio
+async def test_redeem_invite_guards_single_use_in_the_update_itself():
+    """The usable-ness checks must be in the WHERE clause, not a prior read —
+    that is what stops two concurrent redemptions from both succeeding."""
+    conn = FakeConnection(fetchrow_result=INVITE_ROW)
+    db = make_manager(conn)
+
+    result = await db.redeem_invite(7, "user1")
+
+    assert result == INVITE_ROW
+    query, args = conn.calls[0]
+    assert "redeemed_at IS NULL" in query
+    assert "revoked_at IS NULL" in query
+    assert "expires_at > CURRENT_TIMESTAMP" in query
+    assert args == (7, "user1")
+
+
+@pytest.mark.asyncio
+async def test_redeem_invite_returns_none_when_already_claimed():
+    conn = FakeConnection(fetchrow_result=None)
+    db = make_manager(conn)
+
+    assert await db.redeem_invite(7, "user1") is None
+
+
+@pytest.mark.asyncio
+async def test_revoke_invite_only_touches_unused_invites():
+    conn = FakeConnection(fetchrow_result=INVITE_ROW)
+    db = make_manager(conn)
+
+    assert await db.revoke_invite(7) == INVITE_ROW
+    query, args = conn.calls[0]
+    assert "redeemed_at IS NULL" in query
+    assert "revoked_at IS NULL" in query
+    assert args == (7,)
+
+
+@pytest.mark.asyncio
+async def test_revoke_invite_returns_none_when_already_used():
+    conn = FakeConnection(fetchrow_result=None)
+    db = make_manager(conn)
+
+    assert await db.revoke_invite(7) is None

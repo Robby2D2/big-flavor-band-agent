@@ -48,6 +48,13 @@ if [ -z "$BACKEND_API_SECRET" ] || [[ "$BACKEND_API_SECRET" == *your_backend_api
     MISSING_VARS=1
 fi
 
+if [ -z "$SESSION_SECRET" ] || [[ "$SESSION_SECRET" == *your_session_secret* ]]; then
+    echo -e "${RED}ERROR: SESSION_SECRET not configured${NC}"
+    echo "Without it the frontend cannot sign session cookies and every login fails."
+    echo "Generate one with: openssl rand -hex 32"
+    MISSING_VARS=1
+fi
+
 # Google OAuth (frontend sign-in)
 if [ -z "$GOOGLE_CLIENT_ID" ] || [[ "$GOOGLE_CLIENT_ID" == *your_google_client_id* ]]; then
     echo -e "${RED}ERROR: GOOGLE_CLIENT_ID not configured${NC}"

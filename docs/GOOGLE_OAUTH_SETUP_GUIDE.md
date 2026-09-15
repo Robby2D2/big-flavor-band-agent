@@ -217,12 +217,25 @@ When you deploy to production:
 
 After Google OAuth is set up, you can:
 
-1. **Grant Editor Access** to users:
+1. **Grant Editor Access** to users — send them an invite link:
+
+   An admin opens `/admin` → **Editor Invites**, enters their email, and copies the link that
+   appears. Send it however you like; they become an editor by signing in with Google as that
+   address. Invites are single-use and expire after 7 days.
+
+2. **Bootstrap the first admin.** Invites can only be created by an admin, so the very first one
+   still has to be set directly — after that person has signed in with Google once:
+
    ```sql
-   UPDATE users SET role = 'editor' WHERE email = 'you@example.com';
+   UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
    ```
 
-2. **Monitor Usage**:
+   ```bash
+   # applying it against the Docker stack
+   docker exec -it bigflavor-postgres psql -U bigflavor -d bigflavor -c "UPDATE users SET role = 'admin' WHERE email = 'you@example.com';"
+   ```
+
+3. **Monitor Usage**:
    - Google Console → APIs & Services → Dashboard
    - See API usage and quotas
 

@@ -45,6 +45,13 @@ if (-not $envVars["BACKEND_API_SECRET"] -or $envVars["BACKEND_API_SECRET"] -like
     $missingVars++
 }
 
+if (-not $envVars["SESSION_SECRET"] -or $envVars["SESSION_SECRET"] -like "*your_session_secret*") {
+    Write-Host "ERROR: SESSION_SECRET not configured" -ForegroundColor Red
+    Write-Host "Without it the frontend cannot sign session cookies and every login fails." -ForegroundColor Yellow
+    Write-Host "Generate one with: openssl rand -hex 32" -ForegroundColor Yellow
+    $missingVars++
+}
+
 # Google OAuth (frontend sign-in)
 if (-not $envVars["GOOGLE_CLIENT_ID"] -or $envVars["GOOGLE_CLIENT_ID"] -like "*your_google_client_id*") {
     Write-Host "ERROR: GOOGLE_CLIENT_ID not configured" -ForegroundColor Red

@@ -1,4 +1,6 @@
 import { cookies } from 'next/headers';
+import { backendAuthHeaders } from './backend';
+import { SESSION_COOKIE, SessionUser, readSessionValue } from './session';
 
 export enum UserRole {
   LISTENER = 'listener',
@@ -6,43 +8,44 @@ export enum UserRole {
   ADMIN = 'admin',
 }
 
-export interface User {
-  sub: string;
-  email: string;
-  name: string;
-  picture?: string;
-}
+export type User = SessionUser;
 
+/** Lowest privilege first; a role satisfies any requirement at or below its rank. */
+const ROLE_RANK: Record<string, number> = {
+  [UserRole.LISTENER]: 1,
+  [UserRole.EDITOR]: 2,
+  [UserRole.ADMIN]: 3,
+};
+
+/** The signed-in user, or null. Returns null for any cookie that fails its signature. */
 export async function getCurrentUser(): Promise<User | null> {
   const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get('appSession');
-
-  if (!sessionCookie) {
-    return null;
-  }
-
-  try {
-    // The session cookie contains the user data directly (sub, email, name, picture)
-    // It may be URL-encoded, so decode it first
-    const decodedValue = decodeURIComponent(sessionCookie.value);
-    const session = JSON.parse(decodedValue);
-
-    // Session contains user data directly, not under a 'user' property
-    if (session.sub && session.email) {
-      return {
-        sub: session.sub,
-        email: session.email,
-        name: session.name,
-        picture: session.picture,
-      };
-    }
-    return null;
-  } catch (error) {
-    console.error('Error parsing session cookie:', error);
-    return null;
-  }
+  return readSessionValue(cookieStore.get(SESSION_COOKIE)?.value);
 }
 
+/** The user's role as the backend knows it, or null if it could not be read. */
+async function fetchUserRole(sub: string): Promise<string | null> {
+  const response = await fetch(
+    `${process.env.AGENT_API_URL}/api/users/${encodeURIComponent(sub)}/role`,
+    { headers: backendAuthHeaders('listener') }
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = await response.json();
+  return typeof data.role === 'string' ? data.role : null;
+}
+
+/**
+ * Require a signed-in user of at least `requiredRole`, or throw.
+ *
+ * Fails **closed**: a role that cannot be read — backend down, user row missing,
+ * unrecognised role — is a refusal, not a pass. This previously fell through to
+ * returning the user whenever the role lookup answered with anything but 200,
+ * so a backend 404 or 500 let the caller through an admin check.
+ */
 export async function requireAuth(requiredRole: UserRole = UserRole.LISTENER): Promise<User> {
   const user = await getCurrentUser();
 
@@ -50,30 +53,19 @@ export async function requireAuth(requiredRole: UserRole = UserRole.LISTENER): P
     throw new Error('Unauthorized: Please log in');
   }
 
-  // Fetch user role from backend
+  let role: string | null = null;
   try {
-    const response = await fetch(`${process.env.AGENT_API_URL}/api/users/${user.sub}/role`);
-    if (response.ok) {
-      const data = await response.json();
-      const userRole = data.role as UserRole;
-
-      // Check role hierarchy
-      const roleHierarchy: Record<UserRole, number> = {
-        [UserRole.LISTENER]: 1,
-        [UserRole.EDITOR]: 2,
-        [UserRole.ADMIN]: 3,
-      };
-
-      if (roleHierarchy[userRole] < roleHierarchy[requiredRole]) {
-        throw new Error(`Forbidden: ${requiredRole} role required`);
-      }
-    }
+    role = await fetchUserRole(user.sub);
   } catch (error) {
     console.error('Error checking user role:', error);
-    // If we can't check the role and it's not LISTENER, deny access
-    if (requiredRole !== UserRole.LISTENER) {
-      throw new Error(`Forbidden: ${requiredRole} role required`);
-    }
+  }
+
+  if (role === null || !(role in ROLE_RANK)) {
+    throw new Error('Forbidden: your role could not be verified');
+  }
+
+  if (ROLE_RANK[role] < ROLE_RANK[requiredRole]) {
+    throw new Error(`Forbidden: ${requiredRole} role required`);
   }
 
   return user;

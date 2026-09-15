@@ -82,7 +82,7 @@ store — "releasing" means deploying the stack.
 # 1. Configure production secrets (never commit this file)
 cp .env.production.example .env.production
 #    edit .env.production: POSTGRES_PASSWORD, ANTHROPIC_API_KEY,
-#    BACKEND_API_SECRET, Google OAuth, etc.
+#    BACKEND_API_SECRET, SESSION_SECRET, Google OAuth, etc.
 
 # 2. Deploy
 ./deploy-production.sh               # Linux / CI
