@@ -4,22 +4,17 @@ import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import AudioProcessingTab from '@/components/produce/audio/AudioProcessingTab';
+import type { VersionDetail } from '@/components/produce/audio/VersionDetails';
+import {
+  formatBytes,
+  formatDuration,
+  formatProducedAt,
+  formatSteps,
+} from '@/lib/formatVersion';
 
 interface CatalogSong {
   id: number;
   title: string;
-}
-
-interface SongVersion {
-  id: number;
-  name: string;
-  label: string;
-  is_published: boolean;
-  steps_applied: { step: string }[] | null;
-  aggressiveness: string | null;
-  duration_seconds: number | null;
-  file_size_bytes: number | null;
-  created_at: string | null;
 }
 
 export default function ProduceSongPage({
@@ -34,10 +29,23 @@ export default function ProduceSongPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [versions, setVersions] = useState<SongVersion[]>([]);
+  const [versions, setVersions] = useState<VersionDetail[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [versionBusyId, setVersionBusyId] = useState<number | null>(null);
+  // Which version the details panel acts on. Lives here, not in
+  // AudioProcessingTab, because the list that sets it is rendered here.
+  const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
+
+  // Keep a valid selection: default to whatever is published, and fall back
+  // when the selected version is renamed away or deleted.
+  useEffect(() => {
+    setSelectedVersionId((prev) => {
+      if (prev != null && versions.some((v) => v.id === prev)) return prev;
+      const published = versions.find((v) => v.is_published);
+      return published?.id ?? versions[0]?.id ?? null;
+    });
+  }, [versions]);
 
   useEffect(() => {
     if (Number.isNaN(songId)) {
@@ -79,7 +87,7 @@ export default function ProduceSongPage({
       if (!response.ok) {
         throw new Error(data.error || 'Failed to load versions');
       }
-      const list: SongVersion[] = data.versions || [];
+      const list: VersionDetail[] = data.versions || [];
       setVersions(list);
     } catch (err: any) {
       setVersionsError(err.message);
@@ -155,26 +163,6 @@ export default function ProduceSongPage({
     }
   };
 
-  const formatBytes = (bytes: number | null): string => {
-    if (bytes == null) return '—';
-    if (bytes < 1024) return `${bytes} B`;
-    const units = ['KB', 'MB', 'GB'];
-    let value = bytes / 1024;
-    let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit += 1;
-    }
-    return `${value.toFixed(1)} ${units[unit]}`;
-  };
-
-  const formatDuration = (seconds: number | null): string => {
-    if (seconds == null) return '—';
-    const m = Math.floor(seconds / 60);
-    const s = Math.round(seconds % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
   if (loading) {
     return (
       <div className="min-h-screen bg-canvas flex items-center justify-center">
@@ -243,8 +231,9 @@ export default function ProduceSongPage({
               </button>
             </div>
             <p className="text-sm text-text/55 mb-4">
-              The default version is what plays everywhere — radio, search and preview,
-              and downloads. The original is always kept until you delete it.
+              Pick a version to work with — auditioning, renaming, deleting and
+              analysing it all happen below. The default version is what plays
+              everywhere: radio, search and preview, and downloads.
             </p>
 
             {versionsError && (
@@ -259,25 +248,42 @@ export default function ProduceSongPage({
               </p>
             ) : (
               <div className="overflow-auto border border-white/8 rounded-lg">
-                <table className="w-full text-sm">
-                  <thead className="bg-well text-left text-text/45">
-                    <tr>
-                      <th className="py-2 px-3">Version</th>
-                      <th className="py-2 px-3">Steps</th>
-                      <th className="py-2 px-3">Intensity</th>
-                      <th className="py-2 px-3">Duration</th>
-                      <th className="py-2 px-3">Size</th>
-                      <th className="py-2 px-3">Produced</th>
-                      <th className="py-2 px-3">Audition</th>
-                      <th className="py-2 px-3">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-text">
-                    {versions.map((v) => (
+              <table className="w-full text-sm">
+                <thead className="bg-well text-left text-text/45">
+                  <tr>
+                    <th className="py-2 px-3 w-8">
+                      <span className="sr-only">Selected</span>
+                    </th>
+                    <th className="py-2 px-3">Version</th>
+                    <th className="py-2 px-3">Steps</th>
+                    <th className="py-2 px-3">Intensity</th>
+                    <th className="py-2 px-3">Duration</th>
+                    <th className="py-2 px-3">Size</th>
+                    <th className="py-2 px-3">Produced</th>
+                  </tr>
+                </thead>
+                <tbody className="text-text">
+                  {versions.map((v) => {
+                    const selected = v.id === selectedVersionId;
+                    return (
                       <tr
                         key={v.id}
-                        className="border-t border-white/8 align-middle"
+                        onClick={() => setSelectedVersionId(v.id)}
+                        aria-selected={selected}
+                        className={`border-t border-white/8 align-middle cursor-pointer ${
+                          selected ? 'bg-signal/10' : 'hover:bg-white/5'
+                        }`}
                       >
+                        <td className="py-2 px-3">
+                          <input
+                            type="radio"
+                            name="selected-version"
+                            checked={selected}
+                            onChange={() => setSelectedVersionId(v.id)}
+                            aria-label={`Work with ${v.name}`}
+                            className="accent-signal"
+                          />
+                        </td>
                         <td className="py-2 px-3">
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{v.name}</span>
@@ -287,16 +293,12 @@ export default function ProduceSongPage({
                               </span>
                             )}
                             {v.label === 'original' && (
-                              <span className="text-xs text-text/35">
-                                original
-                              </span>
+                              <span className="text-xs text-text/35">original</span>
                             )}
                           </div>
                         </td>
                         <td className="py-2 px-3 text-text/55">
-                          {v.steps_applied && v.steps_applied.length > 0
-                            ? v.steps_applied.map((s) => s.step).join(', ')
-                            : '—'}
+                          {formatSteps(v.steps_applied)}
                         </td>
                         <td className="py-2 px-3 text-text/55 capitalize">
                           {v.aggressiveness ?? '—'}
@@ -308,53 +310,28 @@ export default function ProduceSongPage({
                           {formatBytes(v.file_size_bytes)}
                         </td>
                         <td className="py-2 px-3 text-text/55">
-                          {v.created_at ? new Date(v.created_at).toLocaleString() : '—'}
-                        </td>
-                        <td className="py-2 px-3">
-                          <audio
-                            controls
-                            preload="none"
-                            src={`/api/produce/versions/${v.id}/audio`}
-                            className="h-8 w-44"
-                          />
-                        </td>
-                        <td className="py-2 px-3">
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              onClick={() => handleSetDefault(v.id)}
-                              disabled={v.is_published || versionBusyId === v.id}
-                              className="text-xs px-2 py-1 bg-signal text-canvas font-semibold rounded hover:opacity-90 disabled:bg-white/10 disabled:text-text/35 disabled:cursor-not-allowed"
-                            >
-                              Set default
-                            </button>
-                            <button
-                              onClick={() => handleRenameVersion(v.id, v.name)}
-                              disabled={versionBusyId === v.id}
-                              className="text-xs px-2 py-1 border border-white/14 rounded text-text/70 hover:bg-white/5 disabled:opacity-50"
-                            >
-                              Rename
-                            </button>
-                            <button
-                              onClick={() => handleDeleteVersion(v.id, v.name)}
-                              disabled={versionBusyId === v.id || versions.length <= 1}
-                              className="text-xs px-2 py-1 border border-red-300 dark:border-red-700 rounded text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              Delete
-                            </button>
-                          </div>
+                          {formatProducedAt(v.created_at)}
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
           </section>
 
           <AudioProcessingTab
             songId={songId}
             versions={versions}
+            sourceVersionId={selectedVersionId}
             onApplied={loadVersions}
+            versionActions={{
+              busyId: versionBusyId,
+              onSetDefault: handleSetDefault,
+              onRename: handleRenameVersion,
+              onDelete: handleDeleteVersion,
+            }}
           />
         </div>
       </main>

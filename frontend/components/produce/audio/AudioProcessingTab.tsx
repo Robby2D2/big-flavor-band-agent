@@ -11,7 +11,7 @@ import { decodeAudio, fetchPeaks, Region, WaveformPeaks } from '../audioEngine';
 import { mapWithConcurrency } from '@/lib/concurrency';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
-import VersionBar from './VersionBar';
+import VersionDetails, { VersionDetail } from './VersionDetails';
 import StemConsole from './StemConsole';
 import StemDetailPanel from './StemDetailPanel';
 import FixQueue from './FixQueue';
@@ -29,16 +29,19 @@ import LyricsCard from './LyricsCard';
  */
 const RENDER_CONCURRENCY = 2;
 
-interface VersionOption {
-  id: number;
-  name: string;
-  is_published: boolean;
-}
-
 interface AudioProcessingTabProps {
   songId: number;
-  versions: VersionOption[];
+  versions: VersionDetail[];
+  /** Which version is selected, owned by the page so the list can drive it. */
+  sourceVersionId: number | null;
   onApplied: () => void;
+  /** Acting on the selected version — the page owns these mutations. */
+  versionActions: {
+    busyId: number | null;
+    onSetDefault: (versionId: number) => void;
+    onRename: (versionId: number, currentName: string) => void;
+    onDelete: (versionId: number, name: string) => void;
+  };
 }
 
 /**
@@ -52,17 +55,11 @@ interface AudioProcessingTabProps {
 export default function AudioProcessingTab({
   songId,
   versions,
+  sourceVersionId,
   onApplied,
+  versionActions,
 }: AudioProcessingTabProps) {
-  const [sourceVersionId, setSourceVersionId] = useState<number | null>(null);
-
-  useEffect(() => {
-    setSourceVersionId((prev) => {
-      if (prev != null && versions.some((v) => v.id === prev)) return prev;
-      const published = versions.find((v) => v.is_published);
-      return published?.id ?? versions[0]?.id ?? null;
-    });
-  }, [versions]);
+  const selectedVersion = versions.find((v) => v.id === sourceVersionId) ?? null;
 
   const queue = useProcessingQueue(songId, sourceVersionId);
 
@@ -350,10 +347,17 @@ export default function AudioProcessingTab({
 
   return (
     <div className="flex flex-col gap-4">
-      <VersionBar
-        versions={versions}
-        sourceVersionId={sourceVersionId}
-        onChangeSource={setSourceVersionId}
+      <VersionDetails
+        version={selectedVersion}
+        canDelete={versions.length > 1}
+        busy={selectedVersion != null && versionActions.busyId === selectedVersion.id}
+        onSetDefault={() => selectedVersion && versionActions.onSetDefault(selectedVersion.id)}
+        onRename={() =>
+          selectedVersion && versionActions.onRename(selectedVersion.id, selectedVersion.name)
+        }
+        onDelete={() =>
+          selectedVersion && versionActions.onDelete(selectedVersion.id, selectedVersion.name)
+        }
         onStartAnalysis={queue.startAnalysis}
         analyzing={queue.analyzing}
         analysisNote={queue.analysisNote}
