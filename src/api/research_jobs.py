@@ -136,6 +136,7 @@ async def run_deep_search(
             emit("plan", "No further searches", "answering with what is already found")
             break
 
+        found_this_round = 0
         for call in tool_calls:
             name = call.get("name", "")
             args = call.get("input") or {}
@@ -155,6 +156,7 @@ async def run_deep_search(
                 if song_id is not None and song_id not in candidates:
                     candidates[song_id] = song
                     new += 1
+            found_this_round += new
             emit("retrieve", "Found", f"{len(songs)} results, {new} new")
 
         emit("evaluate", "Evaluating", f"{len(candidates)} candidates so far")
@@ -176,7 +178,10 @@ async def run_deep_search(
             f"{len(evaluation['relevant_ids'])} of {len(candidates)} look relevant",
         )
 
-        if not should_continue(evaluation, round_number):
+        if not should_continue(evaluation, round_number, found_this_round):
+            if not evaluation.get("sufficient", True) and found_this_round == 0:
+                emit("evaluate", "Nothing new to find",
+                     "the last round turned up no songs these tools had not already seen")
             break
 
         gap = evaluation["gap"]
@@ -184,8 +189,20 @@ async def run_deep_search(
 
     # Prefer what the model judged relevant; fall back to everything found, so a
     # search that retrieved plenty but judged badly still answers with results.
+    reasons = evaluation.get("reasons", {})
     relevant = [candidates[i] for i in evaluation.get("relevant_ids", []) if i in candidates]
     cited = relevant or list(candidates.values())[:MAX_CANDIDATES_IN_PROMPT]
+
+    # The evaluator already said why each song fits, in the same call that
+    # judged it. Attaching it here means the (i) on a result shows the reason
+    # straight away instead of paying for another model round-trip to re-derive
+    # something already known.
+    cited = [
+        {**song, "match_reason": reasons[song["id"]]}
+        if song.get("id") in reasons
+        else song
+        for song in cited
+    ]
 
     emit("synthesize", "Writing the answer", f"from {len(cited)} songs")
 

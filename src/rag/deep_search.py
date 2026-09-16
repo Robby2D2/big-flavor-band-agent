@@ -113,10 +113,14 @@ def build_evaluate_prompt(query: str, candidate_lines: List[str]) -> str:
         f'The listener asked: "{query}"\n\n'
         f"Candidates found so far:\n{listing}\n\n"
         "Reply with JSON only, in this shape:\n"
-        '{"relevant_ids": [12, 34], "sufficient": true, "gap": ""}\n\n'
-        "relevant_ids: every id worth showing the listener. A song that helps "
+        '{"relevant": [{"id": 12, "why": "mentions the river in the chorus"}], '
+        '"sufficient": true, "gap": ""}\n\n'
+        "relevant: every song worth showing the listener. A song that helps "
         "answer the question in whole OR in part counts — for a two-part "
         "question, include songs that satisfy either part. Expect several.\n"
+        "why: a short phrase, under 15 words, saying what makes that song fit. "
+        "This is shown to the listener beside the song, so ground it in the "
+        "evidence given rather than anything you assume.\n"
         "sufficient: true if these are enough to answer well.\n"
         "gap: if not sufficient, one sentence on what is still missing."
     )
@@ -165,20 +169,34 @@ def parse_evaluation(text: str) -> Dict[str, Any]:
     """
     parsed = _extract_json_object(text)
     if parsed is None:
-        return {"relevant_ids": [], "sufficient": True, "gap": "", "parsed": False}
+        return {"relevant_ids": [], "reasons": {}, "sufficient": True,
+                "gap": "", "parsed": False}
 
-    raw_ids = parsed.get("relevant_ids")
     ids: List[int] = []
-    if isinstance(raw_ids, list):
-        for value in raw_ids:
-            try:
-                ids.append(int(value))
-            except (TypeError, ValueError):
-                continue
+    reasons: Dict[int, str] = {}
+
+    # Preferred shape: [{"id": 12, "why": "..."}] — the reason arrives with the
+    # judgement, so the UI never has to ask a second time why a song matched.
+    # A bare [12, 34] is still accepted; a local model drops the wrapper often
+    # enough that refusing it would throw away good judgements.
+    for entry in parsed.get("relevant") or parsed.get("relevant_ids") or []:
+        song_id = entry.get("id") if isinstance(entry, dict) else entry
+        try:
+            song_id = int(song_id)
+        except (TypeError, ValueError):
+            continue
+        if song_id in ids:
+            continue
+        ids.append(song_id)
+        if isinstance(entry, dict):
+            why = entry.get("why") or entry.get("reason")
+            if why and str(why).strip():
+                reasons[song_id] = str(why).strip()
 
     gap = parsed.get("gap")
     return {
         "relevant_ids": ids,
+        "reasons": reasons,
         "sufficient": bool(parsed.get("sufficient", True)),
         "gap": str(gap).strip() if gap else "",
         "parsed": True,
@@ -208,11 +226,23 @@ def describe_tool_call(name: str, arguments: Dict[str, Any]) -> str:
     return f"{readable} {detail}".strip()
 
 
-def should_continue(evaluation: Dict[str, Any], round_number: int) -> bool:
-    """Search again only if the model says it needs to and told us what for."""
+def should_continue(
+    evaluation: Dict[str, Any],
+    round_number: int,
+    new_candidates: Optional[int] = None,
+) -> bool:
+    """Search again only if there is reason to think another round finds more.
+
+    ``new_candidates`` is how many songs the round just finished actually added.
+    A round that turned up nothing new has exhausted what these tools can reach
+    for this question — running another one spends the listener's time to
+    re-judge the same songs and reach the same verdict.
+    """
     if round_number >= MAX_ROUNDS:
         return False
     if evaluation.get("sufficient", True):
+        return False
+    if new_candidates == 0:
         return False
     # Without a stated gap the next round has nothing new to go on, so it would
     # just repeat the last search.

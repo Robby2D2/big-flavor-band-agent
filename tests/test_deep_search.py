@@ -51,7 +51,15 @@ def test_synthesis_system_forbids_inventing_history():
 def test_evaluate_prompt_lists_candidates_and_asks_for_json():
     prompt = build_evaluate_prompt("q", ["#1 A", "#2 B"])
     assert "#1 A" in prompt and "#2 B" in prompt
-    assert "relevant_ids" in prompt and "sufficient" in prompt
+    assert "relevant" in prompt and "sufficient" in prompt
+
+
+def test_evaluate_prompt_asks_for_a_reason_per_song():
+    """The reason is shown beside the song, so it is worth asking for here
+    rather than paying for a second call when the listener clicks."""
+    prompt = build_evaluate_prompt("q", ["#1 A"])
+    assert '"why"' in prompt or "why:" in prompt
+    assert "shown to the listener" in prompt
 
 
 def test_prompts_say_plainly_when_nothing_was_found():
@@ -167,3 +175,64 @@ def test_an_unknown_tool_still_describes_itself():
 
 def test_a_tool_call_with_no_useful_argument_has_no_trailing_space():
     assert describe_tool_call("search_by_text_description", {}) == "semantic search"
+
+
+# --- reasons arrive with the judgement -----------------------------------
+
+def test_reads_a_reason_per_song_so_the_ui_need_not_ask_again():
+    result = parse_evaluation(
+        '{"relevant": [{"id": 12, "why": "mentions the river in the chorus"}],'
+        ' "sufficient": true}'
+    )
+    assert result["relevant_ids"] == [12]
+    assert result["reasons"][12] == "mentions the river in the chorus"
+
+
+def test_accepts_reason_under_either_key():
+    result = parse_evaluation('{"relevant": [{"id": 3, "reason": "calm and slow"}]}')
+    assert result["reasons"][3] == "calm and slow"
+
+
+def test_a_bare_id_list_is_still_accepted():
+    """A local model drops the wrapper often enough that refusing it would
+    throw away a perfectly good judgement."""
+    result = parse_evaluation('{"relevant_ids": [1, 2], "sufficient": true}')
+    assert result["relevant_ids"] == [1, 2]
+    assert result["reasons"] == {}
+
+
+def test_a_song_judged_without_a_reason_simply_has_none():
+    result = parse_evaluation('{"relevant": [{"id": 5}, {"id": 6, "why": "about home"}]}')
+    assert result["relevant_ids"] == [5, 6]
+    assert 5 not in result["reasons"]
+    assert result["reasons"][6] == "about home"
+
+
+def test_blank_reasons_are_not_carried():
+    result = parse_evaluation('{"relevant": [{"id": 5, "why": "   "}]}')
+    assert result["reasons"] == {}
+
+
+def test_duplicate_ids_are_collapsed():
+    result = parse_evaluation('{"relevant": [{"id": 5, "why": "a"}, {"id": 5, "why": "b"}]}')
+    assert result["relevant_ids"] == [5]
+
+
+def test_unreadable_output_still_yields_empty_reasons():
+    assert parse_evaluation("nonsense")["reasons"] == {}
+
+
+# --- a fruitless round ends the loop --------------------------------------
+
+def test_stops_when_a_round_found_nothing_new():
+    """Another round would re-judge the same songs and reach the same verdict."""
+    assert should_continue({"sufficient": False, "gap": "more please"}, 1, 0) is False
+
+
+def test_continues_when_a_round_found_something_new():
+    assert should_continue({"sufficient": False, "gap": "more please"}, 1, 7) is True
+
+
+def test_an_unknown_count_does_not_stop_the_loop():
+    """Callers that do not track it keep the old behaviour."""
+    assert should_continue({"sufficient": False, "gap": "more please"}, 1, None) is True
