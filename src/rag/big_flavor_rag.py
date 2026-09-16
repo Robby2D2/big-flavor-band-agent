@@ -700,13 +700,20 @@ class SongRAGSystem:
         candidate_limit = min(300, max(limit * 5, 50))
 
         query = """
-            WITH semantic_candidates AS (
-                -- Nearest embeddings of any kind: lyrics, and the metadata
-                -- sentence (genre/mood/energy/tempo) that lets a song be found
-                -- by what it *is* and not only by what its words say.
-                SELECT te.song_id
-                FROM text_embeddings te
-                ORDER BY te.embedding <=> $1::vector
+            WITH song_vectors AS (
+                -- Everything a song can be matched on: its whole-lyric and
+                -- metadata embeddings, plus each verse-sized lyric chunk
+                -- (migration 14). Chunks are what let a song be found by the
+                -- one passage that is about the thing being asked for, instead
+                -- of that passage being averaged away across 850 characters.
+                SELECT song_id, embedding FROM text_embeddings
+                UNION ALL
+                SELECT song_id, embedding FROM song_lyric_chunks
+            ),
+            semantic_candidates AS (
+                SELECT song_id
+                FROM song_vectors
+                ORDER BY embedding <=> $1::vector
                 LIMIT $4
             ),
             keyword_candidates AS (
@@ -724,6 +731,13 @@ class SongRAGSystem:
                                WHERE s.genre ILIKE t.token
                                   OR s.mood ILIKE t.token
                                   OR s.energy ILIKE t.token
+                                  -- ...or any of the song's other labels
+                                  -- (migration 15), so "calm" finds a song
+                                  -- whose primary mood is "melancholic".
+                                  OR EXISTS (
+                                      SELECT 1 FROM song_tags st
+                                      WHERE st.song_id = s.id AND st.value ILIKE t.token
+                                  )
                            )
                            + 0.05 * COUNT(DISTINCT t.token) FILTER (
                                WHERE s.title ILIKE '%' || t.token || '%'
@@ -735,6 +749,10 @@ class SongRAGSystem:
                   OR s.mood ILIKE t.token
                   OR s.energy ILIKE t.token
                   OR s.title ILIKE '%' || t.token || '%'
+                  OR EXISTS (
+                      SELECT 1 FROM song_tags st
+                      WHERE st.song_id = s.id AND st.value ILIKE t.token
+                  )
                 GROUP BY s.id
             ),
             candidates AS (
@@ -747,9 +765,9 @@ class SongRAGSystem:
                 -- surfaced via keywords: without this, songs sharing a genre all
                 -- tie on the same keyword score and fall back to alphabetical.
                 SELECT c.song_id,
-                       COALESCE(MAX(1 - (te.embedding <=> $1::vector)), 0) AS semantic_score
+                       COALESCE(MAX(1 - (sv.embedding <=> $1::vector)), 0) AS semantic_score
                 FROM candidates c
-                LEFT JOIN text_embeddings te ON te.song_id = c.song_id
+                LEFT JOIN song_vectors sv ON sv.song_id = c.song_id
                 GROUP BY c.song_id
             )
             SELECT

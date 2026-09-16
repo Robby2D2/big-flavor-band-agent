@@ -44,9 +44,15 @@ async def backfill() -> None:
     try:
         async with db.pool.acquire() as conn:
             songs = await conn.fetch("""
-                SELECT id, title, genre, mood, energy, tempo_bpm, key
-                FROM songs
-                ORDER BY id
+                SELECT s.id, s.title, s.genre, s.mood, s.energy, s.tempo_bpm, s.key,
+                       COALESCE(array_agg(DISTINCT st.value)
+                                FILTER (WHERE st.kind = 'mood'), '{}') AS moods,
+                       COALESCE(array_agg(DISTINCT st.value)
+                                FILTER (WHERE st.kind = 'genre'), '{}') AS genres
+                FROM songs s
+                LEFT JOIN song_tags st ON st.song_id = s.id
+                GROUP BY s.id
+                ORDER BY s.id
             """)
 
         print(f"Songs in catalog: {len(songs)}")

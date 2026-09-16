@@ -46,6 +46,11 @@ STATUS_FAILED = "failed"
 # Long enough to read the answer and come back to it; a search is cheap to re-run.
 RESULT_TTL_SECONDS = 60 * 60
 
+# Each retrieval asks for more than the tools' default of 10: the evaluator
+# judges from one line per song, so a wider net costs little while a narrow one
+# hides answers that were never looked at.
+RESULTS_PER_SEARCH = 25
+
 # The retrieval tools the model may choose from. Deliberately only the read
 # side of the catalogue — an in-depth *search* never edits anything.
 SEARCH_TOOL_NAMES = {
@@ -60,6 +65,31 @@ SEARCH_TOOL_NAMES = {
 def _search_tools(agent) -> List[Dict[str, Any]]:
     """The agent's own tool definitions, narrowed to retrieval."""
     return [t for t in agent._get_available_tools() if t.get("name") in SEARCH_TOOL_NAMES]
+
+
+async def _matching_lyrics(query, songs, agent, db) -> Dict[int, str]:
+    """The lyric passage of each song that best matches the question.
+
+    Showing the *opening* of a song was the old behaviour, and for 84% of this
+    catalogue the opening is the wrong quarter of the words — an evaluator asked
+    "is this about the ocean?" was reading a verse that never mentions it. This
+    returns the chunk that actually matched (migration 14), which is both better
+    evidence and the line worth quoting back.
+    """
+    song_ids = [s["id"] for s in songs if s.get("id") is not None]
+    if not song_ids:
+        return {}
+
+    model = getattr(agent.rag_system, "text_embedding_model", None)
+    if model is None:
+        return {}
+
+    try:
+        embedding = str(model.encode(query).tolist())
+        return await db.best_lyric_chunks(song_ids, embedding)
+    except Exception as exc:  # evidence is a nicety; never fail the search for it
+        logger.warning("Could not fetch matching lyric chunks: %s", exc)
+        return {}
 
 
 async def run_deep_search(
@@ -111,7 +141,8 @@ async def run_deep_search(
             args = call.get("input") or {}
             emit("retrieve", "Retrieving", describe_tool_call(name, args))
             try:
-                result = await agent._call_tool(name, args)
+                # The model never sets a limit; the tools default to 10.
+                result = await agent._call_tool(name, {"limit": RESULTS_PER_SEARCH, **args})
             except Exception as exc:  # one bad tool call must not end the search
                 logger.warning("Deep search tool %s failed: %s", name, exc)
                 emit("retrieve", "Search failed", f"{describe_tool_call(name, args)} — skipped")
@@ -128,14 +159,9 @@ async def run_deep_search(
 
         emit("evaluate", "Evaluating", f"{len(candidates)} candidates so far")
 
-        lines = []
-        for song in list(candidates.values())[:MAX_CANDIDATES_IN_PROMPT]:
-            lyrics = None
-            try:
-                lyrics = await db.get_song_lyrics(song["id"])
-            except Exception:
-                lyrics = None
-            lines.append(summarize_candidate(song, lyrics))
+        shortlist = list(candidates.values())[:MAX_CANDIDATES_IN_PROMPT]
+        excerpts = await _matching_lyrics(query, shortlist, agent, db)
+        lines = [summarize_candidate(s, excerpts.get(s.get("id"))) for s in shortlist]
 
         verdict_text = await provider.generate_response(
             messages=[{"role": "user", "content": build_evaluate_prompt(query, lines)}],
@@ -163,13 +189,9 @@ async def run_deep_search(
 
     emit("synthesize", "Writing the answer", f"from {len(cited)} songs")
 
-    evidence = []
-    for song in cited[:MAX_CANDIDATES_IN_PROMPT]:
-        try:
-            lyrics = await db.get_song_lyrics(song["id"])
-        except Exception:
-            lyrics = None
-        evidence.append(summarize_candidate(song, lyrics))
+    shortlist = cited[:MAX_CANDIDATES_IN_PROMPT]
+    excerpts = await _matching_lyrics(query, shortlist, agent, db)
+    evidence = [summarize_candidate(s, excerpts.get(s.get("id"))) for s in shortlist]
 
     answer = await provider.generate_response(
         messages=[{"role": "user", "content": build_synthesis_prompt(query, evidence)}],

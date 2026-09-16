@@ -144,6 +144,26 @@ involved in any of it — a search answers in tens of milliseconds:
 Candidates are scored semantically even when they surface only via keywords, so ties break on
 relevance rather than title.
 
+**Retrieval data (2026-09-16).** Three data shapes feed semantic search, all
+embedded with all-MiniLM-L6-v2 and searched as one pool:
+
+- `text_embeddings` content_type `lyrics` — the whole song's words. Still the
+  single source of truth for lyric *text*.
+- `text_embeddings` content_type `metadata` — the sentence from
+  `build_metadata_text`, which now carries **every** mood and genre tag.
+- `song_lyric_chunks` (migration `14`) — verse-sized, overlapping pieces of each
+  song's lyrics, ~5 per song. A whole-song lyric averaged 850 characters into one
+  vector and buried any single mention; chunks let a song be found by the passage
+  that matches. Backfill: `scripts/backfill_lyric_chunks.py`.
+
+`song_tags` (migration `15`) holds **multi-label** mood and genre, seeded from the
+single `songs.mood`/`songs.genre` columns and extended by
+`scripts/backfill_song_tags.py` (~2.9 moods per song). The single columns remain
+the primary label; the tags make a song findable as any of the things it is, so
+"calm" reaches a song whose primary mood is "melancholic". The keyword branch
+matches tags as well as the primary columns. **Re-run the metadata backfill after
+a tagging pass** — the tags only reach search once they are embedded.
+
 **In-depth search (2026-09-16).** The search screen is one box and an "In depth"
 checkbox; the six mode buttons are gone, because they asked a listener to know
 which retrieval strategy their question needed before they had asked it.

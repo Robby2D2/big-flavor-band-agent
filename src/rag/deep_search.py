@@ -25,9 +25,10 @@ from typing import Any, Dict, List, Optional
 # model tends to re-run the same searches rather than find anything new.
 MAX_ROUNDS = 3
 
-# Candidates carried into the evaluation prompt. Enough to judge, small enough
-# that the model actually reads them.
-MAX_CANDIDATES_IN_PROMPT = 24
+# Candidates carried into the evaluation prompt. Was 24, which silently dropped
+# everything a second or third round found — a run that gathered 40 candidates
+# only ever had 24 judged. A one-line summary each is cheap to read.
+MAX_CANDIDATES_IN_PROMPT = 40
 
 # Lyric context per candidate — a couple of lines, not a transcript.
 LYRIC_SNIPPET_CHARS = 220

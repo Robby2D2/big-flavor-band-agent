@@ -44,13 +44,25 @@ def build_metadata_text(song: Dict[str, Any]) -> str:
     if title:
         parts.append(title)
 
-    for label, key in (("Genre", "genre"), ("Mood", "mood"), ("Energy", "energy")):
-        value = song.get(key)
-        if value:
-            value = str(value).strip()
-            if value:
-                suffix = " energy" if key == "energy" else ""
-                parts.append(f"{label}: {value}{suffix}")
+    # Every label that applies, not just the primary one (migration 15): a song
+    # that is both melancholic and calm should be findable as either.
+    for label, key, extra_key in (
+        ("Genre", "genre", "genres"),
+        ("Mood", "mood", "moods"),
+        ("Energy", "energy", None),
+    ):
+        values = []
+        primary = song.get(key)
+        if primary and str(primary).strip():
+            values.append(str(primary).strip())
+        if extra_key:
+            for tag in song.get(extra_key) or []:
+                tag = str(tag).strip()
+                if tag and tag.lower() not in {v.lower() for v in values}:
+                    values.append(tag)
+        if values:
+            suffix = " energy" if key == "energy" else ""
+            parts.append(f"{label}: {', '.join(values)}{suffix}")
 
     tempo = song.get("tempo_bpm")
     if tempo:
