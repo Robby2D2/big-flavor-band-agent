@@ -163,19 +163,33 @@ export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar, q
                       <button
                         onClick={() => handleToggleInfo(song)}
                         className="p-1 text-gray-400 hover:text-blue-500 transition-colors"
-                        title="Why this matched"
+                        title={
+                          explaining === song.id ? 'Working out why…' : 'Why this matched'
+                        }
+                        aria-busy={explaining === song.id}
                       >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
+                        {explaining === song.id ? (
+                          <span
+                            role="status"
+                            aria-label="Working out why this matched"
+                            className="block w-5 h-5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin"
+                          />
+                        ) : (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        )}
                       </button>
 
                       {showInfoId === song.id && (
                         <div className="absolute left-0 top-8 z-20 w-64 p-3 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700">
                           {explaining === song.id ? (
-                            <p className="text-sm text-gray-500 dark:text-gray-400 italic">
-                              Working out why…
-                            </p>
+                            <div className="flex items-center gap-2">
+                              <span className="flex-none w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+                              <p className="text-sm text-gray-500 dark:text-gray-400 italic">
+                                Working out why…
+                              </p>
+                            </div>
                           ) : (
                             <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
                               {song.match_reason || song.commentary || explanations[song.id]}
