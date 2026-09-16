@@ -132,6 +132,43 @@ picked up by `next dev`'s watcher — the file is visible inside the container b
 
 ---
 
+### 2026-09-16 — "Save the version" was re-doing all the DSP, twice
+A 17-fix queue 504'd on save and the UI suggested turning fixes off. Asked why
+saving was slow at all — surely the processing was done? Checked: it was not.
+**Analyze measures and never renders** (its own docstring: "findings +
+recommended params, no processing"), so every fix was still unrendered when a
+button was pressed. `_chain_apply_tools` then runs each tool for real, writing a
+WAV per step, per stem, then remix, then master. Stems *are* reused — that part
+of the instinct was right.
+
+Worse: "Preview full mix first" rendered exactly that, and saving threw it away
+and rendered it again. And a version row is just a path — `add_song_version`
+stores `audio_path`, it never copies audio — so saving an already-rendered mix
+should be an insert.
+
+So the fix was not only "run it in the background":
+- **Start analysis now renders what it detected** (`warmRender`), because the
+  reason to analyse is to hear or keep the result. Preview and Save then land on
+  a finished file.
+- **A fingerprint over source version + every fix and its params** decides reuse.
+  It deliberately excludes `preview`, since preview and save produce identical
+  audio — that exclusion is what lets the analysis render satisfy a later save.
+  Measured: cold render 17.6s, same-fixes save 0.94s (`reused: true`), changed
+  params correctly re-rendered at 18.6s.
+- **`AcceptJobManager`** mirrors `stem_jobs.py`; status is in memory because the
+  result is durable. `useAcceptJob` polls **on mount**, so a reload mid-render
+  resumes, shows an in-progress row in the versions list, and reloads the list
+  when a save lands.
+
+**Verification gotcha worth keeping:** starting a render server-side while the
+page sits idle proves nothing — the page polls on mount and then only while
+running, so a render begun elsewhere after load is invisible by design. Start
+the render *first*, then navigate. Also, a render saturates the CPU enough that
+the dev server's own page load crawls; wait for `tbody tr` to exist rather than
+a fixed sleep.
+
+---
+
 ### 2026-09-15 — The session cookie was a claim, not a credential; now it is signed
 Two holes closed, both found while building editor invites. Neither needed a clever exploit.
 

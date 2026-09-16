@@ -36,6 +36,7 @@ from src.rag.big_flavor_rag import SongRAGSystem
 from src.auth import require_role
 from src.api.dependencies import get_agent, get_db, get_rag
 from src.api import radio_service
+from src.api.accept_jobs import accept_jobs, fingerprint as _render_fingerprint
 from src.api.region_tools import build_region_tool_args
 from src.production import (
     audio_preview,
@@ -1528,17 +1529,28 @@ class AcceptFixesRequest(BaseModel):
     preview: bool = False
 
 
-@router.post("/api/produce/accept-fixes")
-async def accept_fixes(
-    request: AcceptFixesRequest,
-    agent: BigFlavorAgent = Depends(get_agent),
-    db: DatabaseManager = Depends(get_db),
-    _role: str = Depends(require_role("editor")),
-):
-    """Render every accepted per-stem + master fix into one file.
+def _accept_fingerprint(request: AcceptFixesRequest) -> str:
+    """Identify the audio this request would render (see accept_jobs.fingerprint)."""
+    return _render_fingerprint({
+        "song_id": request.song_id,
+        "source_version_id": request.source_version_id,
+        "stems": [
+            {"stem_id": s.stem_id, "fixes": [f.model_dump() for f in s.fixes]}
+            for s in request.stems
+        ],
+        "master_fixes": [f.model_dump() for f in request.master_fixes],
+    })
 
-    Backs both "Accept all & save version" (``preview=False``, the default)
-    and "Preview full mix first" (``preview=True``) in the review-queue UI.
+
+async def _render_mix(
+    request: AcceptFixesRequest,
+    agent: BigFlavorAgent,
+    db: DatabaseManager,
+) -> Path:
+    """The expensive half: chain every fix onto its stem, remix, master.
+
+    Minutes of DSP for a full queue, and the only part worth caching — the
+    result is byte-identical whether it was asked for as a preview or a save.
     """
     run_dir = _produced_dir() / str(request.song_id) / "accept_fixes" / str(int(time.time() * 1000))
 
@@ -1576,9 +1588,19 @@ async def accept_fixes(
         agent, request.master_fixes, downmix_path, run_dir, tag="master"
     )
 
-    if request.preview:
-        return {"status": "success", "candidate_path": str(final_path)}
+    return final_path
 
+
+async def _finalize_save(
+    request: AcceptFixesRequest,
+    final_path: Path,
+    db: DatabaseManager,
+) -> Dict[str, Any]:
+    """The cheap half: measure the rendered mix and record it as a version.
+
+    A version row is a path plus metadata, so once the mix exists this is
+    effectively an insert — which is what makes a cache hit near-instant.
+    """
     after = await run_in_threadpool(_measure_audio, str(final_path))
     metrics = {
         "steps_applied": (
@@ -1589,7 +1611,104 @@ async def accept_fixes(
         "produced_at": time.time(),
     }
     version = await save_candidate_version(request.song_id, str(final_path), metrics, db)
-    return {"status": "success", "version": version}
+    return {"version": version}
+
+
+async def _render_accept_fixes(
+    request: AcceptFixesRequest,
+    agent: BigFlavorAgent,
+    db: DatabaseManager,
+) -> Dict[str, Any]:
+    """Render, remember the result, and save it unless this was a preview."""
+    final_path = await _render_mix(request, agent, db)
+    accept_jobs.remember_render(
+        request.song_id, _accept_fingerprint(request), str(final_path)
+    )
+
+    if request.preview:
+        return {"candidate_path": str(final_path)}
+    return await _finalize_save(request, final_path, db)
+
+
+@router.post("/api/produce/accept-fixes")
+async def accept_fixes(
+    request: AcceptFixesRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Render a chain synchronously.
+
+    Still the path for the small previews — one fix, or one stem's chain — which
+    finish well inside the proxy's patience. Whole-queue renders go through
+    /accept-fixes/start instead.
+    """
+    result = await _render_accept_fixes(request, agent, db)
+    return {"status": "success", **result}
+
+
+@router.post("/api/produce/accept-fixes/start")
+async def start_accept_fixes(
+    request: AcceptFixesRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Kick off a whole-queue render in the background and return immediately.
+
+    Accepting seventeen fixes across six stems takes minutes; holding the
+    request open for it guarantees a proxy timeout. The producer polls
+    /api/produce/songs/{song_id}/accept-fixes/status for the outcome.
+    """
+    fix_count = sum(len(s.fixes) for s in request.stems) + len(request.master_fixes)
+    print_ = _accept_fingerprint(request)
+
+    # Already rendered this exact fix set — typically by Start analysis, which
+    # renders the detected queue as soon as it has measured it. Saving is then
+    # an insert against a file that already exists, not minutes of DSP again.
+    cached = accept_jobs.cached_render(request.song_id, print_)
+    if cached is not None and not accept_jobs.is_running(request.song_id):
+        result = (
+            {"candidate_path": cached}
+            if request.preview
+            else await _finalize_save(request, Path(cached), db)
+        )
+        logger.info("Accept-fixes reused an existing render for song %s", request.song_id)
+        return accept_jobs.complete_now(
+            request.song_id, request.preview, fix_count, result
+        )
+
+    try:
+        return accept_jobs.start(
+            request.song_id,
+            preview=request.preview,
+            fix_count=fix_count,
+            render=lambda: _render_accept_fixes(request, agent, db),
+            fingerprint=print_,
+        )
+    except RuntimeError as exc:
+        # Already rendering this song — the UI disables the buttons, so this is
+        # a double-submit rather than something the producer needs to fix.
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.get("/api/produce/songs/{song_id}/accept-fixes/status")
+async def accept_fixes_status(
+    song_id: int,
+    _role: str = Depends(require_role("editor")),
+):
+    """The song's in-flight (or just-finished) whole-queue render."""
+    return accept_jobs.status(song_id)
+
+
+@router.post("/api/produce/songs/{song_id}/accept-fixes/dismiss")
+async def dismiss_accept_fixes(
+    song_id: int,
+    _role: str = Depends(require_role("editor")),
+):
+    """Forget a finished render, so its row leaves the versions list."""
+    accept_jobs.clear(song_id)
+    return accept_jobs.status(song_id)
 
 
 # ---- issue #70: waveform region editor — region-scoped preview / apply ----

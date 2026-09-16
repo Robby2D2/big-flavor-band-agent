@@ -35,6 +35,8 @@ interface AudioProcessingTabProps {
   /** Which version is selected, owned by the page so the list can drive it. */
   sourceVersionId: number | null;
   onApplied: () => void;
+  /** Tell the page a background render just started, so it begins polling. */
+  onRenderStarted: () => void;
   /** Acting on the selected version — the page owns these mutations. */
   versionActions: {
     busyId: number | null;
@@ -57,11 +59,23 @@ export default function AudioProcessingTab({
   versions,
   sourceVersionId,
   onApplied,
+  onRenderStarted,
   versionActions,
 }: AudioProcessingTabProps) {
   const selectedVersion = versions.find((v) => v.id === sourceVersionId) ?? null;
 
   const queue = useProcessingQueue(songId, sourceVersionId);
+
+  // Analysis only measures; rendering is what takes minutes. Kick the render
+  // off the moment the findings land, so Preview and Save meet a finished mix
+  // instead of starting one. Fires once per analysis pass (`analyzed` is reset
+  // to false at the start of each).
+  const { analyzed, warmRender } = queue;
+  useEffect(() => {
+    if (!analyzed) return;
+    void warmRender().then(onRenderStarted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyzed]);
 
   const [peaks, setPeaks] = useState<Record<number, WaveformPeaks>>({});
   const [peaksLoadingIds, setPeaksLoadingIds] = useState<Set<number>>(new Set());
@@ -478,10 +492,15 @@ export default function AudioProcessingTab({
             <ResultSidebar
               enabledCount={queue.enabledCount}
               totalCount={queue.fixes.length}
-              onAcceptAll={() => queue.acceptAll(false)}
+              onAcceptAll={async () => {
+                const job = await queue.acceptAll(false);
+                onRenderStarted();
+                return job;
+              }}
               onPreviewFull={async () => {
-                const data = await queue.acceptAll(true);
-                return data.candidate_path as string;
+                const job = await queue.acceptAll(true);
+                onRenderStarted();
+                return job.candidate_path as string;
               }}
               onAccepted={onApplied}
             />

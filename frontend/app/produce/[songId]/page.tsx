@@ -11,6 +11,7 @@ import {
   formatProducedAt,
   formatSteps,
 } from '@/lib/formatVersion';
+import { describeAcceptJob, useAcceptJob } from '@/hooks/useAcceptJob';
 
 interface CatalogSong {
   id: number;
@@ -96,6 +97,11 @@ export default function ProduceSongPage({
       setVersionsLoading(false);
     }
   };
+
+  // A background render adds a version when it lands, so the list reloads
+  // itself rather than waiting for the producer to press Refresh.
+  const { job: renderJob, refresh: refreshRenderJob } = useAcceptJob(songId, loadVersions);
+  const renderNotice = describeAcceptJob(renderJob);
 
   const handleSetDefault = async (versionId: number) => {
     setVersionBusyId(versionId);
@@ -263,6 +269,29 @@ export default function ProduceSongPage({
                   </tr>
                 </thead>
                 <tbody className="text-text">
+                  {renderNotice && (
+                    <tr className="border-t border-white/8 bg-white/5">
+                      <td className="py-2 px-3">
+                        {renderNotice.tone === 'progress' ? (
+                          <span className="inline-block h-3 w-3 rounded-full border-2 border-signal border-t-transparent animate-spin" />
+                        ) : (
+                          <span className="text-red-500">!</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3" colSpan={6}>
+                        <span
+                          className={`font-medium ${
+                            renderNotice.tone === 'error'
+                              ? 'text-red-600 dark:text-red-400'
+                              : 'text-text'
+                          }`}
+                        >
+                          {renderNotice.label}
+                        </span>
+                        <span className="text-text/45 ml-2">{renderNotice.detail}</span>
+                      </td>
+                    </tr>
+                  )}
                   {versions.map((v) => {
                     const selected = v.id === selectedVersionId;
                     return (
@@ -326,6 +355,7 @@ export default function ProduceSongPage({
             versions={versions}
             sourceVersionId={selectedVersionId}
             onApplied={loadVersions}
+            onRenderStarted={refreshRenderJob}
             versionActions={{
               busyId: versionBusyId,
               onSetDefault: handleSetDefault,

@@ -334,6 +334,34 @@ token utilities at any time without breaking in the meantime.
 
 ---
 
+### Accepting fixes is a background render (2026-09-16)
+
+Analysis **measures**; it never renders. Every detected fix was still unrendered
+when a producer pressed a button, so "Accept all & save version" did all the DSP
+inside the request — a full queue outlived the edge proxy's 60s read timeout and
+the UI could only suggest turning fixes off.
+
+- **Start analysis renders what it found.** As soon as the findings land,
+  `warmRender()` starts the full render in the background, because the reason to
+  analyse is almost always to hear or keep the result.
+- **Renders are reused by fingerprint.** `accept_jobs.fingerprint` hashes the
+  source version and every fix with its parameters — *not* the `preview` flag,
+  since preview and save render byte-identical audio. An unchanged fix set
+  therefore never renders twice: `/accept-fixes/start` returns `complete`
+  immediately and the save is an insert (`add_song_version` stores a path, it
+  does not copy audio). Change a fix and the fingerprint misses, so it renders.
+- **`AcceptJobManager`** (`src/api/accept_jobs.py`) tracks one render per song,
+  like `stem_jobs.py`. Status lives in memory because the *result* is durable —
+  a saved version is a DB row, a preview is a file on disk.
+- **The page follows it** with `useAcceptJob`, which polls on mount (so a reload
+  mid-render picks straight back up), shows an in-progress row in the versions
+  list, and reloads the list the moment a save lands.
+
+Small previews — one fix, or one stem's chain — still use the synchronous
+`POST /api/produce/accept-fixes`, which finishes well inside the proxy's patience.
+
+---
+
 ## Radio Streaming (Icecast + Liquidsoap)
 
 Live radio is decoupled from the API. Runtime radio state (current song, queue, play/pause,

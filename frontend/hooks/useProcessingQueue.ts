@@ -522,10 +522,59 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     [songId, sourceVersionId, stems, fixesForStem, masterFixes]
   );
 
-  const acceptAll = useCallback(
-    async (preview: boolean) => postJson('/api/produce/accept-fixes', buildAcceptPayload(preview)),
+  /**
+   * Hand a whole-queue render to the background runner.
+   *
+   * Returns as soon as the server has taken the job — it may already be
+   * `complete` when this exact fix set was rendered earlier (Start analysis
+   * renders the detected queue, so the usual case is a hit), otherwise it is
+   * `running` and the page follows it via useAcceptJob.
+   */
+  const startAcceptRender = useCallback(
+    async (preview: boolean) =>
+      postJson('/api/produce/accept-fixes/start', buildAcceptPayload(preview)),
     [buildAcceptPayload]
   );
+
+  /** Poll a started render to the end — only for previews, which need the file. */
+  const waitForAcceptRender = useCallback(async (): Promise<any> => {
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const res = await fetch(`/api/produce/songs/${songId}/accept-fixes/status`);
+      if (!res.ok) throw new Error('Lost track of the render');
+      const job = await readJson(res);
+      if (job.status === 'complete') return job;
+      if (job.status === 'failed') throw new Error(job.error || 'The render failed');
+      if (job.status === 'idle') throw new Error('The render is no longer running');
+    }
+  }, [songId]);
+
+  /** "Accept all & save version" — starts the save and returns; the page watches. */
+  const acceptAll = useCallback(
+    async (preview: boolean) => {
+      const job = await startAcceptRender(preview);
+      if (job.status === 'complete' || !preview) return job;
+      // A preview has to wait: the caller needs a file to play.
+      return waitForAcceptRender();
+    },
+    [startAcceptRender, waitForAcceptRender]
+  );
+
+  /**
+   * Render the detected queue right after analysing it.
+   *
+   * Analysis only *measures* — every fix was still unrendered when the producer
+   * pressed a button, which is why saving took minutes. Since the reason to
+   * analyse is almost always to hear or keep the result, the render now starts
+   * as soon as the findings are in, and Preview/Save land on a finished file.
+   */
+  const warmRender = useCallback(async () => {
+    try {
+      await startAcceptRender(true);
+    } catch {
+      // Best-effort: a failed warm-up just means Preview/Save render on demand.
+    }
+  }, [startAcceptRender]);
 
   const previewStemChain = useCallback(
     async (stemId: number): Promise<string> => {
@@ -613,6 +662,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     updateFixParams,
     resetFixParams,
     acceptAll,
+    warmRender,
     previewStemChain,
     previewSingleFix,
     toolParamsByTool,
