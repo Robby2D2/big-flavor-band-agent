@@ -658,7 +658,23 @@ class DatabaseManager:
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query, song_id)
-        return [dict(row) for row in rows]
+
+        # asyncpg hands jsonb back as a str unless a codec is registered, and
+        # this pool registers none. Callers that reasonably guard with
+        # `isinstance(metrics, dict)` then take the else-branch every single
+        # time — which is how the versions list showed an empty Steps, Intensity
+        # and Duration for versions whose metrics held all three.
+        versions = []
+        for row in rows:
+            version = dict(row)
+            raw = version.get("metrics")
+            if isinstance(raw, str):
+                try:
+                    version["metrics"] = json.loads(raw)
+                except json.JSONDecodeError:
+                    version["metrics"] = None
+            versions.append(version)
+        return versions
 
     async def get_song_version(self, version_id: int) -> Optional[Dict[str, Any]]:
         """Return a single version by id, or None."""

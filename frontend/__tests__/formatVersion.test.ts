@@ -63,12 +63,43 @@ describe('formatProducedAt', () => {
 });
 
 describe('formatSteps', () => {
-  it('joins applied steps', () => {
+  it('joins whole-mix steps', () => {
     expect(formatSteps([{ step: 'denoise' }, { step: 'master' }])).toBe('denoise, master');
+  });
+
+  it('reads the per-stem shape, which used to render "undefined"', () => {
+    // accept-fixes writes {stem, tools}; only .step was ever read.
+    expect(
+      formatSteps([{ stem: 44, tools: ['apply_eq', 'correct_beats'] }])
+    ).toBe('apply_eq, correct_beats');
+  });
+
+  it('handles both shapes in the same array, because both are written', () => {
+    expect(
+      formatSteps([
+        { stem: 44, tools: ['apply_eq'] },
+        { step: 'normalize_audio', scope: 'master' } as never,
+      ])
+    ).toBe('apply_eq, normalize_audio');
+  });
+
+  it('names a tool once however many stems it was applied to', () => {
+    expect(
+      formatSteps([
+        { stem: 1, tools: ['apply_eq', 'reduce_noise'] },
+        { stem: 2, tools: ['apply_eq'] },
+        { stem: 3, tools: ['apply_eq'] },
+      ])
+    ).toBe('apply_eq, reduce_noise');
   });
 
   it('has a dash for none', () => {
     expect(formatSteps([])).toBe('—');
     expect(formatSteps(null)).toBe('—');
+  });
+
+  it('has a dash for entries that carry no tool at all', () => {
+    expect(formatSteps([{ stem: 44, tools: [] }])).toBe('—');
+    expect(formatSteps([{} as never])).toBe('—');
   });
 });

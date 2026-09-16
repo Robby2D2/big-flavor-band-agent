@@ -40,7 +40,37 @@ export function formatProducedAt(isoDate: string | null | undefined): string {
   return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString();
 }
 
-/** The processing steps a version had applied, as a sentence fragment. */
-export function formatSteps(steps: { step: string }[] | null | undefined): string {
-  return steps && steps.length > 0 ? steps.map((s) => s.step).join(', ') : '—';
+/** One entry in a version's `steps_applied`, in either shape it is written in. */
+export interface AppliedStep {
+  /** Whole-mix fix: {"step": "normalize_audio", "scope": "master"}. */
+  step?: string;
+  /** Per-stem fixes: {"stem": 44, "tools": ["apply_eq", "correct_beats"]}. */
+  stem?: number;
+  tools?: string[];
+}
+
+/**
+ * The processing a version had applied, as a sentence fragment.
+ *
+ * `steps_applied` holds two shapes in the same array — accept-fixes writes one
+ * entry per stem carrying a list of tools, plus one per whole-mix fix carrying a
+ * single tool name. Reading only `.step` rendered "undefined" for every per-stem
+ * entry. Tools are de-duplicated: the same fix applied across six stems is one
+ * thing the listener did, not six.
+ */
+export function formatSteps(steps: AppliedStep[] | null | undefined): string {
+  if (!steps || steps.length === 0) return '—';
+
+  const tools: string[] = [];
+  for (const entry of steps) {
+    if (!entry) continue;
+    const names = entry.tools ?? (entry.step ? [entry.step] : []);
+    for (const name of names) {
+      if (typeof name === 'string' && name && !tools.includes(name)) {
+        tools.push(name);
+      }
+    }
+  }
+
+  return tools.length > 0 ? tools.join(', ') : '—';
 }

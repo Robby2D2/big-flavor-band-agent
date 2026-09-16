@@ -114,6 +114,10 @@ export default function ProduceSongPage({
   // the original before anyone decides to save it.
   const unsavedRender = unsavedRenderFrom(renderJob);
 
+  // Intensity is only recorded by the older auto-clean path; the per-fix flow
+  // has no such setting, so for most songs the column is dead space.
+  const showIntensity = versions.some((v) => v.aggressiveness);
+
   // If the unsaved mix goes away (dismissed, or superseded by a new render)
   // while it was selected, fall back to a real version.
   useEffect(() => {
@@ -282,7 +286,7 @@ export default function ProduceSongPage({
                     </th>
                     <th className="py-2 px-3">Version</th>
                     <th className="py-2 px-3">Steps</th>
-                    <th className="py-2 px-3">Intensity</th>
+                    {showIntensity && <th className="py-2 px-3">Intensity</th>}
                     <th className="py-2 px-3">Duration</th>
                     <th className="py-2 px-3">Size</th>
                     <th className="py-2 px-3">Produced</th>
@@ -298,7 +302,7 @@ export default function ProduceSongPage({
                           <span className="text-red-500">!</span>
                         )}
                       </td>
-                      <td className="py-2 px-3" colSpan={6}>
+                      <td className="py-2 px-3" colSpan={showIntensity ? 6 : 5}>
                         <span
                           className={`font-medium ${
                             renderNotice.tone === 'error'
@@ -340,7 +344,7 @@ export default function ProduceSongPage({
                           </span>
                         </div>
                       </td>
-                      <td className="py-2 px-3 text-text/55" colSpan={5}>
+                      <td className="py-2 px-3 text-text/55" colSpan={showIntensity ? 5 : 4}>
                         {unsavedRenderLabel(unsavedRender)}
                       </td>
                     </tr>
@@ -382,9 +386,11 @@ export default function ProduceSongPage({
                         <td className="py-2 px-3 text-text/55">
                           {formatSteps(v.steps_applied)}
                         </td>
-                        <td className="py-2 px-3 text-text/55 capitalize">
-                          {v.aggressiveness ?? '—'}
-                        </td>
+                        {showIntensity && (
+                          <td className="py-2 px-3 text-text/55 capitalize">
+                            {v.aggressiveness ?? '—'}
+                          </td>
+                        )}
                         <td className="py-2 px-3 text-text/55">
                           {formatDuration(v.duration_seconds)}
                         </td>
