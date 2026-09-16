@@ -144,6 +144,26 @@ involved in any of it — a search answers in tens of milliseconds:
 Candidates are scored semantically even when they surface only via keywords, so ties break on
 relevance rather than title.
 
+**In-depth search (2026-09-16).** The search screen is one box and an "In depth"
+checkbox; the six mode buttons are gone, because they asked a listener to know
+which retrieval strategy their question needed before they had asked it.
+
+- **Quick** is the semantic+keyword pass above — one hop, tens of milliseconds.
+- **In depth** runs an agentic loop (`src/rag/deep_search.py` for the prompts and
+  parsing, `src/api/research_jobs.py` for the loop and its job manager): plan
+  (the model calls the catalogue's own search tools), retrieve, evaluate the
+  candidates, iterate with a *different tool* when the evidence is thin, then
+  synthesize an answer citing the songs it used. Up to `MAX_ROUNDS` = 3.
+- It is a **background job with streamed steps** (`/api/search/deep/start`, then
+  poll `/api/search/deep/{job_id}`), for the same reason the accept-fixes render
+  is: several model calls outlive a request, and with a reasoning search *what it
+  did* is half of what the listener wants to see.
+- The model is offered **only read tools** — an in-depth search can never edit
+  the catalogue (asserted in `tests/test_research_jobs.py`).
+- **Every parser degrades rather than raises.** An unreadable evaluation means
+  "we have enough, stop looking", never a failed search: a 14B local model
+  produces good tool calls but imperfect JSON.
+
 **Match explanations are on demand.** `/api/search/explain` (`src/rag/explain.py`) explains one song
 against one query, when a listener clicks the (i). Search itself used to route through the agent so
 every result carried an LLM-written line — 2-12s per search for ranking the agent did not influence

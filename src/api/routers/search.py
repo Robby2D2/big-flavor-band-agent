@@ -13,11 +13,13 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Depends
 
+from src.auth import require_role
 from src.llm.llm_provider import get_llm_provider
 from src.rag.big_flavor_rag import SongRAGSystem
 from src.rag.explain import SYSTEM_PROMPT, build_explain_prompt, clean_explanation
 from database import DatabaseManager
 from src.api.dependencies import (
+    DeepSearchRequest,
     ExplainMatchRequest,
     SearchRequest,
     TempoSearchRequest,
@@ -25,7 +27,9 @@ from src.api.dependencies import (
     HybridSearchRequest,
     get_rag,
     get_db,
+    get_agent,
 )
+from src.api.research_jobs import research_jobs, run_deep_search
 
 logger = logging.getLogger("backend-api")
 
@@ -56,6 +60,42 @@ async def natural_language_search(
         "total_found": len(songs),
         "limit": request.limit
     }
+
+
+@router.post("/api/search/deep/start")
+async def start_deep_search(
+    request: DeepSearchRequest,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("listener")),
+):
+    """Begin an in-depth search and return its job id immediately.
+
+    The loop makes several model calls and several retrievals, so it runs in the
+    background and reports its steps; the client polls
+    /api/search/deep/{job_id}.
+    """
+    query = request.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="A question is required")
+
+    agent = await get_agent()
+
+    return research_jobs.start(
+        query,
+        lambda emit: run_deep_search(query, agent, db, emit),
+    )
+
+
+@router.get("/api/search/deep/{job_id}")
+async def deep_search_status(
+    job_id: str,
+    _role: str = Depends(require_role("listener")),
+):
+    """An in-depth search's steps so far, and its answer once it has one."""
+    status = research_jobs.status(job_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="That search is no longer available")
+    return status
 
 
 @router.post("/api/search/explain")

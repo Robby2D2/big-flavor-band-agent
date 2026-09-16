@@ -100,6 +100,11 @@ class AgentChatRequest(BaseModel):
     conversation_id: Optional[str] = None
 
 
+class DeepSearchRequest(BaseModel):
+    """A question worth working out, rather than a phrase to match."""
+    query: str
+
+
 class ExplainMatchRequest(BaseModel):
     """Why did this one song come back for this one query? Asked on demand."""
     query: str

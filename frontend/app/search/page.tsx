@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Header from '@/components/Header';
 import SearchBar, { SearchParams } from '@/components/SearchBar';
 import SongList from '@/components/SongList';
+import DeepSearchProgress, { DeepSearchJob } from '@/components/DeepSearchProgress';
 import AudioPlayer from '@/components/AudioPlayer';
 
 interface SearchSummary {
@@ -21,6 +22,8 @@ export default function SearchPage() {
   const [similarTo, setSimilarTo] = useState<string | null>(null);
   // Kept so a result can be explained on demand, after the search has returned.
   const [lastQuery, setLastQuery] = useState<string>('');
+  // The in-depth run, polled while it works so its steps stay on screen.
+  const [deepJob, setDeepJob] = useState<DeepSearchJob | null>(null);
 
   const postJson = async (url: string, body: unknown) => {
     const response = await fetch(url, {
@@ -35,78 +38,59 @@ export default function SearchPage() {
     return data;
   };
 
-  // Resolve a typed song title to a catalog song id via the text-search path,
-  // so the audio-similarity mode can reference an existing catalog song.
-  const resolveReferenceSongId = async (title: string): Promise<number> => {
-    const data = await postJson('/api/search/text', { query: title, limit: 1 });
-    const match = (data.results || [])[0];
-    if (!match) {
-      throw new Error(`No catalog song found matching "${title}".`);
-    }
-    return match.id;
-  };
-
   const handleSearch = async (params: SearchParams) => {
     setLoading(true);
     setError(null);
-    setSearchSummary(null);
     setSimilarTo(null);
+    setResults([]);
+    setDeepJob(null);
+    setLastQuery(params.query);
+
+    if (params.deep) {
+      await runDeepSearch(params.query);
+      return;
+    }
 
     try {
-      let data: any;
-      setLastQuery(params.query || '');
-
-      switch (params.mode) {
-        case 'natural':
-          data = await postJson('/api/search', {
-            query: params.query,
-            limit: 20,
-          });
-          setSearchSummary(data.search_summary || null);
-          break;
-        case 'text':
-          data = await postJson('/api/search/text', {
-            query: params.query,
-            limit: 20,
-          });
-          break;
-        case 'lyrics':
-          data = await postJson('/api/search/lyrics', {
-            query: params.query,
-            limit: 20,
-          });
-          break;
-        case 'tempo':
-          data = await postJson('/api/search/tempo', {
-            min_bpm: params.minBpm ?? null,
-            max_bpm: params.maxBpm ?? null,
-            limit: 20,
-          });
-          break;
-        case 'hybrid':
-          data = await postJson('/api/search/hybrid', {
-            query: params.query,
-            min_bpm: params.minBpm ?? null,
-            max_bpm: params.maxBpm ?? null,
-            limit: 20,
-          });
-          break;
-        case 'audio': {
-          const songId = await resolveReferenceSongId(params.query || '');
-          data = await postJson('/api/search/audio', {
-            song_id: songId,
-            limit: 20,
-          });
-          break;
-        }
-        default:
-          throw new Error('Unknown search mode');
-      }
-
+      const data = await postJson('/api/search', { query: params.query, limit: 20 });
       setResults(data.songs || data.results || []);
     } catch (err: any) {
-      setError(err.message || 'An error occurred');
-      setResults([]);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * In-depth search: start the background run, then follow its steps.
+   *
+   * Polling rather than waiting on one request — the loop makes several model
+   * calls, and showing what it is doing is most of the value of asking for it.
+   */
+  const runDeepSearch = async (query: string) => {
+    try {
+      const started = await postJson('/api/search/deep/start', { query });
+      const jobId = started.job_id as string;
+      setDeepJob(started);
+
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const response = await fetch(`/api/search/deep/${jobId}`);
+        const job = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(job.error || 'Lost track of the search');
+        }
+        setDeepJob(job);
+        if (job.status !== 'running') {
+          setResults(job.songs || []);
+          if (job.status === 'failed') {
+            setError(job.error || 'The search could not be completed.');
+          }
+          break;
+        }
+      }
+    } catch (err: any) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -155,7 +139,13 @@ export default function SearchPage() {
             </div>
           )}
 
-          {loading && (
+          {deepJob && (
+            <div className="mt-6">
+              <DeepSearchProgress job={deepJob} />
+            </div>
+          )}
+
+          {loading && !deepJob && (
             <div className="mt-8 text-center">
               <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
               <p className="mt-4 text-text/55">
