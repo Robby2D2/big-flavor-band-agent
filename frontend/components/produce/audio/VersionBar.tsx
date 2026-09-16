@@ -11,7 +11,6 @@ interface VersionBarProps {
   sourceVersionId: number | null;
   onChangeSource: (id: number) => void;
   onStartAnalysis: () => void;
-  onManageVersions: () => void;
   analyzing: boolean;
   analysisNote: string | null;
   /** The song already has stems, so this pass only measures them. */
@@ -20,16 +19,18 @@ interface VersionBarProps {
 
 /**
  * "Working from" chip + version picker + Start analysis — the single entry
- * point into the review queue below. Replaces the old tab's plain <select>;
- * a version bar instead of a tab keeps "what am I working from" visible the
- * whole time you're reviewing fixes.
+ * point into the review queue below. Keeps "what am I working from" visible
+ * the whole time you're reviewing fixes.
+ *
+ * It carried a "Manage all N" button while versions lived behind their own tab;
+ * the versions table now sits directly above this bar, so there is nowhere for
+ * it to go.
  */
 export default function VersionBar({
   versions,
   sourceVersionId,
   onChangeSource,
   onStartAnalysis,
-  onManageVersions,
   analyzing,
   analysisNote,
   hasStems,
@@ -68,13 +69,6 @@ export default function VersionBar({
       </div>
 
       <div className="flex items-center gap-3 flex-none">
-        <button
-          onClick={onManageVersions}
-          className="text-xs font-semibold text-text/60 hover:text-text px-2.5 py-1.5 border border-white/14 rounded-lg"
-        >
-          Manage all {versions.length}
-        </button>
-        <div className="w-px h-6 bg-white/10" />
         <button
           onClick={onStartAnalysis}
           disabled={analyzing || sourceVersionId == null}

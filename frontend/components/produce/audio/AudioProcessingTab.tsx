@@ -39,11 +39,10 @@ interface AudioProcessingTabProps {
   songId: number;
   versions: VersionOption[];
   onApplied: () => void;
-  onManageVersions: () => void;
 }
 
 /**
- * The redesigned Audio processing tab: pick a version, run one analysis pass,
+ * The Audio processing panel: pick a version, run one analysis pass,
  * then review a queue of detected fixes (one card per fix, pre-filled with
  * the tool's own real measured numbers) grouped by stem, and accept the ones
  * you want as a single new version. Replaces the old per-tool checkbox list
@@ -54,7 +53,6 @@ export default function AudioProcessingTab({
   songId,
   versions,
   onApplied,
-  onManageVersions,
 }: AudioProcessingTabProps) {
   const [sourceVersionId, setSourceVersionId] = useState<number | null>(null);
 
@@ -357,7 +355,6 @@ export default function AudioProcessingTab({
         sourceVersionId={sourceVersionId}
         onChangeSource={setSourceVersionId}
         onStartAnalysis={queue.startAnalysis}
-        onManageVersions={onManageVersions}
         analyzing={queue.analyzing}
         analysisNote={queue.analysisNote}
         hasStems={queue.stems.length > 0}

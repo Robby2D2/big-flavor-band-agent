@@ -39,8 +39,6 @@ export default function ProduceSongPage({
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [versionBusyId, setVersionBusyId] = useState<number | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'versions' | 'audio'>('versions');
-
   useEffect(() => {
     if (Number.isNaN(songId)) {
       setError('Invalid song id.');
@@ -223,171 +221,142 @@ export default function ProduceSongPage({
           {song?.title}
         </h1>
 
-        {/* Tabs: Versions | Lyrics | Audio processing */}
-        <div className="flex gap-1 border-b border-white/8 mb-6">
-          {([
-            ['versions', 'Versions'],
-            ['audio', 'Audio processing'],
-          ] as const).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setActiveTab(key)}
-              className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 ${
-                activeTab === key
-                  ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-text/45 hover:text-text/70'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Audio processing tab */}
-        {activeTab === 'audio' && (
-          <div className="bg-panel border border-white/8 rounded-xl p-6">
-            <h2 className="text-xl font-semibold text-text mb-1">Audio processing</h2>
-            <p className="text-sm text-text/50 mb-4">
-              Pick a starting version, then Start analysis — it separates the song
-              into stems the first time and measures each one on its own; after
-              that it reuses the stems you have (Re-separate makes new ones).
-              Review the detected fixes below, adjust or skip what you don&apos;t
-              want, then accept the rest as a new version. The version you start
-              from is never overwritten.
-            </p>
-            <AudioProcessingTab
-              songId={songId}
-              versions={versions}
-              onApplied={loadVersions}
-              onManageVersions={() => setActiveTab('versions')}
-            />
-          </div>
-        )}
-
-        {/* Versions tab */}
-        {activeTab === 'versions' && (
-        <div className="bg-panel rounded-lg shadow-lg p-6">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-xl font-semibold text-text">
-              Manage versions
-            </h2>
-            <button
-              onClick={loadVersions}
-              disabled={versionsLoading}
-              className="text-sm px-3 py-1 border border-white/14 rounded-lg text-text/70 hover:bg-white/5 disabled:opacity-50"
-            >
-              {versionsLoading ? 'Refreshing...' : 'Refresh'}
-            </button>
-          </div>
-          <p className="text-sm text-text/55 mb-4">
-            The default version is what plays everywhere — radio, search and preview,
-            and downloads. The original is always kept until you delete it.
+        <div className="bg-panel border border-white/8 rounded-xl p-6">
+          <h2 className="text-xl font-semibold text-text mb-1">Audio processing</h2>
+          <p className="text-sm text-text/50 mb-4">
+            Pick a starting version, then Start analysis — it separates the song
+            into stems the first time and measures each one on its own; after
+            that it reuses the stems you have (Re-separate makes new ones).
+            Review the detected fixes below, adjust or skip what you don&apos;t
+            want, then accept the rest as a new version. The version you start
+            from is never overwritten.
           </p>
-
-          {versionsError && (
-            <div className="p-3 mb-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg text-sm">
-              {versionsError}
+          <section className="mb-8 pb-8 border-b border-white/8">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-base font-semibold text-text">Versions</h3>
+              <button
+                onClick={loadVersions}
+                disabled={versionsLoading}
+                className="text-sm px-3 py-1 border border-white/14 rounded-lg text-text/70 hover:bg-white/5 disabled:opacity-50"
+              >
+                {versionsLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
             </div>
-          )}
-
-          {versions.length === 0 && !versionsLoading ? (
-            <p className="text-text/45 text-sm">
-              No versions yet for this song.
+            <p className="text-sm text-text/55 mb-4">
+              The default version is what plays everywhere — radio, search and preview,
+              and downloads. The original is always kept until you delete it.
             </p>
-          ) : (
-            <div className="overflow-auto border border-white/8 rounded-lg">
-              <table className="w-full text-sm">
-                <thead className="bg-well text-left text-text/45">
-                  <tr>
-                    <th className="py-2 px-3">Version</th>
-                    <th className="py-2 px-3">Steps</th>
-                    <th className="py-2 px-3">Intensity</th>
-                    <th className="py-2 px-3">Duration</th>
-                    <th className="py-2 px-3">Size</th>
-                    <th className="py-2 px-3">Produced</th>
-                    <th className="py-2 px-3">Audition</th>
-                    <th className="py-2 px-3">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="text-text">
-                  {versions.map((v) => (
-                    <tr
-                      key={v.id}
-                      className="border-t border-white/8 align-middle"
-                    >
-                      <td className="py-2 px-3">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{v.name}</span>
-                          {v.is_published && (
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200">
-                              Default
-                            </span>
-                          )}
-                          {v.label === 'original' && (
-                            <span className="text-xs text-text/35">
-                              original
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="py-2 px-3 text-text/55">
-                        {v.steps_applied && v.steps_applied.length > 0
-                          ? v.steps_applied.map((s) => s.step).join(', ')
-                          : '—'}
-                      </td>
-                      <td className="py-2 px-3 text-text/55 capitalize">
-                        {v.aggressiveness ?? '—'}
-                      </td>
-                      <td className="py-2 px-3 text-text/55">
-                        {formatDuration(v.duration_seconds)}
-                      </td>
-                      <td className="py-2 px-3 text-text/55">
-                        {formatBytes(v.file_size_bytes)}
-                      </td>
-                      <td className="py-2 px-3 text-text/55">
-                        {v.created_at ? new Date(v.created_at).toLocaleString() : '—'}
-                      </td>
-                      <td className="py-2 px-3">
-                        <audio
-                          controls
-                          preload="none"
-                          src={`/api/produce/versions/${v.id}/audio`}
-                          className="h-8 w-44"
-                        />
-                      </td>
-                      <td className="py-2 px-3">
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => handleSetDefault(v.id)}
-                            disabled={v.is_published || versionBusyId === v.id}
-                            className="text-xs px-2 py-1 bg-signal text-canvas font-semibold rounded hover:opacity-90 disabled:bg-white/10 disabled:text-text/35 disabled:cursor-not-allowed"
-                          >
-                            Set default
-                          </button>
-                          <button
-                            onClick={() => handleRenameVersion(v.id, v.name)}
-                            disabled={versionBusyId === v.id}
-                            className="text-xs px-2 py-1 border border-white/14 rounded text-text/70 hover:bg-white/5 disabled:opacity-50"
-                          >
-                            Rename
-                          </button>
-                          <button
-                            onClick={() => handleDeleteVersion(v.id, v.name)}
-                            disabled={versionBusyId === v.id || versions.length <= 1}
-                            className="text-xs px-2 py-1 border border-red-300 dark:border-red-700 rounded text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </td>
+
+            {versionsError && (
+              <div className="p-3 mb-4 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200 rounded-lg text-sm">
+                {versionsError}
+              </div>
+            )}
+
+            {versions.length === 0 && !versionsLoading ? (
+              <p className="text-text/45 text-sm">
+                No versions yet for this song.
+              </p>
+            ) : (
+              <div className="overflow-auto border border-white/8 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-well text-left text-text/45">
+                    <tr>
+                      <th className="py-2 px-3">Version</th>
+                      <th className="py-2 px-3">Steps</th>
+                      <th className="py-2 px-3">Intensity</th>
+                      <th className="py-2 px-3">Duration</th>
+                      <th className="py-2 px-3">Size</th>
+                      <th className="py-2 px-3">Produced</th>
+                      <th className="py-2 px-3">Audition</th>
+                      <th className="py-2 px-3">Actions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody className="text-text">
+                    {versions.map((v) => (
+                      <tr
+                        key={v.id}
+                        className="border-t border-white/8 align-middle"
+                      >
+                        <td className="py-2 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{v.name}</span>
+                            {v.is_published && (
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200">
+                                Default
+                              </span>
+                            )}
+                            {v.label === 'original' && (
+                              <span className="text-xs text-text/35">
+                                original
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2 px-3 text-text/55">
+                          {v.steps_applied && v.steps_applied.length > 0
+                            ? v.steps_applied.map((s) => s.step).join(', ')
+                            : '—'}
+                        </td>
+                        <td className="py-2 px-3 text-text/55 capitalize">
+                          {v.aggressiveness ?? '—'}
+                        </td>
+                        <td className="py-2 px-3 text-text/55">
+                          {formatDuration(v.duration_seconds)}
+                        </td>
+                        <td className="py-2 px-3 text-text/55">
+                          {formatBytes(v.file_size_bytes)}
+                        </td>
+                        <td className="py-2 px-3 text-text/55">
+                          {v.created_at ? new Date(v.created_at).toLocaleString() : '—'}
+                        </td>
+                        <td className="py-2 px-3">
+                          <audio
+                            controls
+                            preload="none"
+                            src={`/api/produce/versions/${v.id}/audio`}
+                            className="h-8 w-44"
+                          />
+                        </td>
+                        <td className="py-2 px-3">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => handleSetDefault(v.id)}
+                              disabled={v.is_published || versionBusyId === v.id}
+                              className="text-xs px-2 py-1 bg-signal text-canvas font-semibold rounded hover:opacity-90 disabled:bg-white/10 disabled:text-text/35 disabled:cursor-not-allowed"
+                            >
+                              Set default
+                            </button>
+                            <button
+                              onClick={() => handleRenameVersion(v.id, v.name)}
+                              disabled={versionBusyId === v.id}
+                              className="text-xs px-2 py-1 border border-white/14 rounded text-text/70 hover:bg-white/5 disabled:opacity-50"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              onClick={() => handleDeleteVersion(v.id, v.name)}
+                              disabled={versionBusyId === v.id || versions.length <= 1}
+                              className="text-xs px-2 py-1 border border-red-300 dark:border-red-700 rounded text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <AudioProcessingTab
+            songId={songId}
+            versions={versions}
+            onApplied={loadVersions}
+          />
         </div>
-        )}
       </main>
     </div>
   );
