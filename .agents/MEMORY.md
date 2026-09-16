@@ -132,6 +132,35 @@ picked up by `next dev`'s watcher — the file is visible inside the container b
 
 ---
 
+### 2026-09-16 — Every audio tool ran on the event loop, freezing the whole API
+Found while checking that the new in-progress row appeared: page loads during a
+render were taking a minute. The frontend log said it plainly —
+`GET /api/produce/songs/1004/versions 200 in 60s`, a plain DB read, while an
+accept-fixes render ran.
+
+`BigFlavorMCPServer.dispatch_tool` did `await handler(**kwargs)`. The handlers
+are `async def` but their bodies are **synchronous** librosa/soundfile work with
+no awaits of their own (7 awaits in the whole module, none in a DSP handler), so
+minutes of CPU ran directly on the loop and every other request queued behind it.
+Pre-existing — the synchronous accept path had the same problem — but the
+background render made it constant instead of once per deliberate click.
+
+Fix is one line: `await asyncio.to_thread(asyncio.run, handler(**kwargs))`. Safe
+because the handlers touch only files, never the loop-bound asyncpg pool.
+Measured during a 12-fix render: `/health` and `/versions` went from **60s** to
+**0.01-0.56s**.
+
+**Moving work to a background task does not help if the task blocks the loop** —
+worth checking before calling any long job "backgrounded".
+
+Also in this pass: the rendered-but-unsaved mix keeps a selectable row in the
+versions list so it can be A/B'd against the original before saving
+(`lib/unsavedRender.ts`, `UNSAVED_VERSION_ID = -1`), which is why
+`RESULT_TTL_SECONDS` went from 15 minutes to 8 hours — and why the TTL test now
+pins itself to that constant rather than hardcoding an hour.
+
+---
+
 ### 2026-09-16 — "Save the version" was re-doing all the DSP, twice
 A 17-fix queue 504'd on save and the UI suggested turning fixes off. Asked why
 saving was slow at all — surely the processing was done? Checked: it was not.

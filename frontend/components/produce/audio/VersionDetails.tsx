@@ -6,6 +6,11 @@ import {
   formatProducedAt,
   formatSteps,
 } from '@/lib/formatVersion';
+import {
+  UnsavedRender,
+  unsavedRenderAudioUrl,
+  unsavedRenderLabel,
+} from '@/lib/unsavedRender';
 
 export interface VersionDetail {
   id: number;
@@ -21,6 +26,10 @@ export interface VersionDetail {
 
 interface VersionDetailsProps {
   version: VersionDetail | null;
+  /** Set instead of `version` when the unsaved-render row is selected. */
+  unsavedRender?: UnsavedRender | null;
+  /** A render is in flight — nothing that would start another may be pressed. */
+  renderInProgress?: boolean;
   /** False for the last remaining version — deleting it would leave none. */
   canDelete: boolean;
   /** A rename/delete/set-default request for this version is in flight. */
@@ -46,6 +55,8 @@ interface VersionDetailsProps {
  */
 export default function VersionDetails({
   version,
+  unsavedRender,
+  renderInProgress = false,
   canDelete,
   busy,
   onSetDefault,
@@ -56,6 +67,39 @@ export default function VersionDetails({
   analysisNote,
   hasStems,
 }: VersionDetailsProps) {
+  // The mix Start analysis rendered, before anyone has decided to keep it.
+  // There is no version id behind it, so the only thing to do here is listen:
+  // saving is still "Accept all & save version" in the result panel.
+  if (unsavedRender) {
+    return (
+      <div className="bg-raised border border-signal/30 rounded-xl p-4 flex flex-col gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="font-mono text-[10.5px] uppercase tracking-wider text-text/40">
+              Auditioning
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="font-semibold text-text">New mix</span>
+              <span className="font-mono text-[10px] text-amber-400">NOT SAVED</span>
+            </div>
+            <div className="text-xs text-text/45 mt-1">{unsavedRenderLabel(unsavedRender)}</div>
+          </div>
+
+          <audio
+            controls
+            preload="none"
+            src={unsavedRenderAudioUrl(unsavedRender.candidatePath)}
+            className="h-8 w-56 flex-none"
+          />
+        </div>
+
+        <p className="font-mono text-xs text-text/35">
+          compare it with the original above · keep it with “Accept all &amp; save version”
+        </p>
+      </div>
+    );
+  }
+
   if (!version) {
     return (
       <div className="bg-raised border border-white/8 rounded-xl p-4">
@@ -127,8 +171,14 @@ export default function VersionDetails({
           </button>
           <button
             onClick={onDelete}
-            disabled={busy || !canDelete}
-            title={canDelete ? undefined : 'A song keeps at least one version'}
+            disabled={busy || !canDelete || renderInProgress}
+            title={
+              renderInProgress
+                ? 'Wait for the render to finish'
+                : canDelete
+                  ? undefined
+                  : 'A song keeps at least one version'
+            }
             className="text-xs px-2.5 py-1.5 border border-red-300 dark:border-red-700 rounded-lg text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Delete
@@ -137,14 +187,18 @@ export default function VersionDetails({
 
         <button
           onClick={onStartAnalysis}
-          disabled={analyzing}
+          disabled={analyzing || renderInProgress}
           className="px-4 py-2 bg-signal text-canvas font-semibold text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {analyzing ? 'Analyzing…' : 'Start analysis'}
         </button>
       </div>
 
-      {analysisNote ? (
+      {renderInProgress ? (
+        <p className="font-mono text-xs text-text/40">
+          rendering the current queue · actions are paused until it finishes
+        </p>
+      ) : analysisNote ? (
         <p className="font-mono text-xs text-text/40">{analysisNote}</p>
       ) : (
         /* Says which of the two jobs this press will actually do: with stems

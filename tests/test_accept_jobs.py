@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.api.accept_jobs import (  # noqa: E402
+    RESULT_TTL_SECONDS,
     STATUS_COMPLETE,
     STATUS_FAILED,
     STATUS_IDLE,
@@ -215,7 +216,7 @@ def test_a_stale_result_expires_back_to_idle(monkeypatch):
 
     # Replace the module's `time` reference rather than time.time itself, which
     # is shared globally and would recurse into the stub.
-    later = time.time() + 60 * 60
+    later = time.time() + RESULT_TTL_SECONDS + 60
 
     class FrozenClock:
         @staticmethod
@@ -224,3 +225,8 @@ def test_a_stale_result_expires_back_to_idle(monkeypatch):
 
     monkeypatch.setattr("src.api.accept_jobs.time", FrozenClock)
     assert manager.status(SONG)["status"] == STATUS_IDLE
+
+
+def test_a_finished_render_outlives_a_working_session():
+    """The versions list keeps a row for the unsaved mix; it must not vanish."""
+    assert RESULT_TTL_SECONDS >= 4 * 60 * 60

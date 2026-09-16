@@ -31,10 +31,11 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
 
-# A finished job stays readable for a while so a client that polls slowly (or
-# reloads the page just as the render lands) still sees the outcome rather than
-# an "idle" that looks like the job never ran.
-RESULT_TTL_SECONDS = 15 * 60
+# A finished job stays readable for a whole working session: the versions list
+# keeps a row for a rendered-but-unsaved mix so it can be auditioned against the
+# original, and that row vanishing out from under a producer mid-session would
+# be worse than holding a little state. Cleared on dismiss or the next render.
+RESULT_TTL_SECONDS = 8 * 60 * 60
 
 
 def fingerprint(payload: Dict[str, Any]) -> str:

@@ -144,7 +144,14 @@ class BigFlavorMCPServer:
             if name in REGISTRY:
                 kwargs = REGISTRY[name].coerce_args(arguments)
                 handler = getattr(self, name)
-                return await handler(**kwargs)
+                # These handlers are `async def`, but their bodies are
+                # synchronous CPU-bound audio work (librosa/soundfile) with no
+                # awaits of their own. Awaiting them here ran minutes of DSP
+                # directly on the event loop and froze every other request —
+                # a version list or a render-status poll measured 60s while an
+                # accept-fixes render was going. They touch only files, never
+                # the loop's DB pool, so a worker thread runs them safely.
+                return await asyncio.to_thread(asyncio.run, handler(**kwargs))
             return {"error": f"Unknown tool: {name}"}
         except Exception as e:
             logger.error(f"Error executing tool {name}: {e}")

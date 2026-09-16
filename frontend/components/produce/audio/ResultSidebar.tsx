@@ -8,6 +8,8 @@ interface ResultSidebarProps {
   onAcceptAll: () => Promise<any>;
   onPreviewFull: () => Promise<string>;
   onAccepted: () => void;
+  /** A render is already running — starting another would only queue behind it. */
+  renderInProgress?: boolean;
 }
 
 /**
@@ -21,6 +23,7 @@ export default function ResultSidebar({
   onAcceptAll,
   onPreviewFull,
   onAccepted,
+  renderInProgress = false,
 }: ResultSidebarProps) {
   const [busy, setBusy] = useState<'accept' | 'preview' | null>(null);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
@@ -70,14 +73,14 @@ export default function ResultSidebar({
         <div className="mt-4 pt-3.5 border-t border-white/9 flex flex-col gap-2">
           <button
             onClick={handleAccept}
-            disabled={busy != null || enabledCount === 0}
+            disabled={busy != null || enabledCount === 0 || renderInProgress}
             className="font-semibold text-sm text-canvas bg-signal rounded-lg py-3 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy === 'accept' ? 'Saving…' : 'Accept all & save version'}
           </button>
           <button
             onClick={handlePreview}
-            disabled={busy != null || enabledCount === 0}
+            disabled={busy != null || enabledCount === 0 || renderInProgress}
             className="font-semibold text-xs text-text/70 border border-white/14 rounded-lg py-2.5 disabled:opacity-50"
           >
             {busy === 'preview' ? 'Rendering…' : 'Preview full mix first'}

@@ -12,6 +12,7 @@ import { mapWithConcurrency } from '@/lib/concurrency';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
 import VersionDetails, { VersionDetail } from './VersionDetails';
+import type { UnsavedRender } from '@/lib/unsavedRender';
 import StemConsole from './StemConsole';
 import StemDetailPanel from './StemDetailPanel';
 import FixQueue from './FixQueue';
@@ -37,6 +38,10 @@ interface AudioProcessingTabProps {
   onApplied: () => void;
   /** Tell the page a background render just started, so it begins polling. */
   onRenderStarted: () => void;
+  /** A whole-queue render is in flight (the page owns this job's status). */
+  renderInProgress?: boolean;
+  /** The finished-but-unsaved mix, when its row in the list is selected. */
+  unsavedRender?: UnsavedRender | null;
   /** Acting on the selected version — the page owns these mutations. */
   versionActions: {
     busyId: number | null;
@@ -60,6 +65,8 @@ export default function AudioProcessingTab({
   sourceVersionId,
   onApplied,
   onRenderStarted,
+  renderInProgress = false,
+  unsavedRender = null,
   versionActions,
 }: AudioProcessingTabProps) {
   const selectedVersion = versions.find((v) => v.id === sourceVersionId) ?? null;
@@ -363,6 +370,8 @@ export default function AudioProcessingTab({
     <div className="flex flex-col gap-4">
       <VersionDetails
         version={selectedVersion}
+        unsavedRender={unsavedRender}
+        renderInProgress={renderInProgress}
         canDelete={versions.length > 1}
         busy={selectedVersion != null && versionActions.busyId === selectedVersion.id}
         onSetDefault={() => selectedVersion && versionActions.onSetDefault(selectedVersion.id)}
@@ -443,7 +452,7 @@ export default function AudioProcessingTab({
                 playhead={playback.playhead}
                 maxDuration={playback.maxDuration}
                 onTogglePlay={handleTogglePlay}
-                renderingFixes={renderingFixes}
+                renderingFixes={renderingFixes || renderInProgress}
                 onSeek={playback.seek}
                 separating={queue.analyzing}
                 analyzed={queue.analyzed}
@@ -503,6 +512,7 @@ export default function AudioProcessingTab({
                 return job.candidate_path as string;
               }}
               onAccepted={onApplied}
+              renderInProgress={renderInProgress}
             />
           )}
           <LyricsCard songId={songId} />

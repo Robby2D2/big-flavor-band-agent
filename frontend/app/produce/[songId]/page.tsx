@@ -12,6 +12,11 @@ import {
   formatSteps,
 } from '@/lib/formatVersion';
 import { describeAcceptJob, useAcceptJob } from '@/hooks/useAcceptJob';
+import {
+  UNSAVED_VERSION_ID,
+  unsavedRenderFrom,
+  unsavedRenderLabel,
+} from '@/lib/unsavedRender';
 
 interface CatalogSong {
   id: number;
@@ -42,6 +47,7 @@ export default function ProduceSongPage({
   // when the selected version is renamed away or deleted.
   useEffect(() => {
     setSelectedVersionId((prev) => {
+      if (prev === UNSAVED_VERSION_ID) return prev;
       if (prev != null && versions.some((v) => v.id === prev)) return prev;
       const published = versions.find((v) => v.is_published);
       return published?.id ?? versions[0]?.id ?? null;
@@ -102,6 +108,20 @@ export default function ProduceSongPage({
   // itself rather than waiting for the producer to press Refresh.
   const { job: renderJob, refresh: refreshRenderJob } = useAcceptJob(songId, loadVersions);
   const renderNotice = describeAcceptJob(renderJob);
+  const renderInProgress = renderJob.status === 'running';
+  // Start analysis renders what it detected, so there is usually a finished mix
+  // that belongs to no version yet. It keeps a row so it can be played against
+  // the original before anyone decides to save it.
+  const unsavedRender = unsavedRenderFrom(renderJob);
+
+  // If the unsaved mix goes away (dismissed, or superseded by a new render)
+  // while it was selected, fall back to a real version.
+  useEffect(() => {
+    if (!unsavedRender && selectedVersionId === UNSAVED_VERSION_ID) {
+      const published = versions.find((v) => v.is_published);
+      setSelectedVersionId(published?.id ?? versions[0]?.id ?? null);
+    }
+  }, [unsavedRender, selectedVersionId, versions]);
 
   const handleSetDefault = async (versionId: number) => {
     setVersionBusyId(versionId);
@@ -292,6 +312,39 @@ export default function ProduceSongPage({
                       </td>
                     </tr>
                   )}
+                  {unsavedRender && (
+                    <tr
+                      onClick={() => setSelectedVersionId(UNSAVED_VERSION_ID)}
+                      aria-selected={selectedVersionId === UNSAVED_VERSION_ID}
+                      className={`border-t border-white/8 align-middle cursor-pointer ${
+                        selectedVersionId === UNSAVED_VERSION_ID
+                          ? 'bg-signal/10'
+                          : 'hover:bg-white/5'
+                      }`}
+                    >
+                      <td className="py-2 px-3">
+                        <input
+                          type="radio"
+                          name="selected-version"
+                          checked={selectedVersionId === UNSAVED_VERSION_ID}
+                          onChange={() => setSelectedVersionId(UNSAVED_VERSION_ID)}
+                          aria-label="Audition the new unsaved mix"
+                          className="accent-signal"
+                        />
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">New mix</span>
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-200">
+                            Not saved
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-text/55" colSpan={5}>
+                        {unsavedRenderLabel(unsavedRender)}
+                      </td>
+                    </tr>
+                  )}
                   {versions.map((v) => {
                     const selected = v.id === selectedVersionId;
                     return (
@@ -356,6 +409,10 @@ export default function ProduceSongPage({
             sourceVersionId={selectedVersionId}
             onApplied={loadVersions}
             onRenderStarted={refreshRenderJob}
+            renderInProgress={renderInProgress}
+            unsavedRender={
+              selectedVersionId === UNSAVED_VERSION_ID ? unsavedRender : null
+            }
             versionActions={{
               busyId: versionBusyId,
               onSetDefault: handleSetDefault,
