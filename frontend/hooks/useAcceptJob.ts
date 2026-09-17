@@ -53,7 +53,11 @@ export function describeAcceptJob(job: AcceptJob): {
   return null;
 }
 
-export function useAcceptJob(songId: number, onVersionSaved: () => void) {
+export function useAcceptJob(
+  songId: number,
+  /** Called with the id of the version a finished save produced. */
+  onVersionSaved: (versionId: number | null) => void
+) {
   const [job, setJob] = useState<AcceptJob>({ status: 'idle' });
   // Bumped to re-run the poll loop after starting a render, so there is only
   // ever one implementation of the polling itself.
@@ -97,7 +101,7 @@ export function useAcceptJob(songId: number, onVersionSaved: () => void) {
       // then clear the job so the progress row goes away. A cache hit lands
       // here on the very first poll, having never been "running".
       if (current.status === 'complete' && !current.preview) {
-        savedCallback.current();
+        savedCallback.current(current.version?.version_id ?? null);
         void dismiss();
         return;
       }

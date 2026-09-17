@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fixCopyFor } from '@/components/produce/audio/fixCopy';
 import { readJson } from '@/lib/apiJson';
 import { mapWithConcurrency } from '@/lib/concurrency';
@@ -178,6 +178,23 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // reads "not analyzed" rather than "clean"), and which are measuring right
   // now — both keyed by stem id, with FULL_MIX_STEM_ID for the whole mix.
   const [analyzedStemIds, setAnalyzedStemIds] = useState<Set<number>>(new Set());
+
+  // Fixes are measurements of one particular version. The moment you work from
+  // a different one — including the version a save just produced — they
+  // describe audio you are no longer looking at, so they go. Stems are not
+  // cleared: they belong to the song, not to a version.
+  const previousSourceId = useRef<number | null>(null);
+  useEffect(() => {
+    const previous = previousSourceId.current;
+    previousSourceId.current = sourceVersionId;
+    // Not a switch: the first source arriving after mount.
+    if (previous === null || previous === sourceVersionId) return;
+
+    setFixes([]);
+    setAnalyzed(false);
+    setAnalyzedStemIds(new Set());
+    setAnalysisNote(null);
+  }, [sourceVersionId]);
   const [analyzingStemIds, setAnalyzingStemIds] = useState<Set<number>>(new Set());
   const [identifyingStemIds, setIdentifyingStemIds] = useState<Set<number>>(new Set());
 

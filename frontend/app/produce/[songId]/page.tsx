@@ -106,7 +106,21 @@ export default function ProduceSongPage({
 
   // A background render adds a version when it lands, so the list reloads
   // itself rather than waiting for the producer to press Refresh.
-  const { job: renderJob, refresh: refreshRenderJob } = useAcceptJob(songId, loadVersions);
+  // A finished save is the version you now want to be working from, and the
+  // fixes on screen were measured against the one you started from. Reload the
+  // list first so the new version exists, then select it — selecting before it
+  // is in `versions` would be undone by the guard below.
+  const handleVersionSaved = async (versionId: number | null) => {
+    await loadVersions();
+    if (versionId != null) {
+      setSelectedVersionId(versionId);
+    }
+  };
+
+  const { job: renderJob, refresh: refreshRenderJob } = useAcceptJob(
+    songId,
+    handleVersionSaved
+  );
   const renderNotice = describeAcceptJob(renderJob);
   const renderInProgress = renderJob.status === 'running';
   // Start analysis renders what it detected, so there is usually a finished mix
