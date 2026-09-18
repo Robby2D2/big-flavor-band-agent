@@ -29,6 +29,34 @@ const TOOLS = [
     hidden_from_editor: false,
     params: [{ name: 'fundamental_hz', type: 'number', default: 60 }],
   },
+  // The three with no analyze() of their own. They can only ever reach the
+  // queue through the picker, which is the point of testing them here.
+  {
+    name: 'correct_pitch',
+    summary: 'Fix wrong notes / tuning.',
+    applies_to_file: true,
+    hidden_from_editor: false,
+    params: [
+      { name: 'semitones', type: 'number', default: 0, min: -12, max: 12 },
+      { name: 'auto_tune', type: 'boolean', default: false },
+      { name: 'key', type: 'string', default: null },
+    ],
+  },
+  {
+    name: 'remove_artifacts',
+    summary: 'Detect and remove clicks, pops, and digital glitches.',
+    applies_to_file: true,
+    hidden_from_editor: false,
+    params: [{ name: 'sensitivity', type: 'number', default: 0.5 }],
+  },
+  {
+    name: 'match_tempo',
+    summary: 'Time-stretch audio to a target BPM without changing pitch.',
+    applies_to_file: true,
+    hidden_from_editor: false,
+    // The only scoped tool with a required param: apply raises without it.
+    params: [{ name: 'target_bpm', type: 'number', default: null, required: true }],
+  },
   { name: 'reduce_noise', summary: 'Remove background noise, hiss, and feedback.', applies_to_file: true, hidden_from_editor: false, params: [] },
   { name: 'correct_beats', summary: 'Beat-level tempo correction.', applies_to_file: true, hidden_from_editor: false, params: [] },
   { name: 'trim_silence', summary: 'Trim non-musical content from head and tail.', applies_to_file: true, hidden_from_editor: false, params: [] },
@@ -110,19 +138,85 @@ async function analyzed(recommends: string[] = []) {
 }
 
 describe('producer-added fixes', () => {
-  it('offers only the row-scoped, single-file tools it has not already queued', async () => {
+  it('offers every single-file tool for the row, not just the analyzable ones', async () => {
     const { result } = await analyzed(['apply_eq']);
 
-    const stemTools = result.current.addableToolsForStem(STEM_ID).map((t) => t.name);
+    const stemTools = result.current.addableToolsForStem(STEM_ID).map((t) => t.name).sort();
     // apply_eq is already on the stem row from the analysis, so it is not offered again.
-    expect(stemTools).toEqual(['reduce_noise', 'remove_hum', 'correct_beats']);
+    expect(stemTools).toEqual(
+      ['correct_beats', 'correct_pitch', 'match_tempo', 'reduce_noise', 'remove_artifacts', 'remove_hum']
+    );
+    // The point of the change: tools with no analyze() are offered anyway.
+    expect(stemTools).toContain('correct_pitch');
 
-    // The master row is scoped to the master tools — and apply_eq is queued on
-    // that row too, since the same pass recommended it for the whole mix.
-    const masterTools = result.current.addableToolsForStem(FULL_MIX_STEM_ID).map((t) => t.name);
-    expect(masterTools).toEqual(['trim_silence', 'normalize_audio', 'apply_mastering']);
+    const masterTools = result.current.addableToolsForStem(FULL_MIX_STEM_ID).map((t) => t.name).sort();
+    expect(masterTools).toEqual(
+      ['apply_mastering', 'correct_beats', 'correct_pitch', 'match_tempo', 'normalize_audio',
+       'reduce_noise', 'remove_artifacts', 'remove_hum', 'trim_silence']
+    );
+    // Pipelines never reach the picker, whatever the scope.
     expect(masterTools).not.toContain('auto_clean_recording');
-    expect(masterTools).not.toContain('correct_beats');
+  });
+
+  it('keeps length- and mix-bus-changing tools off a stem row', async () => {
+    const { result } = await analyzed();
+
+    const stemTools = result.current.addableToolsForStem(STEM_ID).map((t) => t.name);
+    // Trimming one stem would slide it out of sync; mastering/normalising a
+    // single stem fights the balance it is meant to set.
+    expect(stemTools).not.toContain('trim_silence');
+    expect(stemTools).not.toContain('apply_mastering');
+    expect(stemTools).not.toContain('normalize_audio');
+  });
+
+  it('starts a pitch card in auto-tune, since its own defaults are a no-op', async () => {
+    const { result } = await analyzed();
+
+    act(() => result.current.addManualFix(STEM_ID, 'correct_pitch'));
+
+    const fix = result.current.fixesForStem(STEM_ID)[0];
+    // semitones 0 + auto_tune false would transpose by nothing at all.
+    expect(fix.currentParams).toEqual({ semitones: 0, auto_tune: true });
+    expect(result.current.missingParamsFor(fix)).toEqual([]);
+  });
+
+  it('holds a card with an unset required param out of every rendered chain', async () => {
+    const { api, result } = await analyzed();
+
+    act(() => result.current.addManualFix(FULL_MIX_STEM_ID, 'match_tempo'));
+    const fix = result.current.masterFixes[0];
+
+    // It is on screen and switched on, but not runnable — so nothing renders it.
+    expect(fix.enabled).toBe(true);
+    expect(result.current.missingParamsFor(fix).map((p) => p.name)).toEqual(['target_bpm']);
+    expect(result.current.incompleteFixIds.has(fix.id)).toBe(true);
+    expect(result.current.enabledCount).toBe(0);
+
+    await expect(result.current.previewSingleFix(fix)).rejects.toThrow(/under Adjust/);
+
+    await act(async () => {
+      await result.current.acceptAll(false);
+    });
+    const accept = api.posts.filter((p) => p.url.includes('accept-fixes')).at(-1);
+    expect(accept?.body.master_fixes).toEqual([]);
+  });
+
+  it('lets the card run once the required param has a value', async () => {
+    const { api, result } = await analyzed();
+
+    act(() => result.current.addManualFix(FULL_MIX_STEM_ID, 'match_tempo'));
+    act(() => result.current.updateFixParams('master:match_tempo', { target_bpm: 128 }));
+
+    expect(result.current.incompleteFixIds.size).toBe(0);
+    expect(result.current.enabledCount).toBe(1);
+
+    await act(async () => {
+      await result.current.acceptAll(false);
+    });
+    const accept = api.posts.filter((p) => p.url.includes('accept-fixes')).at(-1);
+    expect(accept?.body.master_fixes).toEqual([
+      { tool: 'match_tempo', params: { target_bpm: 128 } },
+    ]);
   });
 
   it('adds one enabled card starting from the tool declared defaults', async () => {

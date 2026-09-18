@@ -24,6 +24,29 @@ describe('fix card copy', () => {
     expect(body).toContain('Adjust');
   });
 
+  it('names the three tools no analyzer can ever recommend', () => {
+    // Nothing in the backend produces a recommendation for these, so the card
+    // title comes from here or it comes from the raw tool name.
+    expect(fixTitleFor('correct_pitch')).toBe('Pull the notes to pitch');
+    expect(fixTitleFor('remove_artifacts')).toBe('Clean up clicks and pops');
+    expect(fixTitleFor('match_tempo')).toBe('Stretch it to a target tempo');
+  });
+
+  it('tells a producer adding match_tempo that the BPM has no default', () => {
+    expect(manualFixCopy('match_tempo', undefined, 'master').body).toContain('target BPM');
+  });
+
+  it('warns about drift only when match_tempo is added to a single stem', () => {
+    // On one stem it stretches that stem alone; on the full mix there is
+    // nothing for it to drift against.
+    expect(manualFixCopy('match_tempo', undefined, 'stem').body).toContain('drift apart');
+    expect(manualFixCopy('match_tempo', undefined, 'master').body).not.toContain('drift apart');
+  });
+
+  it('says a pitch card starts in auto-tune', () => {
+    expect(manualFixCopy('correct_pitch').body).toContain('auto-tune');
+  });
+
   it('points every other added fix at the drawer for its amount', () => {
     expect(manualFixCopy('apply_mastering').body).toBe(
       "You added this — the analysis didn't flag it. Set the amount under Adjust."

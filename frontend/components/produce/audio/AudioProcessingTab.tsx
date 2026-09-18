@@ -497,6 +497,7 @@ export default function AudioProcessingTab({
                   onAddFix={(tool) =>
                     queue.selectedStemId != null && queue.addManualFix(queue.selectedStemId, tool)
                   }
+                  missingParamsFor={queue.missingParamsFor}
                   onRemoveFix={queue.removeFix}
                 />
               ) : (

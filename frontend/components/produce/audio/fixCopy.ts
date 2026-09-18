@@ -24,6 +24,11 @@ const FIX_TITLES: Record<string, string> = {
   trim_silence: 'Trim the silence at each end',
   normalize_audio: 'Even out the level',
   apply_mastering: 'Bring it to full loudness',
+  // The three with no analyze() of their own: nothing can ever recommend them,
+  // so the picker is the only place they appear.
+  correct_pitch: 'Pull the notes to pitch',
+  remove_artifacts: 'Clean up clicks and pops',
+  match_tempo: 'Stretch it to a target tempo',
 };
 
 /**
@@ -106,6 +111,24 @@ const MANUAL_SETUP_HINTS: Record<string, string> = {
   remove_hum:
     "You added this — the analysis didn't flag it. Pick 50 or 60 Hz under Adjust: " +
     'with no mains frequency set it just re-runs the detection that already heard no hum.',
+  match_tempo:
+    'You added this. Set the target BPM under Adjust — it has no default, and the ' +
+    'whole track is stretched to whatever you choose.',
+};
+
+/**
+ * Per-tool notes for a hand-added card, appended to the body.
+ *
+ * Only where a producer could reasonably be surprised by what the tool does to
+ * the rest of the session — not a second description of the tool.
+ */
+const MANUAL_SCOPE_NOTES: Record<string, string> = {
+  match_tempo:
+    ' On a single stem this stretches that stem alone, so give every stem the same ' +
+    'target or they will drift apart.',
+  correct_pitch:
+    ' Starts in auto-tune, pulling each note to the nearest one in the key; ' +
+    'switch to a plain transpose under Adjust.',
 };
 
 /**
@@ -113,11 +136,13 @@ const MANUAL_SETUP_HINTS: Record<string, string> = {
  * report — the whole point is that the analysis didn't flag it — so the body
  * says where the card came from and points at where the amount is set.
  */
-export function manualFixCopy(tool: string, summary?: string): FixCopy {
-  return {
-    title: fixTitleFor(tool, summary),
-    body:
-      MANUAL_SETUP_HINTS[tool] ??
-      "You added this — the analysis didn't flag it. Set the amount under Adjust.",
-  };
+export function manualFixCopy(tool: string, summary?: string, scope?: 'stem' | 'master'): FixCopy {
+  const base =
+    MANUAL_SETUP_HINTS[tool] ??
+    "You added this — the analysis didn't flag it. Set the amount under Adjust.";
+  // The stretch warning is only true of a stem; the full mix has nothing to
+  // drift against.
+  const note =
+    tool === 'match_tempo' && scope !== 'stem' ? '' : MANUAL_SCOPE_NOTES[tool] ?? '';
+  return { title: fixTitleFor(tool, summary), body: base + note };
 }

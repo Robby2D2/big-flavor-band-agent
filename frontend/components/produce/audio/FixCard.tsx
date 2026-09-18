@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { FixEntry } from '@/hooks/useProcessingQueue';
+import type { FixEntry, ParamMeta } from '@/hooks/useProcessingQueue';
 import { CONFIDENCE_COLOR, CONFIDENCE_LABEL } from './stemColors';
 
 interface FixCardProps {
@@ -12,10 +12,21 @@ interface FixCardProps {
   onHear: () => Promise<string>;
   /** Only passed for producer-added cards — a measured fix is toggled, not deleted. */
   onRemove?: () => void;
+  /** Required params still unset — the card can't run until they have values. */
+  missingParams?: ParamMeta[];
 }
 
 /** One fix: what it found, in plain English, with Hear it / Adjust / on-off. */
-export default function FixCard({ fix, index, onToggle, onAdjust, onHear, onRemove }: FixCardProps) {
+export default function FixCard({
+  fix,
+  index,
+  onToggle,
+  onAdjust,
+  onHear,
+  onRemove,
+  missingParams = [],
+}: FixCardProps) {
+  const incomplete = missingParams.length > 0;
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,11 +44,14 @@ export default function FixCard({ fix, index, onToggle, onAdjust, onHear, onRemo
     }
   };
 
+  // What the queue will really run: enabled and complete.
+  const on = fix.enabled && !incomplete;
+
   return (
     <div
       className={`rounded-xl border p-3.5 ${
-        fix.enabled ? 'bg-raised border-white/9' : 'bg-raised/60 border-white/6'
-      }`}
+        on ? 'bg-raised border-white/9' : 'bg-raised/60 border-white/6'
+      } ${incomplete ? 'border-amber-400/30' : ''}`}
     >
       <div className="flex items-start gap-3">
         <div className="w-8 h-8 rounded-lg bg-signal/15 border border-signal/30 flex items-center justify-center font-mono text-xs font-semibold text-signal flex-none">
@@ -63,6 +77,15 @@ export default function FixCard({ fix, index, onToggle, onAdjust, onHear, onRemo
           </div>
           <p className="text-xs text-text/60 mt-1 leading-relaxed">{fix.body}</p>
 
+          {/* An enabled-looking card that would be silently dropped from the
+              render is worse than one that says what it is waiting for. */}
+          {incomplete && (
+            <p className="text-xs text-amber-400/90 mt-1.5">
+              Needs {missingParams.map((p) => p.label).join(' and ')} before this runs — set it
+              under Adjust.
+            </p>
+          )}
+
           {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
           {previewPath && !error && (
             <audio
@@ -77,7 +100,8 @@ export default function FixCard({ fix, index, onToggle, onAdjust, onHear, onRemo
           <div className="flex gap-1.5 mt-2.5">
             <button
               onClick={handleHear}
-              disabled={loading}
+              disabled={loading || incomplete}
+              title={incomplete ? 'Set the missing setting under Adjust first' : undefined}
               className="text-xs font-semibold text-text/70 border border-white/14 rounded-lg px-2.5 py-1 hover:bg-white/5 disabled:opacity-50"
             >
               {loading ? 'Rendering…' : 'Hear it'}
@@ -99,22 +123,31 @@ export default function FixCard({ fix, index, onToggle, onAdjust, onHear, onRemo
           </div>
         </div>
 
+        {/* `on` is what the queue will actually render, which is not the same as
+            `fix.enabled` while a required setting is still blank. */}
         <button
           onClick={onToggle}
-          className="flex items-center gap-2 flex-none"
-          aria-label={fix.enabled ? 'Turn this fix off' : 'Turn this fix on'}
+          disabled={incomplete}
+          className="flex items-center gap-2 flex-none disabled:cursor-not-allowed"
+          aria-label={
+            incomplete
+              ? 'Set the missing setting under Adjust before turning this on'
+              : fix.enabled
+                ? 'Turn this fix off'
+                : 'Turn this fix on'
+          }
         >
-          <span className={`font-mono text-[10.5px] font-semibold ${fix.enabled ? 'text-confirm' : 'text-text/35'}`}>
-            {fix.enabled ? 'ON' : 'OFF'}
+          <span className={`font-mono text-[10.5px] font-semibold ${on ? 'text-confirm' : 'text-text/35'}`}>
+            {incomplete ? 'SET UP' : on ? 'ON' : 'OFF'}
           </span>
           <span
             className={`w-[38px] h-[22px] rounded-full relative transition-colors ${
-              fix.enabled ? 'bg-confirm' : 'bg-white/13'
+              on ? 'bg-confirm' : 'bg-white/13'
             }`}
           >
             <span
               className={`absolute top-0.5 w-[18px] h-[18px] rounded-full transition-all ${
-                fix.enabled ? 'right-0.5 bg-canvas' : 'left-0.5 bg-text/55'
+                on ? 'right-0.5 bg-canvas' : 'left-0.5 bg-text/55'
               }`}
             />
           </span>
