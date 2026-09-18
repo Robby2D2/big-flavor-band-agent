@@ -288,6 +288,19 @@ frontend — the accept/apply payloads still carry real stem ids plus a `master_
 backend code knows about it. It plays through the same mixer but starts **muted**: the stems already
 sum to the mix, so an un-muted mix channel would double every part.
 
+**Producer-added fixes (2026-09, issue #86):** the analysis is where the queue starts, not where it
+ends — a `FixEntry` now carries `source: 'analysis' | 'manual'`, and the selected console row offers a
+picker that adds a card for any tool in that row's scope (`PER_STEM_TOOLS` for a stem,
+`MASTER_TOOLS` for the full mix) that the registry reports as `applies_to_file`. This is
+**frontend-only**: `/accept-fixes` and the per-stem preview chain take an arbitrary `{tool, params}`
+list and never ask where a fix came from, so Hear it / Adjust / ON-OFF / Accept & save and the
+render-reuse fingerprint all work for a manual card unchanged. A manual card starts from the tool's
+own declared defaults (minus `file_path`/`output_path` and the region bounds — a card always runs at
+its row's scope) and can be removed outright, unlike a measured one, which is toggled. Ids stay
+`stem:<id>:<tool>` / `master:<tool>`, so a tool can be on a row at most once by construction; a
+re-analysis keeps manual cards and, where it now recommends a tool the producer had added, the
+recommended card supersedes it while retaining the params they had moved off the suggested value.
+
 **Stem instrument tagging (2026-08):** Demucs' source list is fixed by the model weights
 (`htdemucs_6s` = vocals/drums/bass/guitar/piano/other), so a banjo, mandolin or fiddle lands inside
 `other` — present in the audio, but unnamed. Rather than separating instruments the model was never
@@ -510,3 +523,4 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-08 | Stem-scoped `apply` never writes a version; only `/api/produce/accept-fixes` does | Keeps "create a version" a single seam. Per-stem/per-fix "Hear it" and "Preview with fixes" auditioning needed to be cheap and side-effect-free, so every per-tool or per-stem render is a preview; only the explicit accept-fixes orchestrator (which composes every stem + master fix into one file) is allowed to call `save_candidate_version`. |
 | 2026-08 | Tag instruments on stems instead of trying to separate more of them | Demucs' source list is baked into the model weights, so "add banjo/mandolin" is not a config change — it needs either query-based separation (materially worse quality than Demucs on its native sources) or a fine-tune on isolated multitracks the band doesn't have. But nothing is actually *lost*: the 6 stems sum back to the mix, so a banjo is present, just inside `other`. The gap is naming, not coverage — so an AudioSet tagger names what's in each stem and the producer can override the label by hand. Query-based separation stays on the table if per-instrument isolation later proves worth it. |
 | 2026-08 | Instrument tagging runs after the stem set is marked `complete`, not before | Separation already takes minutes; making the producer wait on a second model pass before any waveform appears would compound the exact slowness the console was being fixed for. Tags are a labelling pass over stems that already exist, so the console renders immediately and the labels fill in behind via a bounded poll. It also means a tagging failure can't fail a separation that produced perfectly usable stems. |
+| 2026-09 | Frontend linting migrated to a flat `eslint.config.mjs` and driven by the eslint CLI, not `next lint` | Next 16 removed the `next lint` command, so `npm run lint` had been reading "lint" as a directory and failing repo-wide — every frontend PR shipped with the gate declared broken. `eslint-config-next` 16 already ships flat-config arrays, so the migration was a config file plus a script change. Turning it back on found 11 real errors (full-page-reload `<a>` links, dead vars, two setState-in-effect bugs in `AudioPlayer`); they were fixed rather than rule-disabled, so the repo sits at zero problems and any lint output now means the change in front of you. `no-explicit-any` is off rather than `warn`: ~100 `any`s exist today, two thirds of them in the `app/api/` BFF routes that forward whatever JSON the backend returns, and the lint script runs `--max-warnings=0`, so a warning would be a failure. Typing them properly is its own piece of work; until then `.agents/CODING.md` asks for a real type where one fits and review enforces it. |

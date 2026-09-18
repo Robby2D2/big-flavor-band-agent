@@ -247,18 +247,23 @@ export default function AudioProcessingTab({
   >({});
   const [renderingFixes, setRenderingFixes] = useState(false);
 
+  // Pulled off `queue` first only so the memo's deps are plain identifiers:
+  // exhaustive-deps can't verify member expressions like `queue.consoleStems`
+  // and asks for the whole hook result instead. Both are already stable
+  // (useMemo/useCallback), so this changes nothing about when the memo runs.
+  const { consoleStems, fixesForStem } = queue;
+
   /** Identifies a row's enabled chain, so a rendered take can be reused until it changes. */
   const fixSignature = useMemo(() => {
     const signatures: Record<number, string> = {};
-    for (const stem of queue.consoleStems) {
-      const enabled = queue
-        .fixesForStem(stem.id)
+    for (const stem of consoleStems) {
+      const enabled = fixesForStem(stem.id)
         .filter((f) => f.enabled)
         .map((f) => ({ tool: f.tool, params: f.currentParams }));
       signatures[stem.id] = enabled.length ? JSON.stringify(enabled) : '';
     }
     return signatures;
-  }, [queue.consoleStems, queue.fixesForStem]);
+  }, [consoleStems, fixesForStem]);
 
   const effectiveBuffers = useMemo(() => {
     const merged: Record<number, AudioBuffer> = { ...buffers };
@@ -481,9 +486,18 @@ export default function AudioProcessingTab({
                   // list the same fixes twice when it's selected.
                   masterFixes={fullMixSelected ? [] : queue.masterFixes}
                   analyzing={queue.analyzing}
+                  addableTools={
+                    queue.selectedStemId != null
+                      ? queue.addableToolsForStem(queue.selectedStemId)
+                      : []
+                  }
                   onToggle={queue.toggleFix}
                   onAdjust={setDrawerFix}
                   onHear={queue.previewSingleFix}
+                  onAddFix={(tool) =>
+                    queue.selectedStemId != null && queue.addManualFix(queue.selectedStemId, tool)
+                  }
+                  onRemoveFix={queue.removeFix}
                 />
               ) : (
                 <p className="text-sm text-text/45 py-4 text-center">

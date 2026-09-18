@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import Header from '@/components/Header';
 
 interface User {
@@ -218,12 +219,12 @@ export default function AdminPage() {
             </svg>
             <h2 className="text-2xl font-bold mb-2">Access Denied</h2>
             <p className="text-text/55">{error}</p>
-            <a
+            <Link
               href="/"
               className="mt-6 inline-block px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
               Back to Home
-            </a>
+            </Link>
           </div>
         </div>
       </div>
@@ -239,12 +240,12 @@ export default function AdminPage() {
 
       <main className="container mx-auto px-4 py-8">
         <div className="mb-6">
-          <a
+          <Link
             href="/admin/produce"
             className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
             Open Producer Studio
-          </a>
+          </Link>
           <p className="text-sm text-text/55 mt-2">
             Audition, diff, and publish cleaned audio versions of catalog songs.
           </p>
@@ -294,6 +295,12 @@ export default function AdminPage() {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           {user.picture && (
+                            // A 40px Google avatar from an external host:
+                            // next/image would mean whitelisting
+                            // lh3.googleusercontent.com in images.remotePatterns
+                            // and running the optimizer in the standalone Docker
+                            // build, for no measurable win.
+                            // eslint-disable-next-line @next/next/no-img-element
                             <img
                               className="h-10 w-10 rounded-full mr-3"
                               src={user.picture}

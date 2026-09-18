@@ -235,3 +235,88 @@ over the aggressiveness-scaled recommendation) and region bounds, with Normalize
 skipped under a region and Trim routed through `trim_silence`'s own scoped silence-trim so a
 mid-track selection can never delete audio outside it.
 
+---
+
+## Later entries (moved from MEMORY.md, 2026-09-18)
+
+### 2026-08-06 — "Start analysis" never re-separates over existing stems (now stated, and tested)
+The rule the produce tab runs on: **Start analysis separates only when the song has no usable stems;
+making new ones is Re-separate's job.** `useProcessingQueue.waitForStemSet(forceNew)` already
+implemented it — `forceNew=false` returns `latestComplete(sets)` and never POSTs
+`/api/produce/stems/separate` — but nothing said so, and three bits of UI copy promised that Start
+analysis "separates the song into stems" regardless. The copy in `VersionBar` now switches on
+`hasStems` ("measures the stems you already have · use Re-separate below to make new ones") and the
+`/produce/[songId]` blurb says separation is the first-time path.
+
+The load-bearing part is `frontend/__tests__/useProcessingQueue.test.ts` — the first hook test in the
+repo, and the thing that stops a future edit from quietly reintroducing a multi-minute Demucs run on
+every press. Two testing notes for anything else that exercises this hook:
+- **Don't use RTL `waitFor` with `vi.useFakeTimers()`** — it polls on an interval the fake clock
+  freezes, so every assertion hangs to the 5 s test timeout. Await the pass inside `act()` and assert
+  directly; drive the hook's 4 s separation poll with `vi.advanceTimersByTimeAsync()`.
+- Give fake stems `tagged: true`, or the background instrument-tag poll keeps firing through the test.
+
+---
+
+### 2026-08-04 — Stem console loaded ~260 MB per tab open to draw waveforms; now ~15 KB of peaks + Opus playback copies
+**The measurement that drove this:** stems are uncompressed Demucs WAV — `produced/1140/stems/9/bass.wav`
+is 43.8 MB, a six-stem set ~262 MB, and a *cleaned* version (if selected as the source) 62 MB. All of
+it was downloaded and `decodeAudioData`'d on every produce-tab open. But `WaveformView` only ever fed
+`computePeaks(buffer, width)` — a per-pixel min/max envelope. ~260 MB was moving to draw ~15 KB.
+
+Split into two independent server resources:
+- **`src/production/waveform_peaks.py`** — 2000-bucket min/max envelope, quantised to ints in ±127,
+  cached in a new `waveform_peaks` JSONB column on both `song_stems` and `song_versions`. Streams via
+  `sf.blocks` rather than `librosa.load`: loading whole files would spike ~85 MB per concurrent call
+  on a box also running Demucs. Verified bit-identical to a naive full-load pass (the block-seam
+  handling is the only tricky part — bucket boundaries don't align with read boundaries). Measured
+  0.86 s cold / **0.005 s warm** on a 43 MB stem.
+- **`src/production/audio_preview.py`** — ffmpeg → Opus at 96k for browser playback only, ~15x
+  smaller. `/audio` still serves the real WAV and is what every DSP tool and the A/B fidelity control
+  reads.
+
+**Three design points worth keeping:**
+1. **`version` is checked on read.** A cached envelope from an older `PEAKS_FORMAT_VERSION` is treated
+   as absent. That is what made "no backfill script" safe — bumping the constant re-derives the whole
+   catalog lazily.
+2. **Preview paths key off the source file path, never a row id.** Produce never overwrites audio in
+   place (a re-clean writes a new timestamped file; a re-separation a new set dir), so a path-keyed
+   preview physically cannot go stale — no invalidation logic at all. Version previews live in a
+   shared `produced/previews/` because the catalog mount is read-only.
+3. **A row id can outlive its audio.** `replace_song_version_audio` swaps `audio_path` under a stable
+   version id, and `add_stem`'s `ON CONFLICT` reuses a row on a retried job — both now NULL
+   `waveform_peaks`. Same reason the version peaks/preview proxies are uncached while the stem ones
+   are `immutable`.
+
+**The frontend trap:** `maxDuration` was derived *solely* from decoded buffers, and it gates the
+transport, every `WaveformView`'s `duration`, and all seek/region math. Drawing before decoding meant
+duration had to come from the server (it ships in the peaks payload). Related: `useStemPlayback.play()`
+silently no-ops with no buffers, so the transport is now gated on `playbackReady` — otherwise the
+button looks live during the prefetch window and does nothing. The full mix's *audio* is no longer
+prefetched at all (it starts muted). Honest limit: this fixes bandwidth and decode time, **not** the
+~640 MB of `AudioBuffer` RAM — `decodeAudioData` yields float32 PCM whatever the source codec.
+
+Also: `frontend` dev dependencies (vitest et al.) were declared but never installed, so the existing
+`lyricTimings`/`LyricsFollower` tests had never actually run. `npm install` fixed it; 33 tests pass.
+
+**Two bugs the live check caught that the tests could not.** Both are worth remembering as a pattern:
+a monkeypatched dependency means the real command is never exercised.
+1. **ffmpeg picks its muxer from the output filename's extension.** The encode writes to a `.part`
+   temp file so the publish is an atomic rename — but ffmpeg can't infer a format from `.part`, so
+   *every* real transcode failed and `/preview` 503'd. Fixed with an explicit `-f ogg`. The test
+   asserted the temp suffix but never that the command could produce output.
+2. **A container restart is required for a hot-reload change to reach the running uvicorn.** The
+   first re-measurement still logged the pre-fix command line because the process had the old module
+   loaded — `./src` is volume-mounted, but the import is not re-evaluated.
+
+**Empty stems were still displaying** (the original request that started this work). The console hides
+stems tagged `silent`, but `instrument_tagging` judged silence on per-window RMS against a -80 dBFS
+floor, and an empty Demucs stem is *bleed*, not digital silence — song 1140's bass and piano measured
+-61 dBFS RMS, ~9x over that gate, so they scored as present-but-unrecognised. Now judged on **peak**
+via a new pure `is_silent()`: empty stems peak -56..-52 dBFS, the quietest genuinely-present
+instrument peaks -23.2 dBFS, so `SILENCE_PEAK` = -40 dBFS sits mid-gap. RMS provably cannot do this —
+1650's sparse-but-real piano is -54.7 dBFS RMS (within 6 dB of empty) but -23.2 dBFS peak. Verified
+against all 12 stems on disk; re-tag existing rows with `POST /api/produce/stems/{id}/identify`.
+
+Net measured effect on a produce tab open for song 1140: **262.7 MB -> 11.2 MB (23.5x)**, since the
+two hidden stems are no longer fetched at all, and waveforms paint from 45 KB of peaks.

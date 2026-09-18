@@ -1,17 +1,6 @@
 'use client';
 
-import type { FixEntry } from '@/hooks/useProcessingQueue';
-
-interface ParamMeta {
-  name: string;
-  type: string;
-  default: any;
-  min: number | null;
-  max: number | null;
-  label: string;
-  help: string | null;
-  choices: any[] | null;
-}
+import type { FixEntry, ParamMeta } from '@/hooks/useProcessingQueue';
 
 interface AdvancedDrawerProps {
   fix: FixEntry;
@@ -21,7 +10,8 @@ interface AdvancedDrawerProps {
   onClose: () => void;
 }
 
-/** Every parameter a tool declares, pre-filled from analysis, individually tunable. */
+/** Every parameter a tool declares, pre-filled from analysis (or the tool's own
+ * defaults for a producer-added fix), individually tunable. */
 export default function AdvancedDrawer({ fix, paramsMeta, onChange, onReset, onClose }: AdvancedDrawerProps) {
   // Only show params analyze actually surfaced a value for (file_path/output_path
   // etc. are plumbing, not something a producer tunes here) — falling back to

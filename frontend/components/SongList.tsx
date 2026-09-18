@@ -78,7 +78,7 @@ export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar, q
         setQueueMessage({ id: song.id, message: 'Failed to add' });
         setTimeout(() => setQueueMessage(null), 2000);
       }
-    } catch (error) {
+    } catch {
       setQueueMessage({ id: song.id, message: 'Error adding to queue' });
       setTimeout(() => setQueueMessage(null), 2000);
     } finally {
@@ -134,7 +134,7 @@ export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar, q
       } else {
         setLyricsModal({ song, lyrics: 'Lyrics not found' });
       }
-    } catch (error) {
+    } catch {
       setLyricsModal({ song, lyrics: 'Error loading lyrics' });
     } finally {
       setLoadingLyrics(null);

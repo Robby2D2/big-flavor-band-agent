@@ -10,10 +10,12 @@ interface FixCardProps {
   onToggle: () => void;
   onAdjust: () => void;
   onHear: () => Promise<string>;
+  /** Only passed for producer-added cards — a measured fix is toggled, not deleted. */
+  onRemove?: () => void;
 }
 
-/** One detected fix: what it found, in plain English, with Hear it / Adjust / on-off. */
-export default function FixCard({ fix, index, onToggle, onAdjust, onHear }: FixCardProps) {
+/** One fix: what it found, in plain English, with Hear it / Adjust / on-off. */
+export default function FixCard({ fix, index, onToggle, onAdjust, onHear, onRemove }: FixCardProps) {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,12 +47,18 @@ export default function FixCard({ fix, index, onToggle, onAdjust, onHear }: FixC
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <h4 className="font-semibold text-sm text-text">{fix.title}</h4>
-            {fix.confidence && (
-              <span
-                className={`font-mono text-[9.5px] tracking-wide px-1.5 py-0.5 rounded ${CONFIDENCE_COLOR[fix.confidence]}`}
-              >
-                {CONFIDENCE_LABEL[fix.confidence]}
+            {fix.source === 'manual' ? (
+              <span className="font-mono text-[9.5px] tracking-wide px-1.5 py-0.5 rounded text-signal bg-signal/15">
+                ADDED BY YOU
               </span>
+            ) : (
+              fix.confidence && (
+                <span
+                  className={`font-mono text-[9.5px] tracking-wide px-1.5 py-0.5 rounded ${CONFIDENCE_COLOR[fix.confidence]}`}
+                >
+                  {CONFIDENCE_LABEL[fix.confidence]}
+                </span>
+              )
             )}
           </div>
           <p className="text-xs text-text/60 mt-1 leading-relaxed">{fix.body}</p>
@@ -80,6 +88,14 @@ export default function FixCard({ fix, index, onToggle, onAdjust, onHear }: FixC
             >
               Adjust
             </button>
+            {onRemove && (
+              <button
+                onClick={onRemove}
+                className="text-xs font-semibold text-text/50 border border-white/14 rounded-lg px-2.5 py-1 hover:bg-white/5 hover:text-text/80"
+              >
+                Remove
+              </button>
+            )}
           </div>
         </div>
 
