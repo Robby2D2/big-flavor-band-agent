@@ -43,8 +43,44 @@ without a line of backend change. Checked that before designing anything.
   `hidden_from_editor`) rather than just params; `toolParamsByTool` is derived from it, so the
   Advanced drawer's call sites didn't change.
 
-12 new vitest cases (123 total green), `tsc --noEmit` and `npm run build` clean. `npm run lint` is
-still broken repo-wide (Next 16 removed `next lint`) — unrelated and pre-existing.
+**QA follow-ups, same PR.** The picker now labels each option with `fixTitleFor(tool)` — the very
+title the card it creates will carry — instead of the tool's own `summary`, so "Even out the tone"
+doesn't produce a card called something else (the summary is the option's hover text).
+`manualFixCopy` calls the same helper. And `remove_hum` gets its own card copy: it is the one scoped
+tool whose declared defaults are a genuine no-op (`fundamental_hz` has no default, so apply re-runs
+the detection that already found nothing and copies the file), so the card says to pick 50 or 60 Hz
+under Adjust rather than leaving "Hear it" sounding broken.
+
+16 vitest cases across two specs (127 total green), `tsc --noEmit`, `npm run build` and — newly —
+`npm run lint` all clean.
+
+---
+
+### 2026-09-18 — Linting works again: flat ESLint config, repo clean at zero problems
+`npm run lint` had been dead since the Next 16 upgrade: `next lint` was removed, so the script read
+`lint` as a *directory* argument and errored out. Every frontend PR had been shipping with the lint
+gate declared broken. Now `"lint": "eslint ."` against a flat `frontend/eslint.config.mjs`
+(ESLint 9; `eslint-config-next/core-web-vitals` + `/typescript` both ship flat-config arrays, spread
+in as-is). `.eslintrc.json` is gone — ESLint 9 ignores it anyway.
+
+Turning it on surfaced 11 real errors, all fixed rather than configured away:
+- Six `no-html-link-for-pages`: in-app `<a href="/">` "Back to Home" links became `<Link>` (they were
+  doing full page reloads). The two in `UserButton` are **not** bugs — `/api/auth/login|logout` are
+  route handlers that server-redirect to Google, which `next/link` cannot do — so those carry a
+  targeted `eslint-disable-next-line` **with the reason written out**.
+- Three unused vars: two bare `catch {}` in `SongList`, one dead `const user` in the radio page.
+- Two `react-hooks/set-state-in-effect` (new in eslint-plugin-react-hooks 7) in `AudioPlayer`, both
+  genuine improvements once fixed: `isPlaying` now follows the element's own `play`/`pause` events
+  instead of our call (correct when autoplay is refused or the OS media keys drive it), and timed
+  lyrics are stored as `{songId, timings}` and *derived*, so switching songs shows no lyrics rather
+  than the previous song's until the fetch lands.
+
+Two config-level choices worth keeping: `@typescript-eslint/no-explicit-any` is **off** (the
+produce/audio layer passes tool params as open-shaped records because the backend registry declares
+their shape at runtime), and `no-unused-vars` ignores *arguments* but still errors on locals.
+
+The repo now lints at **zero errors and zero warnings**, which is the point — output means your
+change. `.agents/TESTING.md` updated accordingly.
 
 ---
 

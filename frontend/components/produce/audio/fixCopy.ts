@@ -26,9 +26,13 @@ const FIX_TITLES: Record<string, string> = {
   apply_mastering: 'Bring it to full loudness',
 };
 
-/** The card title for a tool, falling back to the tool's own name. */
-export function fixTitleFor(tool: string): string {
-  return FIX_TITLES[tool] ?? tool;
+/**
+ * The card title for a tool — also what the "add a fix" picker lists it as, so
+ * the option you choose and the card you get read the same. `fallback` is the
+ * tool's own one-line summary, for a tool that has no friendly title yet.
+ */
+export function fixTitleFor(tool: string, fallback?: string): string {
+  return FIX_TITLES[tool] ?? fallback ?? tool;
 }
 
 function db(n: unknown, digits = 1): string {
@@ -90,13 +94,30 @@ export function fixCopyFor(
 }
 
 /**
+ * Tools whose declared defaults leave the audio untouched, so a card added at
+ * those defaults renders nothing until the producer sets something.
+ *
+ * Only `remove_hum` is in this position: its one param has no default, and with
+ * no mains frequency given, apply re-runs the same detection that already found
+ * no hum and copies the file. Every other tool here starts from defaults that
+ * do real work. Saying so on the card keeps "Hear it" from sounding broken.
+ */
+const MANUAL_SETUP_HINTS: Record<string, string> = {
+  remove_hum:
+    "You added this — the analysis didn't flag it. Pick 50 or 60 Hz under Adjust: " +
+    'with no mains frequency set it just re-runs the detection that already heard no hum.',
+};
+
+/**
  * Copy for a fix the producer added themselves. There are no measurements to
  * report — the whole point is that the analysis didn't flag it — so the body
  * says where the card came from and points at where the amount is set.
  */
 export function manualFixCopy(tool: string, summary?: string): FixCopy {
   return {
-    title: FIX_TITLES[tool] ?? summary ?? tool,
-    body: "You added this — the analysis didn't flag it. Set the amount under Adjust.",
+    title: fixTitleFor(tool, summary),
+    body:
+      MANUAL_SETUP_HINTS[tool] ??
+      "You added this — the analysis didn't flag it. Set the amount under Adjust.",
   };
 }

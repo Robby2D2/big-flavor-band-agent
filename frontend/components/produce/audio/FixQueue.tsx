@@ -2,6 +2,7 @@
 
 import type { FixEntry, ToolInfo } from '@/hooks/useProcessingQueue';
 import FixCard from './FixCard';
+import { fixTitleFor } from './fixCopy';
 
 interface FixQueueProps {
   stemName: string | null;
@@ -102,9 +103,12 @@ export default function FixQueue({
             className="px-2 py-1.5 bg-well border border-white/10 rounded-lg text-text text-xs"
           >
             <option value="">Add a fix…</option>
+            {/* Listed by the title the card will carry, not the tool's own
+                summary, so picking "Even out the tone" doesn't produce a card
+                called something else. The summary is the hover text. */}
             {addableTools.map((tool) => (
-              <option key={tool.name} value={tool.name}>
-                {tool.summary}
+              <option key={tool.name} value={tool.name} title={tool.summary}>
+                {fixTitleFor(tool.name, tool.summary)}
               </option>
             ))}
           </select>

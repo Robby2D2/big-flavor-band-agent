@@ -36,9 +36,8 @@ export default function RadioPage() {
       try {
         const response = await fetch('/api/auth/me');
         if (response.ok) {
-          const user = await response.json();
-          // For now, assume listener - in production, fetch from backend
-          // This is a simplified version - you'd need to add role to the user object
+          // Everyone signed in is a listener here — the radio page has no
+          // editor-only controls, so the session's own role is never read.
           setUserRole('listener');
         }
       } catch (error) {

@@ -21,7 +21,11 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
-  const [timings, setTimings] = useState<LyricTimings | null>(null);
+  // Kept with the song it was fetched for, so switching songs shows no lyrics
+  // rather than the previous song's until the new fetch lands — the reason this
+  // is derived instead of reset inside the effect below.
+  const [timed, setTimed] = useState<{ songId: number; timings: LyricTimings | null } | null>(null);
+  const timings = timed?.songId === song.id ? timed.timings : null;
   const [showLyrics, setShowLyrics] = useState(false);
   const rafRef = useRef<number | null>(null);
 
@@ -30,21 +34,32 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
     if (!audio) return;
 
     audio.src = `/api/audio/${song.id}`;
-    audio.play();
-    setIsPlaying(true);
 
     const updateTime = () => setCurrentTime(audio.currentTime);
     const updateDuration = () => setDuration(audio.duration);
-    const handleEnded = () => setIsPlaying(false);
+    // `isPlaying` follows the element rather than our own call: play() can be
+    // refused outright (autoplay policy) or the transport can be driven from
+    // outside this component — OS media keys, the headset button — and the
+    // button should show what the audio is actually doing either way.
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
 
     audio.addEventListener('timeupdate', updateTime);
     audio.addEventListener('loadedmetadata', updateDuration);
-    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handlePause);
+
+    audio.play().catch(() => {
+      /* Autoplay refused: the player opens paused, and the button starts it. */
+    });
 
     return () => {
       audio.removeEventListener('timeupdate', updateTime);
       audio.removeEventListener('loadedmetadata', updateDuration);
-      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handlePause);
       audio.pause();
     };
   }, [song.id]);
@@ -53,12 +68,11 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
   // since) simply gets no follow-along — never an error the listener has to see.
   useEffect(() => {
     let cancelled = false;
-    setTimings(null);
 
     fetch(`/api/songs/${song.id}/lyrics/timed`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data: TimedLyricsResponse | null) => {
-        if (!cancelled) setTimings(data?.timings ?? null);
+        if (!cancelled) setTimed({ songId: song.id, timings: data?.timings ?? null });
       })
       .catch(() => {
         /* follow-along is an enhancement; failing to load it is not an error */
@@ -104,9 +118,11 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
     if (isPlaying) {
       audio.pause();
     } else {
-      audio.play();
+      audio.play().catch(() => {
+        /* Nothing to roll back: `isPlaying` only moves on the element's own
+           play/pause events, so a refused play just leaves it paused. */
+      });
     }
-    setIsPlaying(!isPlaying);
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {

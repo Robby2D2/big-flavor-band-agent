@@ -351,7 +351,6 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         });
       }
       setAnalysisNote('Separating into stems — this takes a few minutes…');
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         await sleep(POLL_MS);
         sets = await fetchStemSets(songId);

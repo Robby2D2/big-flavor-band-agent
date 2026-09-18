@@ -261,12 +261,12 @@ export default function ProducePage() {
           <div className="text-red-600 dark:text-red-400 text-center">
             <h2 className="text-2xl font-bold mb-2">Access Denied</h2>
             <p className="text-text/55">{error}</p>
-            <a
+            <Link
               href="/"
               className="mt-6 inline-block px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
             >
               Back to Home
-            </a>
+            </Link>
           </div>
         </div>
       </div>

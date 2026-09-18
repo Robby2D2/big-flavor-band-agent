@@ -248,17 +248,20 @@ export default function AudioProcessingTab({
   const [renderingFixes, setRenderingFixes] = useState(false);
 
   /** Identifies a row's enabled chain, so a rendered take can be reused until it changes. */
+  // Pulled off `queue` first: the two members are what this depends on, and
+  // depending on the whole hook result would rebuild every signature on any
+  // state change in it.
+  const { consoleStems, fixesForStem } = queue;
   const fixSignature = useMemo(() => {
     const signatures: Record<number, string> = {};
-    for (const stem of queue.consoleStems) {
-      const enabled = queue
-        .fixesForStem(stem.id)
+    for (const stem of consoleStems) {
+      const enabled = fixesForStem(stem.id)
         .filter((f) => f.enabled)
         .map((f) => ({ tool: f.tool, params: f.currentParams }));
       signatures[stem.id] = enabled.length ? JSON.stringify(enabled) : '';
     }
     return signatures;
-  }, [queue.consoleStems, queue.fixesForStem]);
+  }, [consoleStems, fixesForStem]);
 
   const effectiveBuffers = useMemo(() => {
     const merged: Record<number, AudioBuffer> = { ...buffers };

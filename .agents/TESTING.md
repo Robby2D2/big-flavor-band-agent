@@ -12,9 +12,12 @@
 > `pytest` test; new frontend behavior should ship with a `vitest` test where the logic is testable
 > (pure functions and components), and must at least keep `npm run build` green.
 >
-> **Known broken:** `npm run lint` fails repo-wide — Next 16 removed `next lint`, so the script reads
-> `lint` as a directory argument and errors out. It needs migrating to a flat-config `eslint .` run;
-> until then `npm run build` (which typechecks) plus `npm test` are the frontend gates that work.
+> **Linting works again (2026-09-18).** `npm run lint` now runs the eslint CLI against a flat
+> `frontend/eslint.config.mjs` (ESLint 9 + `eslint-config-next`'s `core-web-vitals` and `typescript`
+> configs), replacing the `next lint` script Next 16 removed. The repo is clean: **zero errors, zero
+> warnings**, so any output is something your change introduced. Where a rule is deliberately not
+> followed (auth links that must be real navigations, small external avatars), the line carries an
+> `eslint-disable-next-line` with the reason — write the reason, don't just silence it.
 
 ---
 
@@ -30,7 +33,7 @@ checks that actually exist and pass them:
 | Backend manual script | `python tests/<script>.py` (venv active) | Reproducing a search/agent/radio scenario by hand |
 | Frontend unit | `cd frontend && npm test` | vitest specs in `frontend/__tests__/` (hooks, pure logic, components) |
 | Frontend build | `cd frontend && npm run build` | The app compiles for production (also typechecks) |
-| Frontend lint | `cd frontend && npm run lint` | **Currently broken** — see the note above |
+| Frontend lint | `cd frontend && npm run lint` | `eslint .` over the flat config; must stay at zero problems |
 
 > **Backend suite caveat.** `python -m pytest tests/ -q` fails to *collect* four ad-hoc scraper scripts
 > (`test_scraper.py`, `test_click_details.py`, `test_details_one_by_one.py`, `test_incremental_scrape.py`
@@ -80,9 +83,8 @@ Guidance:
 
 ## Writing new frontend tests
 
-There is no test harness wired up yet. At minimum every frontend change must pass `npm run lint`
-and `npm run build`. If a component grows real logic worth testing, introduce a lightweight runner
-(e.g. Vitest + React Testing Library) in its own PR and document it here.
+The harness is vitest — see "Writing new frontend tests (vitest)" above, which is the live section.
+Every frontend change must also keep `npm run lint` and `npm run build` green.
 
 ---
 
