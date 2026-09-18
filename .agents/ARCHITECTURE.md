@@ -301,6 +301,26 @@ its row's scope) and can be removed outright, unlike a measured one, which is to
 re-analysis keeps manual cards and, where it now recommends a tool the producer had added, the
 recommended card supersedes it while retaining the params they had moved off the suggested value.
 
+**The picker is registry-derived (2026-09):** which tools a producer may add by hand comes from
+`GET /api/produce/tools` — every non-hidden tool the registry reports as `applies_to_file` — not from
+a hand-kept list, so a tool added to the backend appears in the UI on its own. `ADDABLE_SCOPE` in
+`useProcessingQueue.ts` holds only the exceptions, each about the audio rather than the tooling:
+`trim_silence` changes the file's length (trimming one stem slides it out of sync with its
+siblings), and `apply_mastering`/`normalize_audio` are mix-bus jobs that fight the balance they are
+meant to set when run per stem. That puts 7 tools on a stem row and 10 on the full mix.
+
+This deliberately decouples the picker from `PER_STEM_TOOLS`/`MASTER_TOOLS`, which remain the
+*analysis* lists (tools with a real `analyze()`). `correct_pitch`, `remove_artifacts` and
+`match_tempo` inherit the base `analyze()` stub that always reports `recommended: false`, so nothing
+can ever recommend them and the picker is the only route to them in this UI — which is exactly why
+"has no detector" is the wrong reason to hide a fix a producer can hear.
+
+**Required params gate a card (2026-09):** `match_tempo.target_bpm` is the only scoped param with
+`required=True`, and `coerce_args` raises `ValueError` rather than inventing a value — a blank card
+would fail the render, not no-op. `missingRequiredParams` reads the `required` flag the tool
+descriptor already carried, the card says what it needs, and `isRunnable` keeps it out of every
+chain (accept payload, stem preview, single-fix preview, the enabled count) until it has a value.
+
 **Stem instrument tagging (2026-08):** Demucs' source list is fixed by the model weights
 (`htdemucs_6s` = vocals/drums/bass/guitar/piano/other), so a banjo, mandolin or fiddle lands inside
 `other` — present in the audio, but unnamed. Rather than separating instruments the model was never

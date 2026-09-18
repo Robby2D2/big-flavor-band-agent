@@ -1,6 +1,6 @@
 'use client';
 
-import type { FixEntry, ToolInfo } from '@/hooks/useProcessingQueue';
+import type { FixEntry, ParamMeta, ToolInfo } from '@/hooks/useProcessingQueue';
 import FixCard from './FixCard';
 import { fixTitleFor } from './fixCopy';
 
@@ -18,6 +18,8 @@ interface FixQueueProps {
   onHear: (fix: FixEntry) => Promise<string>;
   onAddFix: (tool: string) => void;
   onRemoveFix: (id: string) => void;
+  /** Required params a card still has no value for, by fix id. */
+  missingParamsFor: (fix: FixEntry) => ParamMeta[];
 }
 
 /**
@@ -41,6 +43,7 @@ export default function FixQueue({
   onHear,
   onAddFix,
   onRemoveFix,
+  missingParamsFor,
 }: FixQueueProps) {
   return (
     <div className={`flex flex-col gap-4 transition-opacity ${analyzing ? 'opacity-40 pointer-events-none select-none' : ''}`}>
@@ -80,6 +83,7 @@ export default function FixQueue({
               onAdjust={() => onAdjust(fix)}
               onHear={() => onHear(fix)}
               onRemove={fix.source === 'manual' ? () => onRemoveFix(fix.id) : undefined}
+              missingParams={missingParamsFor(fix)}
             />
           ))
         )}
@@ -133,6 +137,7 @@ export default function FixQueue({
                 onAdjust={() => onAdjust(fix)}
                 onHear={() => onHear(fix)}
                 onRemove={fix.source === 'manual' ? () => onRemoveFix(fix.id) : undefined}
+                missingParams={missingParamsFor(fix)}
               />
             ))}
           </div>

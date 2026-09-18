@@ -22,6 +22,44 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-18 — Every DSP tool is addable by hand, not just the four with detectors
+Asked why the picker offered only 4 options. Traced it: `PER_STEM_TOOLS`/`MASTER_TOOLS` were the
+*analysis* lists — tools with a real `analyze()` — and the manual picker had been built from them.
+Three genuinely useful tools were invisible as a result, and checking where they were reachable at
+all turned up nothing: **`correct_pitch`, `remove_artifacts` and `match_tempo` had no route through
+the produce UI whatsoever.** `correct_pitch` is mapped in `region_tools.py` but no component calls
+`/api/produce/region/*` (the BFF handlers have no caller); `correct_pitch`/`match_tempo` are
+`auto_clean` steps 4b/4c behind `do_pitch`/`do_tempo`, which no UI passes; `remove_artifacts` is in
+neither. Agent chat was the only way to run any of them.
+
+And the analyzer can never surface them: `analyze_and_recommend_processing` reports on
+trim/hum/noise/eq/compression/mastering only, and those three inherit the base `analyze()` stub that
+always says `recommended: false`. So the picker isn't a convenience for them — it's the only door.
+
+- **The picker now comes from the registry**, not a list: every non-hidden `applies_to_file` tool,
+  minus an `ADDABLE_SCOPE` table of exceptions justified by the audio (`trim_silence` changes
+  length; `apply_mastering`/`normalize_audio` are mix-bus jobs). 7 tools on a stem row, 10 on the
+  full mix, and a new backend tool shows up with no frontend change.
+- **`match_tempo` needed a guard, not just a listing.** `target_bpm` is `required=True` — the only
+  scoped param that is — and `coerce_args` *raises* rather than defaulting, so a card at defaults
+  would have failed the render instead of quietly doing nothing. `missingRequiredParams` reads the
+  `required` flag the descriptor already carried (no backend change), the card reads SET UP and says
+  what it needs, and `isRunnable` holds it out of every chain until it has a value.
+- **`correct_pitch` at its declared defaults is an exact no-op** (`semitones: 0`, `auto_tune: false`)
+  — the `remove_hum` problem again. A hand-added card starts with `auto_tune: true`, which is what
+  someone reaching for it wants.
+- **Adding it exposed a drawer bug:** a declared `string` param with no `choices` fell through to the
+  number input, so `correct_pitch`'s `key` ("C", "A minor") could not be typed into. The drawer has a
+  text branch now, marks required params, and an emptied number field means *unset* rather than 0.
+- On a stem, `match_tempo` stretches that stem alone; the card says so, since the set drifts apart
+  unless every stem gets the same target.
+
+**The lint gate earned itself back the same day:** `--max-warnings=0` caught `isRunnable` missing
+from two `useCallback` dep arrays — a stale-closure bug that would have built chains from an
+outdated completeness set. 8 new vitest cases (135 total green), lint/tsc/build clean.
+
+---
+
 ### 2026-09-18 — The fix queue can now hold a fix the analysis never measured (issue #86)
 The review queue only ever showed what `analyze()` flagged, so a producer who could *hear* something
 below the detector's threshold had no route to it in that screen. The fix turned out to be entirely

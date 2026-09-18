@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fixCopyFor, manualFixCopy } from '@/components/produce/audio/fixCopy';
+import { fixCopyFor, fixTitleFor, manualFixCopy } from '@/components/produce/audio/fixCopy';
 import { readJson } from '@/lib/apiJson';
 import { mapWithConcurrency } from '@/lib/concurrency';
 
@@ -39,6 +39,8 @@ export interface ParamMeta {
   max: number | null;
   label: string;
   help: string | null;
+  /** `apply` refuses without it — `coerce_args` raises rather than defaulting. */
+  required: boolean;
   choices: any[] | null;
 }
 
@@ -73,17 +75,50 @@ export interface FixEntry {
 }
 
 // Tools whose analyze() returns real measurements (Phase B) — the only ones
-// worth calling; the rest always report `recommended: false` today and would
-// just be wasted requests (src/production/toolkit.py's base analyze() stub).
-// They double as each scope's tool set for the "add a fix" picker: a stem row
-// offers the per-stem tools, the full mix the master ones.
+// worth *calling during analysis*; the rest always report `recommended: false`
+// and would just be wasted requests (src/production/toolkit.py's base analyze()
+// stub). This is an analysis concern only: what a producer may add by hand is
+// decided by ADDABLE_SCOPE below, since "no detector" is no reason to hide a
+// fix somebody can hear.
 const PER_STEM_TOOLS = ['reduce_noise', 'apply_eq', 'remove_hum', 'correct_beats'] as const;
 const MASTER_TOOLS = ['trim_silence', 'apply_eq', 'normalize_audio', 'apply_mastering'] as const;
+
+// Where a tool may be added by hand. Every non-hidden single-file tool the
+// registry reports is offered on both rows by default — add a tool to the
+// backend and it appears here on its own — so this table holds only the
+// exceptions, each for a reason that is about the audio, not about tooling.
+const ADDABLE_SCOPE: Record<string, 'master' | 'stem'> = {
+  // Changes the file's length. Trimming one stem and not its siblings would
+  // slide it out of sync with the rest of the set.
+  trim_silence: 'master',
+  // A mix-bus job by definition: loudness and dynamics judged across the whole
+  // song. Run per stem it fights the very balance it is trying to set.
+  apply_mastering: 'master',
+  normalize_audio: 'master',
+};
+
+/** The tools a row may be offered, given the registry and the table above. */
+function addableInScope(tools: ToolInfo[], isFullMix: boolean): ToolInfo[] {
+  return tools.filter((t) => {
+    if (!t.applies_to_file || t.hidden_from_editor) return false;
+    const only = ADDABLE_SCOPE[t.name];
+    if (!only) return true;
+    return only === (isFullMix ? 'master' : 'stem');
+  });
+}
 
 // Plumbing and region bounds are not fixes a producer dials in on a card: the
 // first two are filled in by the server, and a card always runs at its row's
 // scope (region-scoped manual fixes are deliberately not a thing here).
 const NON_TUNABLE_PARAMS = new Set(['file_path', 'output_path', 'start_s', 'end_s']);
+
+// Starting params for a hand-added card where the tool's own declared defaults
+// would do nothing at all. `correct_pitch` defaults to transposing by zero
+// semitones with auto-tune off, which is an exact no-op; a producer reaching
+// for it wants the notes pulled to pitch, so that is what the card starts as.
+const MANUAL_PARAM_OVERRIDES: Record<string, Record<string, any>> = {
+  correct_pitch: { auto_tune: true },
+};
 
 /** A tool's declared defaults, as the starting params for a producer-added fix. */
 function defaultParamsFor(tool: ToolInfo | undefined): Record<string, any> {
@@ -92,7 +127,25 @@ function defaultParamsFor(tool: ToolInfo | undefined): Record<string, any> {
     if (NON_TUNABLE_PARAMS.has(p.name) || p.default == null) continue;
     out[p.name] = p.default;
   }
-  return out;
+  return { ...out, ...(tool ? MANUAL_PARAM_OVERRIDES[tool.name] ?? {} : {}) };
+}
+
+/**
+ * Required params the card has no value for yet.
+ *
+ * Most tools have none — every param falls back to its declared default. A few
+ * (`match_tempo`'s `target_bpm`) genuinely cannot run without an answer:
+ * `coerce_args` raises `ValueError` rather than inventing one, so a card left
+ * blank would fail the render rather than quietly do nothing. The card names
+ * them and stays out of every chain until they are set.
+ */
+export function missingRequiredParams(
+  tool: ToolInfo | undefined,
+  params: Record<string, any>
+): ParamMeta[] {
+  return (tool?.params ?? []).filter(
+    (p) => p.required && !NON_TUNABLE_PARAMS.has(p.name) && params[p.name] == null
+  );
 }
 
 /**
@@ -574,28 +627,58 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   /**
    * The tools a producer can still add to one console row.
    *
-   * The row's scope decides the set — a stem gets the per-stem tools, the full
-   * mix the master ones — narrowed to tools that can actually transform a
-   * single file (anything else `apply` would refuse), and minus whatever the
-   * row already has a card for, so a tool can never end up on two cards.
+   * Taken from the registry rather than a hand-kept list: every tool that can
+   * transform a single file and isn't a pipeline is offered, minus the ones
+   * `ADDABLE_SCOPE` pins to the other scope, minus whatever the row already has
+   * a card for — so a tool can never end up on two cards, and a tool added to
+   * the backend shows up here without a frontend change. Tools with no
+   * `analyze()` of their own (correct_pitch, remove_artifacts, match_tempo) are
+   * *only* ever reachable this way; nothing can recommend them.
    */
   const addableToolsForStem = useCallback(
     (stemId: number): ToolInfo[] => {
-      const scoped = stemId === FULL_MIX_STEM_ID ? MASTER_TOOLS : PER_STEM_TOOLS;
+      const isFullMix = stemId === FULL_MIX_STEM_ID;
       const taken = new Set(
-        (stemId === FULL_MIX_STEM_ID
+        (isFullMix
           ? fixes.filter((f) => f.scope === 'master')
           : fixes.filter((f) => f.scope === 'stem' && f.stemId === stemId)
         ).map((f) => f.tool)
       );
-      return scoped
-        .map((name) => toolsByName[name])
-        .filter(
-          (tool): tool is ToolInfo =>
-            !!tool && tool.applies_to_file && !tool.hidden_from_editor && !taken.has(tool.name)
-        );
+      return addableInScope(Object.values(toolsByName), isFullMix)
+        .filter((tool) => !taken.has(tool.name))
+        .sort((a, b) => fixTitleFor(a.name, a.summary).localeCompare(fixTitleFor(b.name, b.summary)));
     },
     [fixes, toolsByName]
+  );
+
+  /**
+   * Cards that cannot run yet because a required param has no value.
+   *
+   * They stay in the queue and on screen — removing them would hide the one
+   * thing the producer needs to act on — but they are kept out of every chain
+   * that gets rendered, so a blank `target_bpm` can never turn into a failed
+   * render or a save that silently dropped a fix.
+   */
+  const incompleteFixIds = useMemo(
+    () =>
+      new Set(
+        fixes
+          .filter((f) => missingRequiredParams(toolsByName[f.tool], f.currentParams).length > 0)
+          .map((f) => f.id)
+      ),
+    [fixes, toolsByName]
+  );
+
+  /** What a card still needs before it can be enabled — empty when it's ready. */
+  const missingParamsFor = useCallback(
+    (fix: FixEntry) => missingRequiredParams(toolsByName[fix.tool], fix.currentParams),
+    [toolsByName]
+  );
+
+  /** Enabled *and* runnable — the test every chain-building path applies. */
+  const isRunnable = useCallback(
+    (f: FixEntry) => f.enabled && !incompleteFixIds.has(f.id),
+    [incompleteFixIds]
   );
 
   /**
@@ -612,7 +695,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       const isFullMix = stemId === FULL_MIX_STEM_ID;
       const id = isFullMix ? `master:${tool}` : `stem:${stemId}:${tool}`;
       const params = defaultParamsFor(toolsByName[tool]);
-      const copy = manualFixCopy(tool, toolsByName[tool]?.summary);
+      const copy = manualFixCopy(tool, toolsByName[tool]?.summary, isFullMix ? 'master' : 'stem');
       setFixes((prev) =>
         prev.some((f) => f.id === id)
           ? prev
@@ -688,7 +771,9 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     ],
     [stems]
   );
-  const enabledCount = useMemo(() => fixes.filter((f) => f.enabled).length, [fixes]);
+  // Counts what would actually be rendered, so the button never promises a fix
+  // that is sitting incomplete.
+  const enabledCount = useMemo(() => fixes.filter(isRunnable).length, [fixes, isRunnable]);
 
   const buildAcceptPayload = useCallback(
     (preview: boolean) => ({
@@ -697,15 +782,15 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       stems: stems.map((s) => ({
         stem_id: s.id,
         fixes: fixesForStem(s.id)
-          .filter((f) => f.enabled)
+          .filter(isRunnable)
           .map((f) => ({ tool: f.tool, params: f.currentParams })),
       })),
       master_fixes: masterFixes
-        .filter((f) => f.enabled)
+        .filter(isRunnable)
         .map((f) => ({ tool: f.tool, params: f.currentParams })),
       preview,
     }),
-    [songId, sourceVersionId, stems, fixesForStem, masterFixes]
+    [songId, sourceVersionId, stems, fixesForStem, masterFixes, isRunnable]
   );
 
   /**
@@ -765,7 +850,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const previewStemChain = useCallback(
     async (stemId: number): Promise<string> => {
       const chain = fixesForStem(stemId)
-        .filter((f) => f.enabled)
+        .filter(isRunnable)
         .map((f) => ({ tool: f.tool, params: f.currentParams }));
       // The full mix has no stem file to run a chain over — its chain is the
       // master fixes rendered against the source version.
@@ -782,7 +867,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       const data = await postJson(`/api/produce/stems/${stemId}/preview-chain`, { fixes: chain });
       return data.candidate_path as string;
     },
-    [fixesForStem, songId, sourceVersionId]
+    [fixesForStem, songId, sourceVersionId, isRunnable]
   );
 
   // "Hear it" on a single card — renders just that one fix, ignoring every
@@ -790,6 +875,14 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // isolation before deciding whether to keep it.
   const previewSingleFix = useCallback(
     async (fix: FixEntry): Promise<string> => {
+      // Said here rather than let the render come back with a ValueError from
+      // coerce_args: the card knows exactly which knob is missing.
+      const missing = missingRequiredParams(toolsByName[fix.tool], fix.currentParams);
+      if (missing.length > 0) {
+        throw new Error(
+          `Set ${missing.map((p) => p.label).join(' and ')} under Adjust before hearing this.`
+        );
+      }
       if (fix.scope === 'stem' && fix.stemId != null) {
         const data = await postJson(`/api/produce/stems/${fix.stemId}/preview-chain`, {
           fixes: [{ tool: fix.tool, params: fix.currentParams }],
@@ -805,7 +898,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       });
       return data.candidate_path as string;
     },
-    [songId, sourceVersionId]
+    [songId, sourceVersionId, toolsByName]
   );
 
   const ensureToolParams = useCallback(async () => {
@@ -859,6 +952,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     renameStem,
     identifyStem,
     toggleFix,
+    missingParamsFor,
+    incompleteFixIds,
     addableToolsForStem,
     addManualFix,
     removeFix,

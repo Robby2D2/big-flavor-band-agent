@@ -38,6 +38,12 @@ export default function AdvancedDrawer({ fix, paramsMeta, onChange, onReset, onC
           {relevant.length === 0 && (
             <p className="text-xs text-text/40">This tool has no tunable parameters.</p>
           )}
+          {relevant.some((p) => p.required) && (
+            <p className="text-xs text-amber-400/90">
+              <span className="font-semibold">*</span> required — the fix stays out of the render
+              until it has a value.
+            </p>
+          )}
           {relevant.map((p) => {
             const value = fix.currentParams[p.name] ?? p.default;
             if (p.type === 'boolean') {
@@ -74,12 +80,35 @@ export default function AdvancedDrawer({ fix, paramsMeta, onChange, onReset, onC
                 </label>
               );
             }
+            // A declared string with no fixed choices is free text — correct_pitch's
+            // `key` ("C", "A minor") is the case in point. Without this it fell
+            // through to the number input below and could not be typed into.
+            if (p.type === 'string') {
+              return (
+                <label key={p.name}>
+                  <div className="text-sm font-semibold text-text mb-1">
+                    {p.label}
+                    {p.required && <span className="text-amber-400/90 ml-1">*</span>}
+                  </div>
+                  {p.help && <div className="text-[10.5px] text-text/40 mb-1">{p.help}</div>}
+                  <input
+                    type="text"
+                    value={typeof value === 'string' ? value : ''}
+                    onChange={(e) => onChange({ [p.name]: e.target.value || null })}
+                    className="w-full px-2 py-1.5 bg-well border border-white/10 rounded-lg text-text text-sm"
+                  />
+                </label>
+              );
+            }
             const hasRange = p.min != null && p.max != null;
             return (
               <div key={p.name}>
                 <div className="flex items-baseline justify-between mb-1.5">
                   <div>
-                    <div className="text-sm font-semibold text-text">{p.label}</div>
+                    <div className="text-sm font-semibold text-text">
+                      {p.label}
+                      {p.required && <span className="text-amber-400/90 ml-1">*</span>}
+                    </div>
                     {p.help && <div className="text-[10.5px] text-text/40 mt-0.5">{p.help}</div>}
                   </div>
                   <span className="font-mono text-sm font-semibold text-signal bg-signal/10 px-2 py-0.5 rounded">
@@ -100,7 +129,11 @@ export default function AdvancedDrawer({ fix, paramsMeta, onChange, onReset, onC
                   <input
                     type="number"
                     value={typeof value === 'number' ? value : ''}
-                    onChange={(e) => onChange({ [p.name]: Number(e.target.value) })}
+                    // Clearing the field means "no value", not zero — a required
+                    // param has to be able to go back to unset.
+                    onChange={(e) =>
+                      onChange({ [p.name]: e.target.value === '' ? null : Number(e.target.value) })
+                    }
                     className="w-full px-2 py-1.5 bg-well border border-white/10 rounded-lg text-text text-sm"
                   />
                 )}
