@@ -22,10 +22,13 @@ const config = [
   ...nextTypeScript,
   {
     rules: {
-      // The produce/audio layer passes tool params and API rows around as
-      // open-shaped records (`Record<string, any>`) because the backend's tool
-      // registry declares their shape at runtime, not in TypeScript. Flagging
-      // every one of those would be noise, not a finding.
+      // Off, not 'warn': ~100 `any`s exist today, two thirds of them in the
+      // app/api/ BFF routes that forward whatever JSON the backend returns,
+      // the rest mostly in the produce/audio layer, whose tool params are
+      // shaped by the backend registry at runtime rather than in TypeScript.
+      // With --max-warnings=0 on the lint script, 'warn' would be an error, so
+      // this stays a convention: .agents/CODING.md asks for a real type where
+      // one fits, and a reviewer — not this rule — is what enforces it.
       '@typescript-eslint/no-explicit-any': 'off',
       // Unused *arguments* are often there to document a signature; unused
       // locals and imports are real dead code and still error.

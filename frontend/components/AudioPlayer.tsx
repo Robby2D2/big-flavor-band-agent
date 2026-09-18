@@ -17,7 +17,11 @@ interface AudioPlayerProps {
 
 export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
+  // Which song is playing, not merely whether something is — the pause event
+  // from a song switch is queued behind the switch itself, so a bare boolean
+  // could still read `true` for a new song whose play() went on to fail.
+  const [playingSongId, setPlayingSongId] = useState<number | null>(null);
+  const isPlaying = playingSongId === song.id;
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
@@ -41,8 +45,8 @@ export default function AudioPlayer({ song, onClose }: AudioPlayerProps) {
     // refused outright (autoplay policy) or the transport can be driven from
     // outside this component — OS media keys, the headset button — and the
     // button should show what the audio is actually doing either way.
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
+    const handlePlay = () => setPlayingSongId(song.id);
+    const handlePause = () => setPlayingSongId(null);
 
     audio.addEventListener('timeupdate', updateTime);
     audio.addEventListener('loadedmetadata', updateDuration);

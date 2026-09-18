@@ -247,11 +247,13 @@ export default function AudioProcessingTab({
   >({});
   const [renderingFixes, setRenderingFixes] = useState(false);
 
-  /** Identifies a row's enabled chain, so a rendered take can be reused until it changes. */
-  // Pulled off `queue` first: the two members are what this depends on, and
-  // depending on the whole hook result would rebuild every signature on any
-  // state change in it.
+  // Pulled off `queue` first only so the memo's deps are plain identifiers:
+  // exhaustive-deps can't verify member expressions like `queue.consoleStems`
+  // and asks for the whole hook result instead. Both are already stable
+  // (useMemo/useCallback), so this changes nothing about when the memo runs.
   const { consoleStems, fixesForStem } = queue;
+
+  /** Identifies a row's enabled chain, so a rendered take can be reused until it changes. */
   const fixSignature = useMemo(() => {
     const signatures: Record<number, string> = {};
     for (const stem of consoleStems) {

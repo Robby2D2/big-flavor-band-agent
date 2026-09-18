@@ -14,8 +14,9 @@
 >
 > **Linting works again (2026-09-18).** `npm run lint` now runs the eslint CLI against a flat
 > `frontend/eslint.config.mjs` (ESLint 9 + `eslint-config-next`'s `core-web-vitals` and `typescript`
-> configs), replacing the `next lint` script Next 16 removed. The repo is clean: **zero errors, zero
-> warnings**, so any output is something your change introduced. Where a rule is deliberately not
+> configs), replacing the `next lint` script Next 16 removed. The repo is clean and the script runs
+> `--max-warnings=0`, so **zero errors and zero warnings** is enforced, not just documented — any
+> output is something your change introduced. Where a rule is deliberately not
 > followed (auth links that must be real navigations, small external avatars), the line carries an
 > `eslint-disable-next-line` with the reason — write the reason, don't just silence it.
 
