@@ -481,9 +481,18 @@ export default function AudioProcessingTab({
                   // list the same fixes twice when it's selected.
                   masterFixes={fullMixSelected ? [] : queue.masterFixes}
                   analyzing={queue.analyzing}
+                  addableTools={
+                    queue.selectedStemId != null
+                      ? queue.addableToolsForStem(queue.selectedStemId)
+                      : []
+                  }
                   onToggle={queue.toggleFix}
                   onAdjust={setDrawerFix}
                   onHear={queue.previewSingleFix}
+                  onAddFix={(tool) =>
+                    queue.selectedStemId != null && queue.addManualFix(queue.selectedStemId, tool)
+                  }
+                  onRemoveFix={queue.removeFix}
                 />
               ) : (
                 <p className="text-sm text-text/45 py-4 text-center">

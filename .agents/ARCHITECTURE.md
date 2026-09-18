@@ -288,6 +288,19 @@ frontend — the accept/apply payloads still carry real stem ids plus a `master_
 backend code knows about it. It plays through the same mixer but starts **muted**: the stems already
 sum to the mix, so an un-muted mix channel would double every part.
 
+**Producer-added fixes (2026-09, issue #86):** the analysis is where the queue starts, not where it
+ends — a `FixEntry` now carries `source: 'analysis' | 'manual'`, and the selected console row offers a
+picker that adds a card for any tool in that row's scope (`PER_STEM_TOOLS` for a stem,
+`MASTER_TOOLS` for the full mix) that the registry reports as `applies_to_file`. This is
+**frontend-only**: `/accept-fixes` and the per-stem preview chain take an arbitrary `{tool, params}`
+list and never ask where a fix came from, so Hear it / Adjust / ON-OFF / Accept & save and the
+render-reuse fingerprint all work for a manual card unchanged. A manual card starts from the tool's
+own declared defaults (minus `file_path`/`output_path` and the region bounds — a card always runs at
+its row's scope) and can be removed outright, unlike a measured one, which is toggled. Ids stay
+`stem:<id>:<tool>` / `master:<tool>`, so a tool can be on a row at most once by construction; a
+re-analysis keeps manual cards and, where it now recommends a tool the producer had added, the
+recommended card supersedes it while retaining the params they had moved off the suggested value.
+
 **Stem instrument tagging (2026-08):** Demucs' source list is fixed by the model weights
 (`htdemucs_6s` = vocals/drums/bass/guitar/piano/other), so a banjo, mandolin or fiddle lands inside
 `other` — present in the audio, but unnamed. Rather than separating instruments the model was never

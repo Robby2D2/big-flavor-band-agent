@@ -15,6 +15,39 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-18 — The fix queue can now hold a fix the analysis never measured (issue #86)
+The review queue only ever showed what `analyze()` flagged, so a producer who could *hear* something
+below the detector's threshold had no route to it in that screen. The fix turned out to be entirely
+frontend: `/accept-fixes`, `/stems/{id}/preview-chain` and `_chain_apply_tools` take an arbitrary
+`{tool, params}` list with **no tool whitelist**, and `accept_jobs.fingerprint` hashes the whole
+payload — so a producer-chosen card reaches the DSP, renders, and invalidates a stale render
+without a line of backend change. Checked that before designing anything.
+
+- **`FixEntry.source: 'analysis' | 'manual'`** is the whole model change. Everything downstream reads
+  `tool` + `currentParams` and never asks where a card came from, which is why Hear it, Adjust,
+  ON/OFF and Accept & save all worked for free.
+- **Ids stay `stem:<id>:<tool>` / `master:<tool>`.** The issue flagged a possible collision; keeping
+  the existing scheme makes a duplicate structurally impossible instead of something to reconcile —
+  the picker just hides tools the row already has.
+- **Re-analysis merges rather than replaces.** Manual cards survive (clearing them would make the
+  producer's own judgement the one thing a re-measure throws away); where the new pass recommends a
+  tool they had added, the recommended card wins and inherits the params they had moved off the
+  suggested value. "Edited" is *derived* (`currentParams` vs `suggestedParams`) rather than tracked,
+  so there's no second copy of the params to keep in sync. A re-separation drops manual cards pinned
+  to stem ids that no longer exist.
+- **Starting params are the tool's declared defaults**, minus `file_path`/`output_path` and
+  `start_s`/`end_s`. Worth knowing: `apply_eq`'s defaults alone are close to a no-op (high-pass at
+  30 Hz, no `boost_freq`), which is exactly why the Adjust drawer is the place the amount gets set —
+  there are no measured numbers to pre-fill.
+- `ensureToolParams` now keeps the whole tool descriptor (`summary`, `applies_to_file`,
+  `hidden_from_editor`) rather than just params; `toolParamsByTool` is derived from it, so the
+  Advanced drawer's call sites didn't change.
+
+12 new vitest cases (123 total green), `tsc --noEmit` and `npm run build` clean. `npm run lint` is
+still broken repo-wide (Next 16 removed `next lint`) — unrelated and pre-existing.
+
+---
+
 ### 2026-09-15 — First prod deploy in a while: the image build had been broken for weeks
 `docker-compose --env-file .env.production build` failed immediately: `npm ci` refuses a
 `package-lock.json` out of sync with `package.json` (missing `@emnapi/*`). Broken since `0fe6e4e`

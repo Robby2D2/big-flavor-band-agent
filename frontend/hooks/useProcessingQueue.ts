@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fixCopyFor } from '@/components/produce/audio/fixCopy';
+import { fixCopyFor, manualFixCopy } from '@/components/produce/audio/fixCopy';
 import { readJson } from '@/lib/apiJson';
 import { mapWithConcurrency } from '@/lib/concurrency';
 
@@ -31,6 +31,28 @@ export function stemLabel(stem: StemInfo): string {
   return stem.displayName?.trim() || stem.name;
 }
 
+export interface ParamMeta {
+  name: string;
+  type: string;
+  default: any;
+  min: number | null;
+  max: number | null;
+  label: string;
+  help: string | null;
+  choices: any[] | null;
+}
+
+/** One tool as `GET /api/produce/tools` describes it. */
+export interface ToolInfo {
+  name: string;
+  summary: string;
+  /** The tool turns one input file into an output — the only kind a fix can be. */
+  applies_to_file: boolean;
+  /** Whole-song orchestrators, which are pipelines rather than single effects. */
+  hidden_from_editor: boolean;
+  params: ParamMeta[];
+}
+
 export interface FixEntry {
   id: string;
   scope: 'stem' | 'master';
@@ -46,13 +68,70 @@ export interface FixEntry {
   /** Possibly user-adjusted params, sent when this fix is applied. */
   currentParams: Record<string, any>;
   enabled: boolean;
+  /** Who put this card in the queue — the analysis, or the producer. */
+  source: 'analysis' | 'manual';
 }
 
 // Tools whose analyze() returns real measurements (Phase B) — the only ones
 // worth calling; the rest always report `recommended: false` today and would
 // just be wasted requests (src/production/toolkit.py's base analyze() stub).
+// They double as each scope's tool set for the "add a fix" picker: a stem row
+// offers the per-stem tools, the full mix the master ones.
 const PER_STEM_TOOLS = ['reduce_noise', 'apply_eq', 'remove_hum', 'correct_beats'] as const;
 const MASTER_TOOLS = ['trim_silence', 'apply_eq', 'normalize_audio', 'apply_mastering'] as const;
+
+// Plumbing and region bounds are not fixes a producer dials in on a card: the
+// first two are filled in by the server, and a card always runs at its row's
+// scope (region-scoped manual fixes are deliberately not a thing here).
+const NON_TUNABLE_PARAMS = new Set(['file_path', 'output_path', 'start_s', 'end_s']);
+
+/** A tool's declared defaults, as the starting params for a producer-added fix. */
+function defaultParamsFor(tool: ToolInfo | undefined): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const p of tool?.params ?? []) {
+    if (NON_TUNABLE_PARAMS.has(p.name) || p.default == null) continue;
+    out[p.name] = p.default;
+  }
+  return out;
+}
+
+/**
+ * The params the producer moved off the suggested value.
+ *
+ * Derived rather than tracked, so there is no second copy of the params to keep
+ * in sync — it is only needed at the one moment a re-analysis replaces a card
+ * the producer had already tuned.
+ */
+function editedParams(fix: FixEntry): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [key, value] of Object.entries(fix.currentParams)) {
+    if (fix.suggestedParams[key] !== value) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Fold a row's fresh analysis results into what that row already had.
+ *
+ * Producer-added cards survive a re-analysis — clearing them would make the
+ * producer's own judgement the one thing in the queue that a re-measure throws
+ * away. When the analysis now recommends a tool they had added, the recommended
+ * card wins (it has findings and a confidence the manual one never had) but
+ * keeps whatever they had already tuned, so exactly one card per tool remains.
+ */
+function mergeRowFixes(previous: FixEntry[], results: FixEntry[]): FixEntry[] {
+  const recommended = new Set(results.map((f) => f.id));
+  const manualById = new Map(
+    previous.filter((f) => f.source === 'manual').map((f) => [f.id, f])
+  );
+  const merged = results.map((fix) => {
+    const manual = manualById.get(fix.id);
+    if (!manual) return fix;
+    return { ...fix, currentParams: { ...fix.currentParams, ...editedParams(manual) } };
+  });
+  const kept = Array.from(manualById.values()).filter((f) => !recommended.has(f.id));
+  return [...merged, ...kept];
+}
 
 const IN_FLIGHT = new Set(['queued', 'running']);
 const POLL_MS = 4000;
@@ -173,7 +252,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const [analysisNote, setAnalysisNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fixes, setFixes] = useState<FixEntry[]>([]);
-  const [toolParamsByTool, setToolParamsByTool] = useState<Record<string, any[]>>({});
+  const [toolsByName, setToolsByName] = useState<Record<string, ToolInfo>>({});
   // Which rows have had an analysis pass (so a row that was never measured
   // reads "not analyzed" rather than "clean"), and which are measuring right
   // now — both keyed by stem id, with FULL_MIX_STEM_ID for the whole mix.
@@ -313,6 +392,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         suggestedParams: r.params || {},
         currentParams: r.params || {},
         enabled: true,
+        source: 'analysis',
       };
     },
     [songId]
@@ -343,6 +423,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         suggestedParams: r.params || {},
         currentParams: r.params || {},
         enabled: true,
+        source: 'analysis',
       };
     },
     [songId, sourceVersionId]
@@ -355,7 +436,9 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setAnalyzed(false);
       setAnalysisNote(null);
       setError(null);
-      setFixes([]);
+      // Measurements describe audio that is about to be re-measured, so they
+      // go; producer-added cards are not measurements and stay put.
+      setFixes((prev) => prev.filter((f) => f.source === 'manual'));
       setAnalyzedStemIds(new Set());
       try {
         const stemSet = await waitForStemSet(forceNew);
@@ -373,7 +456,16 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         }
         for (const tool of MASTER_TOOLS) jobs.push(() => analyzeMasterTool(tool));
 
-        setFixes(await runAnalyzeJobs(jobs));
+        const results = await runAnalyzeJobs(jobs);
+        // A re-separation mints new stem ids, so a manual card pinned to a stem
+        // that no longer exists has nothing left to run against.
+        const liveStemIds = new Set(stemSet.stems.map((s) => s.id));
+        setFixes((prev) =>
+          mergeRowFixes(
+            prev.filter((f) => f.scope === 'master' || (f.stemId != null && liveStemIds.has(f.stemId))),
+            results
+          )
+        );
         setAnalyzedStemIds(
           new Set([FULL_MIX_STEM_ID, ...stemSet.stems.map((s) => s.id)])
         );
@@ -404,12 +496,14 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
             ? MASTER_TOOLS.map((tool) => () => analyzeMasterTool(tool))
             : PER_STEM_TOOLS.map((tool) => () => analyzeStemTool(stemId, tool))
         );
-        setFixes((prev) => [
-          ...prev.filter((f) =>
-            isFullMix ? f.scope !== 'master' : !(f.scope === 'stem' && f.stemId === stemId)
-          ),
-          ...results,
-        ]);
+        setFixes((prev) => {
+          const onThisRow = (f: FixEntry) =>
+            isFullMix ? f.scope === 'master' : f.scope === 'stem' && f.stemId === stemId;
+          return [
+            ...prev.filter((f) => !onThisRow(f)),
+            ...mergeRowFixes(prev.filter(onThisRow), results),
+          ];
+        });
         setAnalyzedStemIds((prev) => new Set(prev).add(stemId));
       } catch (err) {
         setError((err as Error).message);
@@ -476,6 +570,82 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
 
   const toggleFix = useCallback((id: string) => {
     setFixes((prev) => prev.map((f) => (f.id === id ? { ...f, enabled: !f.enabled } : f)));
+  }, []);
+
+  /**
+   * The tools a producer can still add to one console row.
+   *
+   * The row's scope decides the set — a stem gets the per-stem tools, the full
+   * mix the master ones — narrowed to tools that can actually transform a
+   * single file (anything else `apply` would refuse), and minus whatever the
+   * row already has a card for, so a tool can never end up on two cards.
+   */
+  const addableToolsForStem = useCallback(
+    (stemId: number): ToolInfo[] => {
+      const scoped = stemId === FULL_MIX_STEM_ID ? MASTER_TOOLS : PER_STEM_TOOLS;
+      const taken = new Set(
+        (stemId === FULL_MIX_STEM_ID
+          ? fixes.filter((f) => f.scope === 'master')
+          : fixes.filter((f) => f.scope === 'stem' && f.stemId === stemId)
+        ).map((f) => f.tool)
+      );
+      return scoped
+        .map((name) => toolsByName[name])
+        .filter(
+          (tool): tool is ToolInfo =>
+            !!tool && tool.applies_to_file && !tool.hidden_from_editor && !taken.has(tool.name)
+        );
+    },
+    [fixes, toolsByName]
+  );
+
+  /**
+   * Put a fix in the queue the analysis never recommended.
+   *
+   * It starts from the tool's own declared defaults — there are no measured
+   * numbers to pre-fill, which is exactly why the Adjust drawer is where the
+   * amount gets set. Everything downstream (Hear it, the accept payload, the
+   * render fingerprint) reads `tool` + `currentParams` and never asks where a
+   * card came from, so it behaves like any other from here on.
+   */
+  const addManualFix = useCallback(
+    (stemId: number, tool: string) => {
+      const isFullMix = stemId === FULL_MIX_STEM_ID;
+      const id = isFullMix ? `master:${tool}` : `stem:${stemId}:${tool}`;
+      const params = defaultParamsFor(toolsByName[tool]);
+      const copy = manualFixCopy(tool, toolsByName[tool]?.summary);
+      setFixes((prev) =>
+        prev.some((f) => f.id === id)
+          ? prev
+          : [
+              ...prev,
+              {
+                id,
+                scope: isFullMix ? 'master' : 'stem',
+                stemId: isFullMix ? null : stemId,
+                tool,
+                title: copy.title,
+                body: copy.body,
+                confidence: null,
+                reason: '',
+                findings: {},
+                suggestedParams: params,
+                currentParams: { ...params },
+                enabled: true,
+                source: 'manual',
+              },
+            ]
+      );
+    },
+    [toolsByName]
+  );
+
+  /**
+   * Drop a producer-added card. Only those: a recommended fix is a measurement
+   * of the audio, and turning it off is what "I don't want this one" means.
+   */
+  const removeFix = useCallback((id: string) => {
+    setFixes((prev) => prev.filter((f) => !(f.id === id && f.source === 'manual')));
   }, []);
 
   const updateFixParams = useCallback((id: string, patch: Record<string, any>) => {
@@ -640,19 +810,33 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   );
 
   const ensureToolParams = useCallback(async () => {
-    if (Object.keys(toolParamsByTool).length) return;
+    if (Object.keys(toolsByName).length) return;
     try {
       const res = await fetch('/api/produce/tools');
       if (!res.ok) return;
       const data = await readJson(res);
-      const map: Record<string, any[]> = {};
-      for (const t of data.tools || []) map[t.name] = t.params || [];
-      setToolParamsByTool(map);
+      const map: Record<string, ToolInfo> = {};
+      for (const t of data.tools || []) {
+        map[t.name] = {
+          name: t.name,
+          summary: t.summary || t.name,
+          applies_to_file: Boolean(t.applies_to_file),
+          hidden_from_editor: Boolean(t.hidden_from_editor),
+          params: t.params || [],
+        };
+      }
+      setToolsByName(map);
     } catch {
       // Advanced-drawer metadata is a nice-to-have; a fetch failure just
       // means the drawer falls back to plain number inputs.
     }
-  }, [toolParamsByTool]);
+  }, [toolsByName]);
+
+  const toolParamsByTool = useMemo(() => {
+    const map: Record<string, ParamMeta[]> = {};
+    for (const [name, tool] of Object.entries(toolsByName)) map[name] = tool.params;
+    return map;
+  }, [toolsByName]);
 
   return {
     stems,
@@ -676,6 +860,9 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     renameStem,
     identifyStem,
     toggleFix,
+    addableToolsForStem,
+    addManualFix,
+    removeFix,
     updateFixParams,
     resetFixParams,
     acceptAll,
