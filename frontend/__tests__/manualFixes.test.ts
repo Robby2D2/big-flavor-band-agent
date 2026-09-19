@@ -192,7 +192,13 @@ describe('producer-added fixes', () => {
     expect(result.current.incompleteFixIds.has(fix.id)).toBe(true);
     expect(result.current.enabledCount).toBe(0);
 
-    await expect(result.current.previewSingleFix(fix)).rejects.toThrow(/under Adjust/);
+    // Auditioning the row renders its runnable chain — which this card is not
+    // part of, so the transport can never be handed a blank target_bpm.
+    await act(async () => {
+      await result.current.previewStemChain(FULL_MIX_STEM_ID);
+    });
+    const audition = api.posts.filter((p) => p.url.includes('accept-fixes')).at(-1);
+    expect(audition?.body.master_fixes).toEqual([]);
 
     await act(async () => {
       await result.current.acceptAll(false);

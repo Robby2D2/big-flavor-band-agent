@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixTitleFor, manualFixCopy } from '@/components/produce/audio/fixCopy';
+import { fixCopyFor, fixTitleFor, manualFixCopy } from '@/components/produce/audio/fixCopy';
 
 describe('fix card copy', () => {
   it('titles a tool the same way wherever it is named', () => {
@@ -24,16 +24,54 @@ describe('fix card copy', () => {
     expect(body).toContain('Adjust');
   });
 
-  it('names the three tools no analyzer can ever recommend', () => {
-    // Nothing in the backend produces a recommendation for these, so the card
-    // title comes from here or it comes from the raw tool name.
+  it('titles pitch, clicks and tempo the same however they reach the queue', () => {
+    // Pitch and clicks are measured now, so their cards can arrive either way;
+    // match_tempo is still picker-only, deliberately.
     expect(fixTitleFor('correct_pitch')).toBe('Pull the notes to pitch');
     expect(fixTitleFor('remove_artifacts')).toBe('Clean up clicks and pops');
     expect(fixTitleFor('match_tempo')).toBe('Stretch it to a target tempo');
+    expect(fixCopyFor('correct_pitch', {}, '').title).toBe(fixTitleFor('correct_pitch'));
+  });
+
+  it('puts the measured numbers in a recommended pitch card', () => {
+    const body = fixCopyFor(
+      'correct_pitch',
+      { notes_detected: 46, notes_off_target: 17, median_deviation_cents: 30.4, key: 'A minor' },
+      'measured'
+    ).body;
+    expect(body).toContain('17 of 46 notes');
+    expect(body).toContain('30 cents');
+    expect(body).toContain('A minor');
+  });
+
+  it('says which scope a clicks card is repairing', () => {
+    // One physical click lands in a stem *and* in the mix those stems sum to,
+    // so a producer has to be able to tell the two cards apart.
+    const findings = { count: 4, per_minute: 1.2 };
+    expect(fixCopyFor('remove_artifacts', findings, '', 'stem').body).toContain('in this stem');
+    expect(fixCopyFor('remove_artifacts', findings, '', 'master').body).toContain(
+      'in the whole mix'
+    );
+    expect(fixCopyFor('remove_artifacts', findings, '', 'stem').body).toContain('4 clicks');
+  });
+
+  it('keeps a one-click card out of the plural', () => {
+    expect(fixCopyFor('remove_artifacts', { count: 1, per_minute: 0.3 }, '').body).toContain(
+      '1 click/pop'
+    );
   });
 
   it('tells a producer adding match_tempo that the BPM has no default', () => {
     expect(manualFixCopy('match_tempo', undefined, 'master').body).toContain('target BPM');
+  });
+
+  it('names the measured tempo a seeded card already carries', () => {
+    // Seeded from the song's own analysis, the card is runnable on arrival —
+    // telling the producer to go and set a value that is already there would
+    // be wrong.
+    const body = manualFixCopy('match_tempo', undefined, 'master', { target_bpm: 118.5 }).body;
+    expect(body).toContain('118.5 BPM');
+    expect(body).not.toContain('Set the target BPM');
   });
 
   it('warns about drift only when match_tempo is added to a single stem', () => {

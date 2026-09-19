@@ -310,10 +310,47 @@ siblings), and `apply_mastering`/`normalize_audio` are mix-bus jobs that fight t
 meant to set when run per stem. That puts 7 tools on a stem row and 10 on the full mix.
 
 This deliberately decouples the picker from `PER_STEM_TOOLS`/`MASTER_TOOLS`, which remain the
-*analysis* lists (tools with a real `analyze()`). `correct_pitch`, `remove_artifacts` and
-`match_tempo` inherit the base `analyze()` stub that always reports `recommended: false`, so nothing
-can ever recommend them and the picker is the only route to them in this UI — which is exactly why
-"has no detector" is the wrong reason to hide a fix a producer can hear.
+*analysis* lists (tools with a real `analyze()`).
+
+**Pitch and clicks are measured too (2026-09-19, issue #89).** `correct_pitch` and
+`remove_artifacts` no longer inherit the base `analyze()` stub: `src/production/analysis.py` gained
+`detect_pitch_issues()` and `detect_clicks()` next to `detect_hum()`, and both tools (plus the
+whole-song `analyze_and_recommend_processing`, for auto-clean and the agent) measure through them.
+
+- **Pitch** runs the same pyin → `_segment_notes` → `_detect_key` chain `apply()` does, over the
+  *loudest 20s window at 22.05 kHz* — pyin is an order of magnitude more expensive than the spectral
+  measurements the other tools make, and analysis already fans out over every tool x every stem.
+  Deviation is scored against each note's **nearest semitone**, not the nearest in-scale tone:
+  "flat" means off its own pitch, and snapping to the key would score every deliberate chromatic
+  note as an error (the key is still detected, reported, and passed as the recommended `key` param).
+  The monophony gate (`PITCH_MIN_VOICED_RATIO` / `PITCH_MIN_VOICED_CONFIDENCE`) is now **shared with
+  `apply()`**, so the tool cannot recommend a correction it would then decline to make — the
+  previous `apply()`-only threshold of 0.5 rejected every real Demucs vocal stem, silently turning
+  per-note auto-tune into a whole-file shift.
+- **Clicks** use an *absolute* outlier rule: a sample-to-sample jump ≥8x the track's own
+  99th-percentile jump, grouped into events. This is deliberately **not** `apply()`'s threshold,
+  which is the `100 - sensitivity * 20` percentile and so flags a fixed fraction of every file by
+  construction — it can never answer "is this one clean?". `analyze()` maps its measured flagged
+  fraction back onto a `sensitivity` value, so a recommended card repairs what was measured rather
+  than the top 10% of the file.
+- **Which rows get measured** is a frontend decision (`isPitchAnalyzable` in
+  `useProcessingQueue.ts`): the vocal stem, plus any stem the tagger labels a single-line
+  instrument. Never the full mix. `remove_artifacts` runs on every row, and its card copy names its
+  scope ("in this stem" / "in the whole mix") because one physical click lands in both.
+- **`match_tempo` stays un-recommended** — there is no *correct* BPM for a song, so recommending a
+  stretch would assert a creative preference as a defect. Its only change is that a hand-added card
+  is seeded with the tempo `correct_beats` already measured for that row (or, for the full-mix row,
+  any stem's — they are the same performance), so the required `target_bpm` is never blank. This is
+  why the analyze helpers keep **every** outcome rather than only the recommended ones.
+
+**Hear it plays on the console transport (2026-09-19, issue #89).** A fix card used to render its
+own `<audio>` element, so a fix was judged as an isolated clip — no other stems, no solo/mute, and
+as many playheads on the page as there were cards. `AudioProcessingTab` now owns one `audition`
+({fixId, rowId}): Hear it selects the fix's row, turns the fix on, and drives the same
+render-stale-chains-then-play path the transport's own play button uses. ON/OFF while auditioning
+re-renders and resumes at the same playhead (keyed on *which* fixes are enabled, not their params,
+so a slider drag can't start a render per keystroke). `previewSingleFix` is gone with it — there is
+no isolated-clip render left to do.
 
 **Required params gate a card (2026-09):** `match_tempo.target_bpm` is the only scoped param with
 `required=True`, and `coerce_args` raises `ValueError` rather than inventing a value — a blank card
@@ -543,4 +580,6 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-08 | Stem-scoped `apply` never writes a version; only `/api/produce/accept-fixes` does | Keeps "create a version" a single seam. Per-stem/per-fix "Hear it" and "Preview with fixes" auditioning needed to be cheap and side-effect-free, so every per-tool or per-stem render is a preview; only the explicit accept-fixes orchestrator (which composes every stem + master fix into one file) is allowed to call `save_candidate_version`. |
 | 2026-08 | Tag instruments on stems instead of trying to separate more of them | Demucs' source list is baked into the model weights, so "add banjo/mandolin" is not a config change — it needs either query-based separation (materially worse quality than Demucs on its native sources) or a fine-tune on isolated multitracks the band doesn't have. But nothing is actually *lost*: the 6 stems sum back to the mix, so a banjo is present, just inside `other`. The gap is naming, not coverage — so an AudioSet tagger names what's in each stem and the producer can override the label by hand. Query-based separation stays on the table if per-instrument isolation later proves worth it. |
 | 2026-08 | Instrument tagging runs after the stem set is marked `complete`, not before | Separation already takes minutes; making the producer wait on a second model pass before any waveform appears would compound the exact slowness the console was being fixed for. Tags are a labelling pass over stems that already exist, so the console renders immediately and the labels fill in behind via a bounded poll. It also means a tagging failure can't fail a separation that produced perfectly usable stems. |
+| 2026-09 | Pitch and clicks are measured by the per-tool `analyze()`s, and the monophony gate moved into shared constants `apply()` also reads (issue #89) | A fix nothing can detect is a fix only an expert finds. Both detections already existed inside `apply()`; what was missing was running them without the write. The gate had to be shared because `apply()`'s 0.5 voiced-confidence threshold rejected every real vocal stem — a recommended card whose Hear it silently fell back to a zero-semitone whole-file shift would have been worse than no card. Clicks needed a genuinely new *statistic* (absolute outlier, not a percentile of every file) for the same reason: the apply-side rule cannot distinguish a clean file from a clicky one. |
+| 2026-09 | "Hear it" drives the stem console's single transport instead of a per-card `<audio>` element (issue #89) | Deciding whether to keep a fix means hearing it against the rest of the song — soloing the drums against the de-hissed vocal, toggling it on and off in the mix. A player per card could do none of that, and put as many playheads on the page as there were cards. The transport already rendered per-row fix chains on demand, so this was a rewiring rather than new machinery. |
 | 2026-09 | Frontend linting migrated to a flat `eslint.config.mjs` and driven by the eslint CLI, not `next lint` | Next 16 removed the `next lint` command, so `npm run lint` had been reading "lint" as a directory and failing repo-wide — every frontend PR shipped with the gate declared broken. `eslint-config-next` 16 already ships flat-config arrays, so the migration was a config file plus a script change. Turning it back on found 11 real errors (full-page-reload `<a>` links, dead vars, two setState-in-effect bugs in `AudioPlayer`); they were fixed rather than rule-disabled, so the repo sits at zero problems and any lint output now means the change in front of you. `no-explicit-any` is off rather than `warn`: ~100 `any`s exist today, two thirds of them in the `app/api/` BFF routes that forward whatever JSON the backend returns, and the lint script runs `--max-warnings=0`, so a warning would be a failure. Typing them properly is its own piece of work; until then `.agents/CODING.md` asks for a real type where one fits and review enforces it. |

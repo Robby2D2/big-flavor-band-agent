@@ -4,6 +4,10 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
+> Pruned 2026-09-19: the session-cookie signing entry moved to
+> [memory/auth_access.md](memory/auth_access.md), joining the editor-invites entry it was the
+> companion to.
+>
 > Pruned 2026-09-18 (457 lines → ~200): the prod-deploy entry moved to
 > [memory/deploy_ops.md](memory/deploy_ops.md); the search-accuracy rework to
 > [memory/search_rag.md](memory/search_rag.md); the missing-BFF-route and edge-proxy-timeout entries
@@ -22,6 +26,53 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-19 — Pitch and clicks are measured now, and a fix is auditioned in the mix (issue #89)
+Two halves of the same idea: a fix you can only find by ear isn't leverage, and a fix you can only
+hear as an isolated clip can't be judged.
+
+**Detection.** `correct_pitch` and `remove_artifacts` had inherited the base `analyze()` stub, so
+nothing could ever recommend them. Both detections already ran inside `apply()`; what was missing
+was running them without the write. `detect_pitch_issues()` / `detect_clicks()` now live in
+`analysis.py` beside `detect_hum()`, shared by the two tools and by the whole-song recommender.
+
+- **The apply-side click rule could not be reused.** `apply()` cuts at
+  `percentile(100 - sensitivity * 20)` — at the declared 0.5 that is the top *10% of every file*, by
+  construction, so it can never say whether a file is clean. `analyze()` uses an absolute outlier
+  rule instead (a jump ≥8x the track's own 99th-percentile jump, grouped into events) and then maps
+  its measured flagged fraction back onto a `sensitivity`, so a recommended card repairs ~what was
+  measured. On a real Demucs `other` stem: 41 clicks, 9.9/min, sensitivity 0.005 — not 0.5.
+  `apply()`'s threshold itself is left alone and flagged in the PR as worth a follow-up.
+- **The monophony gate had to move, and that was the real find.** `apply()` refused any source
+  voicing under 0.5 mean pyin confidence. Measured across four songs, *every* real vocal stem sits
+  at 0.21-0.24 — pyin's `voiced_prob` comes out of Viterbi-decoded candidates and is nowhere near
+  1.0 even on a clean solo line. So per-note auto-tune had **never once run on a stem**; it silently
+  fell through to a whole-file shift every time. The constants moved to `analysis.py` (ratio 0.6,
+  confidence 0.18) and `apply()` reads them, so the tool cannot recommend what it would refuse.
+  Polyphonic stems that voice just as often (`other`, `guitar`) sit at 0.05-0.17, and the off-target
+  ratio is a second gate they also fail (0-5% against a vocal's 15-70%).
+- **Deviation is scored against the nearest semitone, not the nearest in-scale note.** "Flat" means
+  off its own pitch; scoring against the key counts every deliberate chromatic note as an error. The
+  key is still detected and shipped as the recommended `key` param. 35 cents is the line — at 25
+  cents all four test vocals tripped it, which is just normal expressive singing.
+- **Cost, the risk the issue called out:** pyin over a whole stem would have been ruinous, so it runs
+  on the loudest 20s window at 22.05 kHz, and only on rows where a single line is plausible
+  (`isPitchAnalyzable`: the vocal stem, or a tagger-labelled single-line instrument — never the full
+  mix). Measured on a real 6-stem set: 17.9s → 25.5s of serial analyze CPU, 1.43x.
+- **`match_tempo` stays un-recommended on purpose** — there is no correct BPM for a song. It just
+  gets seeded: the analyze helpers now keep *every* outcome, not only recommended ones, so
+  `correct_beats`' `detected_bpm` (which it reports either way) pre-fills the one required param in
+  the registry and the card is runnable on arrival.
+
+**Auditioning.** Hear it drove a per-card `<audio>` element, so you heard the fix alone, through a
+player that knew nothing about the rest of the mix. It now drives the console's single transport —
+which already rendered per-row fix chains on demand, so this was rewiring, not new machinery. Hear
+it selects the row, turns the fix on and plays; ON/OFF while auditioning re-renders and resumes at
+the same playhead. Keyed on *which* fixes are enabled rather than their params, so the Adjust
+drawer's sliders can't kick off a render per keystroke. `previewSingleFix` deleted.
+
+12 new pytest cases, 20 new vitest (155 total green), lint/tsc/build clean, backend boots.
+
+---
 ### 2026-09-18 — Every DSP tool is addable by hand, not just the four with detectors
 Asked why the picker offered only 4 options. Traced it: `PER_STEM_TOOLS`/`MASTER_TOOLS` were the
 *analysis* lists — tools with a real `analyze()` — and the manual picker had been built from them.
@@ -192,44 +243,3 @@ running, so a render begun elsewhere after load is invisible by design. Start
 the render *first*, then navigate. Also, a render saturates the CPU enough that
 the dev server's own page load crawls; wait for `tbody tr` to exist rather than
 a fixed sleep.
-
----
-
-### 2026-09-15 — The session cookie was a claim, not a credential; now it is signed
-Two holes closed, both found while building editor invites. Neither needed a clever exploit.
-
-**1. The `appSession` cookie was unsigned JSON.** `{"sub":…,"email":…}`, URL-encoded, and every
-reader just `JSON.parse`d it. `HttpOnly` stops page scripts from *reading* it but does nothing about
-*writing* one — `curl -H "Cookie: appSession=…"` with an admin's Google `sub` was a full admin
-session. Verified against the running stack before the fix and after: the same forged cookie now
-gets 401.
-
-- **`frontend/lib/session.ts`** is the whole fix: `base64url(payload).HMAC-SHA256(payload)` keyed on
-  a new `SESSION_SECRET`, constant-time compare, and **`exp` inside the signed payload** so a
-  captured cookie cannot be replayed with a fresh `Max-Age`. Fails closed everywhere — no secret,
-  bad signature, or past expiry all read as "not signed in".
-- A **separate secret from `BACKEND_API_SECRET`** so the two blast radii stay separate. Distinct
-  values per environment; both `.env` and `.env.production` got one, and the deploy scripts now
-  refuse to start without it. **Changing it logs everyone out** — as did shipping this.
-- `Secure` is set when the request arrived over HTTPS, so prod gets it without breaking
-  `http://localhost`.
-
-**2. `POST /api/users` and `GET /api/users/{id}/role` had no `require_role`.** Unlike every
-`/api/admin/*` route, anything on the Docker network could create users or enumerate anyone's role
-by id. Both now take `require_role("listener")` — BFF-only, not admin-only, since the BFF calls them
-for whoever just signed in. The three BFF call sites now send `backendAuthHeaders('listener')`.
-
-**3. Found while fixing the above: `requireAuth` failed *open*.** The role check ran only inside
-`if (response.ok)`, so a backend 404 or 500 skipped it entirely and returned the user — passing an
-admin check. It now fails closed: an unreadable or unknown role is a refusal.
-
-**Known wart, deliberately left:** an unauthenticated call to a BFF route answers **500**, not 401 —
-the ~45 route handlers all map `error.message.includes('Forbidden') ? 403 : 500`. Access is correctly
-denied either way; fixing the status properly means touching every one of those files.
-
-Verified live: forged old-format cookie → 401; payload swapped to the admin's `sub` with a valid
-signature kept → 401; real editor session → admin route → 403; real admin session → 200 with data;
-user routes → 401 with no/wrong service secret and 200 for the BFF. 81 backend tests pass (10 new),
-58 vitest (14 new, including "the old unsigned format is rejected"), `tsc --noEmit` and
-`npm run build` clean. The four audio-streaming failures in `test_api_routers.py` /
-`test_blocking_io.py` fail on a clean tree too — pre-existing, unrelated.
