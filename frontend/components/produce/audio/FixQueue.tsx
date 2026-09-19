@@ -15,7 +15,14 @@ interface FixQueueProps {
   addableTools: ToolInfo[];
   onToggle: (id: string) => void;
   onAdjust: (fix: FixEntry) => void;
-  onHear: (fix: FixEntry) => Promise<string>;
+  /** Audition one fix on the console transport — the page's only player. */
+  onHear: (fix: FixEntry) => void;
+  /** The fix the transport is playing right now, if any. */
+  auditionFixId?: string | null;
+  /** A fix chain is rendering before playback can start. */
+  rendering?: boolean;
+  /** The console has audio to play into. */
+  canHear?: boolean;
   onAddFix: (tool: string) => void;
   onRemoveFix: (id: string) => void;
   /** Required params a card still has no value for, by fix id. */
@@ -41,6 +48,9 @@ export default function FixQueue({
   onToggle,
   onAdjust,
   onHear,
+  auditionFixId = null,
+  rendering = false,
+  canHear = true,
   onAddFix,
   onRemoveFix,
   missingParamsFor,
@@ -84,6 +94,9 @@ export default function FixQueue({
               onHear={() => onHear(fix)}
               onRemove={fix.source === 'manual' ? () => onRemoveFix(fix.id) : undefined}
               missingParams={missingParamsFor(fix)}
+              auditioning={fix.id === auditionFixId}
+              rendering={rendering && fix.id === auditionFixId}
+              canHear={canHear}
             />
           ))
         )}
@@ -138,6 +151,9 @@ export default function FixQueue({
                 onHear={() => onHear(fix)}
                 onRemove={fix.source === 'manual' ? () => onRemoveFix(fix.id) : undefined}
                 missingParams={missingParamsFor(fix)}
+                auditioning={fix.id === auditionFixId}
+                rendering={rendering && fix.id === auditionFixId}
+                canHear={canHear}
               />
             ))}
           </div>

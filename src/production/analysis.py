@@ -433,6 +433,215 @@ def detect_hum(y, sr) -> dict:
     return best
 
 
+# --------------------------------------------------------------- pitch/clicks detection (#89)
+#
+# The measurement half of ``correct_pitch`` and ``remove_artifacts``. Both tools
+# used to inherit the base ``analyze()`` stub, so nothing could ever *recommend*
+# them — a flat vocal or a clicky edit stayed invisible until somebody heard it.
+# Shared here (like ``detect_hum``) so each tool's ``analyze()`` and the
+# whole-song recommender measure the same thing.
+
+# pyin is far more expensive than the spectral measurements the other analyze()
+# passes do, and analysis already fans out over every tool x every stem. A
+# tuning problem is a property of the singing, not of the whole file, so the
+# detector listens to the most energetic window at a reduced rate instead of
+# tracking f0 across minutes of audio.
+PITCH_ANALYSIS_WINDOW_S = 20.0
+PITCH_ANALYSIS_SR = 22050     # fmax is C7 (~2093 Hz); Nyquist here is 11 kHz
+
+# Monophony gate, shared with correct_pitch.apply() so the two halves of the
+# tool agree about what they can work on. Calibrated against real Demucs stems
+# rather than guessed: across four songs, vocal stems voice 74-86% of the window
+# at a mean pyin confidence of 0.21-0.24, while the polyphonic stems that voice
+# just as often (`other`, `guitar`) sit at 0.05-0.17. pyin's voiced_prob comes
+# out of Viterbi-decoded candidates, so it is nowhere near 1.0 even on a clean
+# solo line — the 0.5 this guard used to carry rejected every real vocal stem,
+# which meant per-note auto-tune silently fell back to a whole-file shift every
+# single time it was asked for.
+PITCH_MIN_VOICED_RATIO = 0.6
+PITCH_MIN_VOICED_CONFIDENCE = 0.18
+
+# A third of a semitone: clearly audible as out of tune, where 25 cents is still
+# inside ordinary expressive variation. Measured across four vocal stems, 35
+# cents leaves the tightest singer under the recommend ratio and puts the two
+# audibly loose takes in the top tier.
+PITCH_OFF_TARGET_CENTS = 35.0
+PITCH_RECOMMEND_RATIO = 0.15  # how many notes must be off before it is worth saying
+
+
+def _loudest_window(y, sr: int, window_s: float):
+    """Sample bounds of the most energetic ``window_s`` span of ``y``.
+
+    A vocal stem is mostly silence around the singing, so a window taken from
+    the middle (or the start) can easily contain no notes at all. Energy is
+    summed over half-second blocks, which is cheap next to what it saves.
+    """
+    import numpy as np
+
+    want = int(window_s * sr)
+    if len(y) <= want:
+        return 0, len(y)
+    hop = max(1, sr // 2)
+    blocks = len(y) // hop
+    if blocks == 0:
+        return 0, len(y)
+    energy = np.add.reduceat(y[: blocks * hop] ** 2, np.arange(0, blocks * hop, hop))
+    span = max(1, min(blocks, want // hop))
+    cumulative = np.concatenate([[0.0], np.cumsum(energy)])
+    sums = cumulative[span:] - cumulative[:-span]
+    start = int(np.argmax(sums)) * hop
+    return start, min(len(y), start + want)
+
+
+def detect_pitch_issues(y, sr: int, key: Optional[str] = None) -> dict:
+    """Measure how far a monophonic line's notes sit from their own pitch.
+
+    Runs the same chain ``correct_pitch.apply()`` does — pyin, note
+    segmentation, key detection — and stops short of shifting anything.
+
+    Deviation is measured against each note's **nearest semitone**, not against
+    the nearest tone in the detected key: "flat" means off its own pitch, and
+    scoring against the scale would count every deliberate chromatic note as an
+    error. The key is still detected (and reported, since key-aware auto-tune is
+    what gets recommended), with ``notes_out_of_key`` alongside.
+    """
+    import librosa
+    import numpy as np
+
+    blank = {
+        "monophonic": False,
+        "notes_detected": 0,
+        "notes_off_target": 0,
+        "off_target_ratio": 0.0,
+        "median_deviation_cents": 0.0,
+        "max_deviation_cents": 0.0,
+        "notes_out_of_key": 0,
+        "key": None,
+        "key_source": None,
+        "voiced_ratio": 0.0,
+        "voiced_confidence": 0.0,
+        "analyzed_seconds": 0.0,
+    }
+    if y is None or len(y) == 0:
+        return blank
+
+    if sr > PITCH_ANALYSIS_SR:
+        y = librosa.resample(y, orig_sr=sr, target_sr=PITCH_ANALYSIS_SR)
+        sr = PITCH_ANALYSIS_SR
+    start, end = _loudest_window(y, sr, PITCH_ANALYSIS_WINDOW_S)
+    window = y[start:end]
+    blank["analyzed_seconds"] = round(len(window) / sr, 2)
+    if len(window) < sr // 2:
+        return blank
+
+    f0, voiced_flag, voiced_prob = librosa.pyin(
+        window, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr
+    )
+    voiced_ratio = float(np.mean(voiced_flag)) if len(voiced_flag) else 0.0
+    voiced_conf = float(np.mean(voiced_prob[voiced_flag])) if voiced_ratio > 0 else 0.0
+    out = dict(blank, voiced_ratio=round(voiced_ratio, 3), voiced_confidence=round(voiced_conf, 3))
+
+    # A chord or a full mix voices sparsely and with low confidence; pyin tracks
+    # one pitch at a time, so note segmentation there is meaningless rather than
+    # merely noisy. apply() refuses the same input and falls back to a whole-file
+    # shift, so declining to recommend it is the consistent answer.
+    if voiced_ratio < PITCH_MIN_VOICED_RATIO or voiced_conf < PITCH_MIN_VOICED_CONFIDENCE:
+        return out
+
+    notes = _segment_notes(f0, voiced_flag)
+    if not notes:
+        return dict(out, monophonic=True)
+
+    midis = np.array([m for _, _, m in notes], dtype=float)
+    deviations = np.abs(midis - np.round(midis)) * 100.0
+    off_target = int(np.sum(deviations > PITCH_OFF_TARGET_CENTS))
+
+    parsed = _parse_key(key) if key else None
+    if parsed is None:
+        tonic_pc, is_minor = _detect_key([int(round(m)) % 12 for m in midis])
+        key_source = "detected"
+    else:
+        tonic_pc, is_minor = parsed
+        key_source = "supplied"
+    scale_pcs = _scale_midi_set(tonic_pc, is_minor)
+    out_of_key = int(sum(1 for m in midis if int(round(m)) % 12 not in scale_pcs))
+
+    return dict(
+        out,
+        monophonic=True,
+        notes_detected=len(notes),
+        notes_off_target=off_target,
+        off_target_ratio=round(off_target / len(notes), 3),
+        median_deviation_cents=round(float(np.median(deviations)), 1),
+        max_deviation_cents=round(float(np.max(deviations)), 1),
+        notes_out_of_key=out_of_key,
+        key="{} {}".format(_NOTE_NAMES[tonic_pc], "minor" if is_minor else "major"),
+        key_source=key_source,
+    )
+
+
+# A click is a discontinuity: a sample-to-sample jump far outside anything the
+# music itself produces. The threshold is therefore relative to the track's own
+# loud transients (its 99th-percentile jump) rather than a fixed level, with an
+# absolute floor so near-silence cannot manufacture one out of dither.
+#
+# Note this is *not* the rule ``remove_artifacts.apply()`` uses. That one cuts at
+# ``percentile(100 - sensitivity * 20)``, which flags a fixed *fraction* of every
+# file by construction and so can never answer "is this one clean?".
+CLICK_RATIO = 8.0          # jump must stand this far above the 99th-percentile jump
+CLICK_MIN_JUMP = 0.02      # ...and be at least this large in absolute terms
+CLICK_GROUP_MS = 5.0       # jumps closer together than this are one click
+CLICK_HIGH_PER_MIN = 4.0   # a click a quarter-minute is a high-confidence card
+
+
+def detect_clicks(y, sr: int) -> dict:
+    """Count clicks/pops: isolated sample-to-sample jumps far outside the music.
+
+    ``recommended_sensitivity`` maps the measured flagged fraction back onto
+    ``remove_artifacts``'s own ``sensitivity`` param (whose threshold is the
+    ``100 - sensitivity * 20`` percentile) so a recommended card repairs roughly
+    what was measured instead of the top 10% of the file.
+    """
+    import numpy as np
+
+    duration = len(y) / sr if sr else 0.0
+    empty = {
+        "count": 0,
+        "per_minute": 0.0,
+        "flagged_ratio": 0.0,
+        "peak_jump": 0.0,
+        "baseline_jump": 0.0,
+        "recommended_sensitivity": 0.0,
+        "duration_seconds": round(duration, 2),
+    }
+    if len(y) < 2 or duration <= 0:
+        return empty
+
+    jumps = np.abs(np.diff(y))
+    baseline = float(np.percentile(jumps, 99.0))
+    threshold = max(baseline * CLICK_RATIO, CLICK_MIN_JUMP)
+    flagged = np.flatnonzero(jumps > threshold)
+    if flagged.size == 0:
+        return dict(empty, peak_jump=round(float(jumps.max()), 4),
+                    baseline_jump=round(baseline, 5))
+
+    gap = max(1, int(sr * CLICK_GROUP_MS / 1000.0))
+    count = 1 + int(np.sum(np.diff(flagged) > gap))
+    flagged_ratio = flagged.size / jumps.size
+    # x2 headroom: the percentile cut has to sit a little below the measured
+    # fraction to actually catch every flagged jump.
+    sensitivity = min(1.0, max(0.005, flagged_ratio * 100.0 * 2.0 / 20.0))
+    return {
+        "count": count,
+        "per_minute": round(count / (duration / 60.0), 2),
+        "flagged_ratio": round(flagged_ratio, 8),
+        "peak_jump": round(float(jumps.max()), 4),
+        "baseline_jump": round(baseline, 5),
+        "recommended_sensitivity": round(sensitivity, 4),
+        "duration_seconds": round(duration, 2),
+    }
+
+
 # --------------------------------------------------------------- analysis cache
 def perform_audio_analysis(file_path: str) -> dict:
     """Perform audio analysis using librosa (tempo, key, energy, spectral)."""

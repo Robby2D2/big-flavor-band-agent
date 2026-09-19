@@ -14,11 +14,17 @@ from typing import Optional
 try:
     from ..toolkit import AudioTool, register
     from ..region import resolve_region
-    from ..analysis import detect_hum, measure_integrated_lufs
+    from ..analysis import (
+        detect_clicks, detect_hum, detect_pitch_issues, measure_integrated_lufs,
+        PITCH_OFF_TARGET_CENTS, PITCH_RECOMMEND_RATIO,
+    )
 except ImportError:
     from toolkit import AudioTool, register
     from region import resolve_region
-    from analysis import detect_hum, measure_integrated_lufs
+    from analysis import (
+        detect_clicks, detect_hum, detect_pitch_issues, measure_integrated_lufs,
+        PITCH_OFF_TARGET_CENTS, PITCH_RECOMMEND_RATIO,
+    )
 
 logger = logging.getLogger("big-flavor-mcp")
 
@@ -45,6 +51,19 @@ def _generate_analysis_summary(recommendations: dict) -> str:
 
     if recommendations["eq"]["recommended"]:
         issues.append(f"{len(recommendations['eq']['adjustments'])} frequency imbalances detected")
+
+    if recommendations["clicks"]["recommended"]:
+        clicks = recommendations["clicks"]
+        issues.append(
+            f"{clicks['count']} click(s)/pop(s) at {clicks['per_minute']:.1f} per minute"
+        )
+
+    if recommendations["pitch"]["recommended"]:
+        pitch = recommendations["pitch"]
+        issues.append(
+            f"{pitch['notes_off_target']} of {pitch['notes_detected']} notes off pitch "
+            f"(median {pitch['median_deviation_cents']:.0f} cents, key {pitch['key']})"
+        )
 
     if recommendations["warnings"]:
         issues.extend(recommendations["warnings"])
@@ -145,6 +164,18 @@ class AnalyzeRecommend(AudioTool):
 
             # ===== 2b. DETECT MAINS HUM =====
             hum = detect_hum(y, sr)
+
+            # ===== 2c. DETECT CLICKS AND MEASURE TUNING (#89) =====
+            # Both were previously invisible to this pass, so auto-clean and the
+            # agent's chat tool never heard about a clicky edit or a flat take.
+            # Measured with the same detectors the per-tool analyze()s use.
+            clicks = detect_clicks(y, sr)
+            pitch = detect_pitch_issues(y, sr)
+            pitch_recommended = bool(
+                pitch["monophonic"]
+                and pitch["notes_detected"] > 0
+                and pitch["off_target_ratio"] > PITCH_RECOMMEND_RATIO
+            )
 
             # ===== 3. ANALYZE FREQUENCY BALANCE =====
             D = np.abs(librosa.stft(y))
@@ -276,6 +307,36 @@ class AnalyzeRecommend(AudioTool):
                         if hum["detected"] else "No mains hum detected"
                     )
                 },
+                "clicks": {
+                    "recommended": bool(clicks["count"] > 0),
+                    "count": clicks["count"],
+                    "per_minute": clicks["per_minute"],
+                    "recommended_sensitivity": clicks["recommended_sensitivity"],
+                    "reason": (
+                        f"{clicks['count']} click(s) detected "
+                        f"({clicks['per_minute']:.1f} per minute)"
+                        if clicks["count"] else "No clicks or pops detected"
+                    )
+                },
+                "pitch": {
+                    "recommended": pitch_recommended,
+                    "monophonic": pitch["monophonic"],
+                    "notes_detected": pitch["notes_detected"],
+                    "notes_off_target": pitch["notes_off_target"],
+                    "off_target_ratio": pitch["off_target_ratio"],
+                    "median_deviation_cents": pitch["median_deviation_cents"],
+                    "notes_out_of_key": pitch["notes_out_of_key"],
+                    "key": pitch["key"],
+                    "key_source": pitch["key_source"],
+                    "reason": (
+                        f"{pitch['notes_off_target']} of {pitch['notes_detected']} notes more "
+                        f"than {PITCH_OFF_TARGET_CENTS:.0f} cents off pitch"
+                        if pitch_recommended else
+                        "Tuning can't be measured on a polyphonic source"
+                        if not pitch["monophonic"] else
+                        "Notes sit in tune"
+                    )
+                },
                 "eq": {
                     "recommended": len(eq_recommendations) > 0,
                     "adjustments": eq_recommendations,
@@ -331,13 +392,17 @@ class AnalyzeRecommend(AudioTool):
                 "detected_music_end": recommendations["trim"]["detected_music_end"],
                 "region": {"start_s": start_s, "end_s": end_s},
                 "recommendations": recommendations,
+                # Numbered in the order auto_clean_recording actually chains
+                # them (trim → hum → clicks → noise → EQ → pitch → level).
                 "processing_order": [
                     "1. Trim non-musical content" if recommendations["trim"]["recommended"] else None,
                     "2. Remove mains hum" if recommendations["hum"]["recommended"] else None,
-                    "3. Reduce noise" if recommendations["noise_reduction"]["recommended"] else None,
-                    "4. Apply EQ corrections" if recommendations["eq"]["recommended"] else None,
-                    "5. Normalize with compression",
-                    "6. Apply mastering"
+                    "3. Remove clicks and pops" if recommendations["clicks"]["recommended"] else None,
+                    "4. Reduce noise" if recommendations["noise_reduction"]["recommended"] else None,
+                    "5. Apply EQ corrections" if recommendations["eq"]["recommended"] else None,
+                    "6. Pull notes to pitch" if recommendations["pitch"]["recommended"] else None,
+                    "7. Normalize with compression",
+                    "8. Apply mastering"
                 ],
                 "summary": _generate_analysis_summary(recommendations)
             }

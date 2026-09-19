@@ -7,10 +7,12 @@ try:
     from ..toolkit import AudioTool, Param, register
     from ..audio_io import _load_audio, _apply_per_channel, _write_audio
     from ..region import apply_to_region, blend_strength
+    from ..analysis import detect_clicks, load_for_analysis, CLICK_HIGH_PER_MIN
 except ImportError:
     from toolkit import AudioTool, Param, register
     from audio_io import _load_audio, _apply_per_channel, _write_audio
     from region import apply_to_region, blend_strength
+    from analysis import detect_clicks, load_for_analysis, CLICK_HIGH_PER_MIN
 
 logger = logging.getLogger("big-flavor-mcp")
 
@@ -26,6 +28,50 @@ class RemoveArtifacts(AudioTool):
         Param("sensitivity", float, default=0.5, minimum=0, maximum=1,
               label="Detection sensitivity", help="Detection sensitivity 0-1"),
     ]
+
+    async def analyze(
+        self,
+        ctx,
+        file_path: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        **params,
+    ) -> dict:
+        """Count clicks and pops without repairing them."""
+        try:
+            y, sr, _offset_s, _duration = load_for_analysis(file_path, start_s, end_s)
+            measured = detect_clicks(y, sr)
+            recommended = measured["count"] > 0
+            return {
+                "status": "success",
+                "tool": self.name,
+                "recommended": recommended,
+                # Not the declared 0.5: that cuts at the 90th-percentile jump,
+                # so apply() would interpolate a tenth of the file to repair
+                # three clicks. This is the sensitivity that targets what was
+                # actually measured.
+                "params": (
+                    {"sensitivity": measured["recommended_sensitivity"]} if recommended else {}
+                ),
+                "findings": measured,
+                # `worth=0` rather than a rate floor: the detector only fires on
+                # a jump eight times the track's own loudest transient, so one
+                # hit is already evidence — the rate only decides how loudly to
+                # say so.
+                "confidence": (
+                    self.confidence_tier(measured["per_minute"], high=CLICK_HIGH_PER_MIN, worth=0.0)
+                    if recommended else None
+                ),
+                "reason": (
+                    f"{measured['count']} click{'' if measured['count'] == 1 else 's'} "
+                    f"detected ({measured['per_minute']:.1f} per minute)"
+                    if recommended else "No clicks or pops detected"
+                ),
+                "region": {"start_s": start_s, "end_s": end_s},
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing artifacts: {e}")
+            return {"status": "error", "tool": self.name, "error": str(e)}
 
     async def apply(
         self,

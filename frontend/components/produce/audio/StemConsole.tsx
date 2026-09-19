@@ -36,6 +36,8 @@ interface StemConsoleProps {
   onTogglePlay: () => void;
   /** A fix chain is being rendered before playback can start. */
   renderingFixes: boolean;
+  /** What the transport is auditioning right now, when a fix card started it. */
+  audition: { fixTitle: string; rowName: string } | null;
   onSeek: (seconds: number) => void;
   separating: boolean;
   analyzed: boolean;
@@ -71,6 +73,7 @@ export default function StemConsole({
   maxDuration,
   onTogglePlay,
   renderingFixes,
+  audition,
   onSeek,
   separating,
   analyzed,
@@ -149,6 +152,14 @@ export default function StemConsole({
         </span>
         {renderingFixes && (
           <span className="flex-none font-mono text-[10px] text-attention">rendering fixes…</span>
+        )}
+        {/* One transport for the whole page, so it has to say which fix started
+            it — and that what you are hearing has the fixes applied. */}
+        {audition && !renderingFixes && (
+          <span className="flex-none text-[11px] text-signal truncate max-w-[16rem]">
+            Auditioning <span className="font-semibold">{audition.fixTitle}</span> on{' '}
+            <span className="capitalize">{audition.rowName}</span>, fixes on
+          </span>
         )}
         <div className="flex-1 min-w-0 relative">
           <WaveformView

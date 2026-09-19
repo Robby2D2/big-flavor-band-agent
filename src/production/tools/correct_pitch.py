@@ -9,6 +9,9 @@ try:
     from ..region import apply_to_region, resolve_region
     from ..analysis import (
         _segment_notes, _parse_key, _detect_key, _scale_midi_set, _snap_midi, _NOTE_NAMES,
+        detect_pitch_issues, load_for_analysis,
+        PITCH_MIN_VOICED_CONFIDENCE, PITCH_MIN_VOICED_RATIO,
+        PITCH_OFF_TARGET_CENTS, PITCH_RECOMMEND_RATIO,
     )
 except ImportError:
     from toolkit import AudioTool, Param, register
@@ -16,6 +19,9 @@ except ImportError:
     from region import apply_to_region, resolve_region
     from analysis import (
         _segment_notes, _parse_key, _detect_key, _scale_midi_set, _snap_midi, _NOTE_NAMES,
+        detect_pitch_issues, load_for_analysis,
+        PITCH_MIN_VOICED_CONFIDENCE, PITCH_MIN_VOICED_RATIO,
+        PITCH_OFF_TARGET_CENTS, PITCH_RECOMMEND_RATIO,
     )
 
 logger = logging.getLogger("big-flavor-mcp")
@@ -86,6 +92,74 @@ class CorrectPitch(AudioTool):
                    "tone in the key/scale"),
     ]
 
+    async def analyze(
+        self,
+        ctx,
+        file_path: str,
+        key: Optional[str] = None,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        **params,
+    ) -> dict:
+        """Measure how far the line's notes sit from their own pitch.
+
+        The same pyin → segment → key chain ``apply()`` runs, stopping short of
+        shifting anything. A source that doesn't look monophonic is reported as
+        such and never recommended: ``apply()`` refuses it too (it falls back to
+        a whole-file shift), so a card for it would promise a fix it can't do.
+        """
+        try:
+            y, sr, _offset_s, _duration = load_for_analysis(file_path, start_s, end_s)
+            measured = detect_pitch_issues(y, sr, key)
+            recommended = bool(
+                measured["monophonic"]
+                and measured["notes_detected"] > 0
+                and measured["off_target_ratio"] > PITCH_RECOMMEND_RATIO
+            )
+
+            if not measured["monophonic"]:
+                reason = (
+                    f"Not a single line (voiced {measured['voiced_ratio'] * 100:.0f}% of the "
+                    f"time at confidence {measured['voiced_confidence']:.2f}) — note-level "
+                    "tuning can't be measured here"
+                )
+            elif recommended:
+                reason = (
+                    f"{measured['notes_off_target']} of {measured['notes_detected']} notes "
+                    f"more than {PITCH_OFF_TARGET_CENTS:.0f} cents off pitch "
+                    f"(median {measured['median_deviation_cents']:.0f} cents), "
+                    f"key {measured['key']}"
+                )
+            else:
+                reason = (
+                    f"{measured['notes_detected']} notes, all within "
+                    f"{PITCH_OFF_TARGET_CENTS:.0f} cents of pitch"
+                )
+
+            return {
+                "status": "success",
+                "tool": self.name,
+                "recommended": recommended,
+                # The tool's declared defaults are an exact no-op (transpose by
+                # zero, auto-tune off), so a recommended card has to arrive
+                # carrying the mode and the key that were actually measured.
+                "params": (
+                    {"auto_tune": True, "key": measured["key"]} if recommended else {}
+                ),
+                "findings": measured,
+                "confidence": (
+                    self.confidence_tier(
+                        measured["off_target_ratio"], high=0.35, worth=PITCH_RECOMMEND_RATIO
+                    )
+                    if recommended else None
+                ),
+                "reason": reason,
+                "region": {"start_s": start_s, "end_s": end_s},
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing pitch: {e}")
+            return {"status": "error", "tool": self.name, "error": str(e)}
+
     async def apply(
         self,
         ctx,
@@ -136,8 +210,11 @@ class CorrectPitch(AudioTool):
 
             # Polyphony / non-monophonic guard: a chord or full mix yields sparse
             # and/or low-confidence voicing. Rather than garble the audio, fall
-            # back to the old whole-file shift and say so.
-            if voiced_ratio < 0.25 or voiced_conf < 0.5:
+            # back to the old whole-file shift and say so. The thresholds are
+            # shared with analyze() (and calibrated on real stems there) so the
+            # tool can never recommend a correction it then declines to make.
+            if (voiced_ratio < PITCH_MIN_VOICED_RATIO
+                    or voiced_conf < PITCH_MIN_VOICED_CONFIDENCE):
                 fallback = _apply_global_shift(
                     y_full, sr, semitones, file_path, output_path,
                     auto_tune_enabled=True, start_s=start_s, end_s=end_s,
