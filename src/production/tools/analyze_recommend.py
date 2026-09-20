@@ -392,8 +392,11 @@ class AnalyzeRecommend(AudioTool):
                 "detected_music_end": recommendations["trim"]["detected_music_end"],
                 "region": {"start_s": start_s, "end_s": end_s},
                 "recommendations": recommendations,
-                # Numbered in the order auto_clean_recording actually chains
-                # them (trim → hum → clicks → noise → EQ → pitch → level).
+                # A recommended order for whoever acts on this — the fix queue,
+                # the agent, a person — not a description of any pipeline.
+                # auto_clean_recording chains trim → hum → noise → EQ → pitch →
+                # tempo → normalize → master and has no clicks step at all, so
+                # step 3 is the one nothing in the pipeline executes.
                 "processing_order": [
                     "1. Trim non-musical content" if recommendations["trim"]["recommended"] else None,
                     "2. Remove mains hum" if recommendations["hum"]["recommended"] else None,

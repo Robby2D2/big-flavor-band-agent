@@ -48,8 +48,13 @@ class RemoveArtifacts(AudioTool):
                 "recommended": recommended,
                 # Not the declared 0.5: that cuts at the 90th-percentile jump,
                 # so apply() would interpolate a tenth of the file to repair
-                # three clicks. This is the sensitivity that targets what was
-                # actually measured.
+                # three clicks. This is as close to the measurement as the param
+                # can get — and usually that is its floor,
+                # CLICK_MIN_SENSITIVITY, which still means the top 0.1% of the
+                # file's jumps rather than the counted events. `sensitivity` is
+                # a percentile of every file by construction; a card targeting
+                # the measured clicks alone needs apply() to take positions, not
+                # a threshold (noted as a follow-up, deliberately not done here).
                 "params": (
                     {"sensitivity": measured["recommended_sensitivity"]} if recommended else {}
                 ),

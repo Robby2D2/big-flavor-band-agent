@@ -127,12 +127,13 @@ class CorrectPitch(AudioTool):
                 reason = (
                     f"{measured['notes_off_target']} of {measured['notes_detected']} notes "
                     f"more than {PITCH_OFF_TARGET_CENTS:.0f} cents off pitch "
-                    f"(median {measured['median_deviation_cents']:.0f} cents), "
-                    f"key {measured['key']}"
+                    f"(median {measured['median_deviation_cents']:.0f} cents) in the "
+                    f"loudest {measured['analyzed_seconds']:.0f}s, key {measured['key']}"
                 )
             else:
                 reason = (
-                    f"{measured['notes_detected']} notes, all within "
+                    f"{measured['notes_detected']} notes in the loudest "
+                    f"{measured['analyzed_seconds']:.0f}s, all within "
                     f"{PITCH_OFF_TARGET_CENTS:.0f} cents of pitch"
                 )
 
@@ -143,8 +144,18 @@ class CorrectPitch(AudioTool):
                 # The tool's declared defaults are an exact no-op (transpose by
                 # zero, auto-tune off), so a recommended card has to arrive
                 # carrying the mode and the key that were actually measured.
+                #
+                # `chromatic` is on because the deviation above is measured
+                # against each note's nearest *semitone*. Key-aware snapping
+                # (the param's default) aims at a different target, so it would
+                # move notes this analysis counted as in tune — the deliberate
+                # chromatic ones the semitone rule exists to leave alone. The
+                # detected key still ships: it is inert while chromatic is on,
+                # and it is the seed the Adjust drawer needs the moment a
+                # producer turns chromatic off.
                 "params": (
-                    {"auto_tune": True, "key": measured["key"]} if recommended else {}
+                    {"auto_tune": True, "chromatic": True, "key": measured["key"]}
+                    if recommended else {}
                 ),
                 "findings": measured,
                 "confidence": (

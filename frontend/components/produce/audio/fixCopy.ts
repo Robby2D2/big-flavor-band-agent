@@ -94,14 +94,22 @@ export function fixCopyFor(
         title,
         body: `Measured ${f.current_lufs ?? '—'} LUFS; ~${f.estimated_gain_db ?? '—'} dB to reach the target.`,
       };
-    case 'correct_pitch':
+    case 'correct_pitch': {
+      // The counts come from the loudest window, not the whole stem — pyin over
+      // a full file is far too slow to run per row. Saying so keeps "15 of 46"
+      // from reading as a whole-song tally.
+      const measuredIn = f.analyzed_seconds
+        ? `the loudest ${Math.round(f.analyzed_seconds)} seconds`
+        : 'the part measured';
       return {
         title,
         body:
-          `${f.notes_off_target ?? '—'} of ${f.notes_detected ?? '—'} notes sit noticeably ` +
-          `off pitch (median ${Math.round(f.median_deviation_cents ?? 0)} cents), in ` +
-          `${f.key ?? 'an undetermined key'}. Auto-tune is pre-set to nudge only those.`,
+          `${f.notes_off_target ?? '—'} of ${f.notes_detected ?? '—'} notes in ${measuredIn} sit ` +
+          `noticeably off pitch (median ${Math.round(f.median_deviation_cents ?? 0)} cents), in ` +
+          `${f.key ?? 'an undetermined key'}. Auto-tune is pre-set to pull every note onto its ` +
+          `nearest semitone — the same target these numbers are measured against.`,
       };
+    }
     case 'remove_artifacts': {
       const n = f.count ?? 0;
       // The same physical click lands in a stem *and* in the mix those stems

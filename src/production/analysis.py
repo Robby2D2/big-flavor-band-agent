@@ -592,15 +592,31 @@ CLICK_RATIO = 8.0          # jump must stand this far above the 99th-percentile 
 CLICK_MIN_JUMP = 0.02      # ...and be at least this large in absolute terms
 CLICK_GROUP_MS = 5.0       # jumps closer together than this are one click
 CLICK_HIGH_PER_MIN = 4.0   # a click a quarter-minute is a high-confidence card
+# The floor exists because sensitivity 0 cuts at percentile(100) — the single
+# largest jump in the file — and so flags nothing at all. 0.005 is therefore the
+# gentlest *usable* setting, not a measured one; see detect_clicks' docstring
+# for what it actually repairs.
+CLICK_MIN_SENSITIVITY = 0.005
 
 
 def detect_clicks(y, sr: int) -> dict:
     """Count clicks/pops: isolated sample-to-sample jumps far outside the music.
 
     ``recommended_sensitivity`` maps the measured flagged fraction back onto
-    ``remove_artifacts``'s own ``sensitivity`` param (whose threshold is the
-    ``100 - sensitivity * 20`` percentile) so a recommended card repairs roughly
-    what was measured instead of the top 10% of the file.
+    ``remove_artifacts``'s own ``sensitivity`` param, whose threshold is the
+    ``100 - sensitivity * 20`` percentile of the file's own jumps. That param
+    cannot express a targeted repair: it always cuts at a *fraction of the
+    file*, never at the events measured here. The mapping therefore only gets
+    ``apply()`` as close to the measurement as the param allows, and in practice
+    it bottoms out at ``CLICK_MIN_SENSITIVITY``, which is ``percentile(99.9)`` —
+    the top 0.1% of the file's jumps, each widened by apply()'s 1 ms kernel and
+    linearly interpolated, before its unconditional Savitzky-Golay pass over the
+    whole channel. Measured on the 4-minute 44.1 kHz ``other`` stem behind this
+    work: 41 clicks counted here, 10,927 samples over that threshold, 78,597
+    after the kernel widens them — 0.7% of the channel. The value is still two
+    orders of magnitude gentler than the declared 0.5 (the top 10% of every
+    file), but read it as "the gentlest setting this param has", not as
+    "repairs exactly what was measured".
     """
     import numpy as np
 
@@ -630,7 +646,9 @@ def detect_clicks(y, sr: int) -> dict:
     flagged_ratio = flagged.size / jumps.size
     # x2 headroom: the percentile cut has to sit a little below the measured
     # fraction to actually catch every flagged jump.
-    sensitivity = min(1.0, max(0.005, flagged_ratio * 100.0 * 2.0 / 20.0))
+    sensitivity = min(
+        1.0, max(CLICK_MIN_SENSITIVITY, flagged_ratio * 100.0 * 2.0 / 20.0)
+    )
     return {
         "count": count,
         "per_minute": round(count / (duration / 60.0), 2),

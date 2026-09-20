@@ -10,7 +10,8 @@ corners — no database, no LLM, no catalog file:
     confidence and the auto-tune params pre-filled,
   * a polyphonic source is refused rather than measured (pyin tracks one pitch),
   * a clean file reports no clicks, and one with an injected discontinuity
-    reports it with a sensitivity tuned to what was measured.
+    reports it with the gentlest sensitivity the param can express (its floor —
+    which is still a percentile of the whole file, not the events counted).
 """
 
 import sys
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.production.analysis import (  # noqa: E402
     CLICK_MIN_JUMP,
+    CLICK_MIN_SENSITIVITY,
     PITCH_OFF_TARGET_CENTS,
     detect_clicks,
     detect_pitch_issues,
@@ -124,6 +126,29 @@ async def test_analyze_recommends_a_detuned_line_with_prefilled_params(ctx, tmp_
     assert result["findings"]["key_source"] == "detected", result
 
 
+async def test_recommended_params_snap_to_the_target_the_deviation_was_measured_against(
+    ctx, tmp_path
+):
+    """The measurement scores each note against its nearest *semitone*, so the
+    recommendation has to ask apply() for the same thing.
+
+    Left key-aware (the param default), apply() would aim at the nearest
+    in-scale tone instead and move notes this analysis counted as in tune —
+    precisely the deliberate chromatic notes the semitone rule exists to spare.
+    """
+    # An F# in a C major line: in tune with itself, out of the detected scale.
+    path = write(tmp_path, "chromatic.wav", tone_sequence([60, 62, 64, 66, 67, 65, 64, 62]))
+    result = await REGISTRY["correct_pitch"].analyze(ctx, path)
+
+    # In tune against its own pitch, whatever the key says.
+    assert result["findings"]["notes_off_target"] == 0, result
+    assert result["findings"]["notes_out_of_key"] >= 1, result
+
+    detuned = write(tmp_path, "sharp2.wav", tone_sequence(IN_KEY_LINE, cents_off=40.0))
+    recommended = await REGISTRY["correct_pitch"].analyze(ctx, detuned)
+    assert recommended["params"]["chromatic"] is True, recommended
+
+
 async def test_analyze_stays_quiet_on_an_in_tune_line(ctx, tmp_path):
     path = write(tmp_path, "tuned.wav", tone_sequence(IN_KEY_LINE))
     result = await REGISTRY["correct_pitch"].analyze(ctx, path)
@@ -190,7 +215,15 @@ def test_three_clicks_are_counted_separately():
     assert detect_clicks(y, SR)["count"] == 3, detect_clicks(y, SR)
 
 
-async def test_analyze_recommends_a_sensitivity_that_matches_what_it_measured(ctx, tmp_path):
+async def test_analyze_recommends_the_gentlest_sensitivity_the_param_allows(ctx, tmp_path):
+    """A handful of clicks bottoms the param out at its floor — and that is as
+    close to the measurement as `sensitivity` can get.
+
+    It is *not* a repair of the measured events: the floor is
+    ``percentile(99.9)``, the top 0.1% of the file's jumps. The point of the
+    recommendation is that it is two orders of magnitude gentler than the
+    declared 0.5 (the top 10% of every file), not that it is targeted.
+    """
     y = clean_music()
     y[int(2.0 * SR)] += 0.9
     path = write(tmp_path, "clicky.wav", y)
@@ -199,9 +232,20 @@ async def test_analyze_recommends_a_sensitivity_that_matches_what_it_measured(ct
     assert result["recommended"] is True, result
     assert result["findings"]["count"] >= 1, result
     assert result["confidence"] in ("high", "worth_a_listen"), result
-    # Nowhere near the declared 0.5, which would cut at the 90th-percentile
-    # jump and interpolate a tenth of the file to repair one click.
-    assert 0 < result["params"]["sensitivity"] < 0.1, result
+    assert result["params"]["sensitivity"] == CLICK_MIN_SENSITIVITY, result
+
+
+def test_recommended_sensitivity_never_falls_below_its_usable_floor():
+    """Sensitivity 0 cuts at percentile(100) and so flags nothing, which is why
+    the floor exists at all. A single click in six seconds maps to a raw value
+    well under it."""
+    y = clean_music()
+    y[int(2.0 * SR)] += 0.9
+    measured = detect_clicks(y, SR)
+
+    raw = measured["flagged_ratio"] * 100.0 * 2.0 / 20.0
+    assert raw < CLICK_MIN_SENSITIVITY, measured
+    assert measured["recommended_sensitivity"] == CLICK_MIN_SENSITIVITY, measured
 
 
 async def test_analyze_stays_quiet_on_clean_audio(ctx, tmp_path):

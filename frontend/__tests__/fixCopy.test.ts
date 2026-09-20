@@ -36,12 +36,23 @@ describe('fix card copy', () => {
   it('puts the measured numbers in a recommended pitch card', () => {
     const body = fixCopyFor(
       'correct_pitch',
-      { notes_detected: 46, notes_off_target: 17, median_deviation_cents: 30.4, key: 'A minor' },
+      {
+        notes_detected: 46,
+        notes_off_target: 17,
+        median_deviation_cents: 30.4,
+        key: 'A minor',
+        analyzed_seconds: 20,
+      },
       'measured'
     ).body;
     expect(body).toContain('17 of 46 notes');
     expect(body).toContain('30 cents');
     expect(body).toContain('A minor');
+    // The counts come from the loudest window, not the whole stem.
+    expect(body).toContain('loudest 20 seconds');
+    // And the card must promise the target analyze actually measured against
+    // (nearest semitone), not key-aware snapping.
+    expect(body).toContain('nearest semitone');
   });
 
   it('says which scope a clicks card is repairing', () => {

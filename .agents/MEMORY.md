@@ -39,9 +39,15 @@ was running them without the write. `detect_pitch_issues()` / `detect_clicks()` 
   `percentile(100 - sensitivity * 20)` — at the declared 0.5 that is the top *10% of every file*, by
   construction, so it can never say whether a file is clean. `analyze()` uses an absolute outlier
   rule instead (a jump ≥8x the track's own 99th-percentile jump, grouped into events) and then maps
-  its measured flagged fraction back onto a `sensitivity`, so a recommended card repairs ~what was
-  measured. On a real Demucs `other` stem: 41 clicks, 9.9/min, sensitivity 0.005 — not 0.5.
-  `apply()`'s threshold itself is left alone and flagged in the PR as worth a follow-up.
+  its measured flagged fraction back onto a `sensitivity`. On a real Demucs
+  `other` stem: 41 clicks, 9.9/min, sensitivity 0.005 — not 0.5. **But that fixes detection only,
+  and QA was right to press on the wording:** `sensitivity` is a percentile of the whole file
+  whatever you pass it, and the recommendation almost always lands on its floor
+  (`CLICK_MIN_SENSITIVITY = 0.005` → `percentile(99.9)`). Measured on that same stem: 10,927
+  samples over the threshold and **78,597** once apply()'s 1 ms kernel widens them — 0.7% of the
+  channel, to repair 41 events — plus an unconditional savgol pass over the whole channel. Read a recommended card as *the gentlest setting this param has*, not "repairs
+  what was measured". A genuinely targeted repair needs `apply()` to take sample **positions**
+  rather than a threshold; `apply()` is left alone and that is the follow-up.
 - **The monophony gate had to move, and that was the real find.** `apply()` refused any source
   voicing under 0.5 mean pyin confidence. Measured across four songs, *every* real vocal stem sits
   at 0.21-0.24 — pyin's `voiced_prob` comes out of Viterbi-decoded candidates and is nowhere near
@@ -53,7 +59,12 @@ was running them without the write. `detect_pitch_issues()` / `detect_clicks()` 
 - **Deviation is scored against the nearest semitone, not the nearest in-scale note.** "Flat" means
   off its own pitch; scoring against the key counts every deliberate chromatic note as an error. The
   key is still detected and shipped as the recommended `key` param. 35 cents is the line — at 25
-  cents all four test vocals tripped it, which is just normal expressive singing.
+  cents all four test vocals tripped it, which is just normal expressive singing. **QA caught the
+  other half of this:** the recommended params left `chromatic` at its default `false`, so `apply()`
+  aimed at the in-scale tone while `analyze()` scored against the semitone — on a real vocal stem
+  that moved 43 of 46 notes, 6 of them notes the card had just counted as in tune. `chromatic: true`
+  now ships with the recommendation. Measure and repair have to aim at the same target; it is not
+  enough for each half to be defensible on its own.
 - **Cost, the risk the issue called out:** pyin over a whole stem would have been ruinous, so it runs
   on the loudest 20s window at 22.05 kHz, and only on rows where a single line is plausible
   (`isPitchAnalyzable`: the vocal stem, or a tagger-labelled single-line instrument — never the full
@@ -70,7 +81,10 @@ it selects the row, turns the fix on and plays; ON/OFF while auditioning re-rend
 the same playhead. Keyed on *which* fixes are enabled rather than their params, so the Adjust
 drawer's sliders can't kick off a render per keystroke. `previewSingleFix` deleted.
 
-12 new pytest cases, 20 new vitest (155 total green), lint/tsc/build clean, backend boots.
+14 new pytest cases, 20 new vitest (155 total green), lint/tsc/build clean, backend boots.
+Two of those pytest cases came out of the QA round: one pins the recommended params to the
+same snap target the deviation is measured against, the other pins the sensitivity floor and
+says in its name that the floor is what it is testing.
 
 ---
 ### 2026-09-18 — Every DSP tool is addable by hand, not just the four with detectors
