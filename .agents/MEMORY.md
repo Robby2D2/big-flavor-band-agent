@@ -26,6 +26,24 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-21 — Released v0.17.2 (patch bump — the pitch gate scope fix, plus a release-loop fix)
+Tagged `main` at `68febac` as **v0.17.2**. Patch rather than minor: the range is PR #92 (issue #91 —
+one shared monophony measurement across analyze/apply, and a fix-that-fell-short now reported on a
+fresh save, not just a cached one) and PR #93 (agent config only). Every commit is `fix:`-prefixed,
+#91 carries no `enhancement` label, and neither PR opens new capability — both close gaps in work
+already shipped. Issue #91 notified.
+
+Sanity gate ran in full: `bigflavor-backend` restarted to `Application startup complete` with no
+errors in the log, and `npm run build` compiled the frontend clean.
+
+**First release cut with Step 2's release-chore filter in place** (PR #93, merged minutes before this
+run). The raw range held 6 commits; the v0.17.1 memory chore was excluded, giving 5 releasable — so
+the count reflected real work rather than the previous release's own paperwork. Unlike v0.17.1, this
+tag *precedes* the deploy: a human deploys immediately after, so the "ready to deploy" wording on
+#91 is accurate as posted.
+
+---
+
 ### 2026-09-21 — The pitch gate was two scopes wearing one constant (issue #91)
 #89 moved the monophony thresholds into shared constants so the tool "cannot recommend a correction
 it would then decline to make". It still could. `analyze()` measured the loudest 20 s window at
