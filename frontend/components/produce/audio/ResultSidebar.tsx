@@ -4,10 +4,12 @@ import { useState } from 'react';
 
 import type { FixNotice } from '@/hooks/useAcceptJob';
 
+import FixNoticePanel from './FixNoticePanel';
+
 interface ResultSidebarProps {
   enabledCount: number;
   totalCount: number;
-  onAcceptAll: () => Promise<{ notices?: FixNotice[] }>;
+  onAcceptAll: () => Promise<void>;
   onPreviewFull: () => Promise<{ path: string; notices?: FixNotice[] }>;
   onAccepted: () => void;
   /** A render is already running — starting another would only queue behind it. */
@@ -31,7 +33,10 @@ export default function ResultSidebar({
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState(false);
-  const [notices, setNotices] = useState<FixNotice[]>([]);
+  // Only a preview reports here. A save's render finishes long after this
+  // component has gone — selecting the version it produced clears the queue
+  // that renders this sidebar — so the page shows what a save had to say.
+  const [previewNotices, setPreviewNotices] = useState<FixNotice[]>([]);
 
   const handlePreview = async () => {
     setBusy('preview');
@@ -39,7 +44,7 @@ export default function ResultSidebar({
     try {
       const { path, notices: raised } = await onPreviewFull();
       setPreviewPath(path);
-      setNotices(raised ?? []);
+      setPreviewNotices(raised ?? []);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -51,8 +56,7 @@ export default function ResultSidebar({
     setBusy('accept');
     setError(null);
     try {
-      const { notices: raised } = await onAcceptAll();
-      setNotices(raised ?? []);
+      await onAcceptAll();
       setAccepted(true);
       onAccepted();
     } catch (err) {
@@ -98,23 +102,7 @@ export default function ResultSidebar({
 
       {error && <p className="text-xs text-red-400">{error}</p>}
 
-      {notices.length > 0 && (
-        <div className="bg-attention/10 border border-attention/30 rounded-xl p-3.5">
-          <p className="text-sm text-attention font-semibold">
-            {notices.length === 1 ? 'One fix did less than it said' : `${notices.length} fixes did less than they said`}
-          </p>
-          <ul className="mt-2 flex flex-col gap-2">
-            {notices.map((n) => (
-              <li key={`${n.scope}:${n.tool}`} className="text-xs text-text/60">
-                <span className="font-mono text-[10.5px] uppercase tracking-wider text-text/40">
-                  {n.scope}
-                </span>
-                <span className="block mt-0.5">{n.reason}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <FixNoticePanel notices={previewNotices} />
 
       {previewPath && (
         <div className="bg-raised border border-white/8 rounded-xl p-3.5">

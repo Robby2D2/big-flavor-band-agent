@@ -63,13 +63,27 @@ it cannot quietly stop covering anything. Checked it fails against the old code 
 **A second, quieter half:** `_chain_apply_tools` read tool results only for `status`, so
 `fallback_reason` had **no route to the UI at all** — the silent-unchanged-audio outcome was
 unreportable by construction. Chains now return notices, stored with the *render* (Start analysis
-warm-renders nearly everything, so a reused render must be as honest as a fresh one) and shown in
-`ResultSidebar`. And `isPitchAnalyzable` read only `instruments[0]`, so a fiddle tagged second inside
-`other` was skipped though the comment claimed otherwise; it reads all tags now.
+warm-renders nearly everything, so a reused render must be as honest as a fresh one). And
+`isPitchAnalyzable` read only `instruments[0]`, so a fiddle tagged second inside `other` was skipped
+though the comment claimed otherwise; it reads all tags now.
 
-Backend boots, 38 pytest green on the touched files, 157 vitest (+2), lint at zero warnings, build
+**Where a notice is shown turned out to be the whole trick** (QA round 2). Reading notices off the
+response to "Accept all & save" works only for a cache hit: a fresh save is a background job, and
+`accept_jobs.start()` seeds the dict `"notices": []`, so the panel rendered empty — on exactly the
+case that raises notices, since hand-adding a `correct_pitch` card changes the fingerprint and
+therefore always misses the warm render. Moving the read to the status poll is necessary but not
+sufficient: the poll that completes a save selects the new version, which **clears the fix queue and
+unmounts the sidebar the notice was being rendered in**. So a save reports on the *page* (under the
+versions table, via a shared `FixNoticePanel`), and only a preview — which waits for its own render
+— reports in `ResultSidebar`. `useAcceptJob` holds the notices across the dismiss that same poll
+performs, and drops them when the next render starts. Worth remembering generally: in this console,
+a save deliberately throws away the queue that started it, so anything a save has to say has to
+outlive it.
+
+Backend boots, 38 pytest green on the touched files, 164 vitest (+9), lint at zero warnings, build
 clean. `tests/test_editing_tools.py` fails on `input()` — pre-existing, one of the ad-hoc scripts
-TESTING.md documents.
+TESTING.md documents. Still not seen on screen: the produce console is behind an editor Google
+session, so the notice panel is covered by component tests and types rather than by eyes.
 
 ---
 

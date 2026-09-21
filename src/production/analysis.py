@@ -8,7 +8,7 @@ through ``big_flavor_mcp``'s re-exports, so those imports keep resolving.
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("big-flavor-mcp")
 
@@ -518,7 +518,7 @@ def _loudest_window(y, sr: int, window_s: float):
     return start, min(len(y), start + want)
 
 
-def measure_monophony(y, sr: int):
+def measure_monophony(y, sr: int) -> tuple[dict, Any, Any]:
     """The one monophony measurement both halves of ``correct_pitch`` use.
 
     Returns ``(stats, f0, voiced_flag)`` for the canonical scope: the loudest

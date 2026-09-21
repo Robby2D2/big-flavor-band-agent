@@ -602,9 +602,10 @@ export default function AudioProcessingTab({
               enabledCount={queue.enabledCount}
               totalCount={queue.fixes.length}
               onAcceptAll={async () => {
-                const job = await queue.acceptAll(false);
+                // A save's notices are not in this response — the render has
+                // barely begun. The page reports them when the job lands.
+                await queue.acceptAll(false);
                 onRenderStarted();
-                return job;
               }}
               onPreviewFull={async () => {
                 const job = await queue.acceptAll(true);
