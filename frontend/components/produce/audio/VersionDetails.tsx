@@ -38,9 +38,12 @@ interface VersionDetailsProps {
   onRename: () => void;
   onDelete: () => void;
   onStartAnalysis: () => void;
+  /** Separate this version into stems without measuring anything. */
+  onSeparateStems: () => void;
   analyzing: boolean;
+  separating?: boolean;
   analysisNote: string | null;
-  /** The song already has stems, so this pass only measures them. */
+  /** This version already has stems, so an analysis pass only measures them. */
   hasStems: boolean;
 }
 
@@ -63,7 +66,9 @@ export default function VersionDetails({
   onRename,
   onDelete,
   onStartAnalysis,
+  onSeparateStems,
   analyzing,
+  separating = false,
   analysisNote,
   hasStems,
 }: VersionDetailsProps) {
@@ -185,13 +190,31 @@ export default function VersionDetails({
           </button>
         </div>
 
-        <button
-          onClick={onStartAnalysis}
-          disabled={analyzing || renderInProgress}
-          className="px-4 py-2 bg-signal text-canvas font-semibold text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {analyzing ? 'Analyzing…' : 'Start analysis'}
-        </button>
+        {/* The two jobs, side by side: making the parts, and measuring them.
+            Separating used to be reachable only from inside the console, which
+            meant a version with no stems could not be separated without
+            committing to a full measuring pass first. */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onSeparateStems}
+            disabled={analyzing || separating || renderInProgress}
+            title={
+              hasStems
+                ? 'Separate this version again, replacing the stems it has'
+                : 'Separate this version into stems, without measuring them'
+            }
+            className="px-3 py-2 border border-white/14 text-text/75 font-semibold text-sm rounded-lg hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {separating ? 'Separating…' : 'Separate stems'}
+          </button>
+          <button
+            onClick={onStartAnalysis}
+            disabled={analyzing || separating || renderInProgress}
+            className="px-4 py-2 bg-signal text-canvas font-semibold text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {analyzing ? 'Analyzing…' : 'Start analysis'}
+          </button>
+        </div>
       </div>
 
       {renderInProgress ? (
@@ -201,12 +224,12 @@ export default function VersionDetails({
       ) : analysisNote ? (
         <p className="font-mono text-xs text-text/40">{analysisNote}</p>
       ) : (
-        /* Says which of the two jobs this press will actually do: with stems
-           already on disk it never re-separates — that's Re-separate's job. */
+        /* Says which of the two jobs a press will actually do: with stems already
+           on disk, analysis never re-separates — that is Separate stems' job. */
         <p className="font-mono text-xs text-text/35">
           {hasStems
-            ? 'measures the stems you already have · use Re-separate below to make new ones'
-            : 'separates stems, then measures each · takes a minute or two'}
+            ? 'analysis measures the stems this version already has · separate stems makes a fresh set'
+            : 'this version has no stems yet · either button separates it first · takes a minute or two'}
         </p>
       )}
     </div>

@@ -26,6 +26,40 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-21 — A save keeps the stems it just rendered, and separating is its own button
+Follow-on from the version-scoping fix: once stems belong to a version, saving fixes produced a
+version with *no* stems, so the producer was told to run Demucs on a mix that had just been
+assembled from stems — stacking a second generation of separation artifacts on the first.
+
+The parts were already on disk. `_render_mix` writes per-stem audio under
+`produced/<song>/accept_fixes/<ms>/` and keeps it; **15 GB across 33 runs**, only 8 of which became
+versions, and nothing cleans them up. So the storage was already being spent and simply not used.
+
+- **`remix_inputs` was the missing link.** It is the complete part list for the mix, and the empty-
+  chain case makes it so: `_chain_apply_tools` returns its *source path untouched, writing nothing*
+  when a stem has no fixes. So fixed stems point at new files and untouched ones at their existing
+  stem file — authoritative either way. `_render_mix` now returns it, and `_finalize_save` registers
+  it as a stem set against the new version.
+- **Every part is copied**, untouched ones included. They arrive pointing at the *previous* set's
+  file, and two sets sharing one path is a trap — re-separating or cleaning the older set would
+  hollow out the newer one. Costs ~59 MB per stem; a dangling row costs the producer their stems.
+- **The render cache had to remember the parts too** (`cached_stems`), exactly as it already
+  remembers notices: a save that reuses a warm render never ran the DSP, so without it the stems
+  would sit on disk unknown to the request saving them.
+- **Migration 17 adds `origin`**: NULL/'separated' for Demucs, `'fixes'`, or `'fixes_premaster'`
+  when master-scoped fixes ran after the remix — those stems sum to the pre-master mix, not the
+  saved file, and saying so beats letting a producer wonder why the parts don't add up.
+- **Keeping is best-effort and cannot fail a save.** Found the hard way: `save_candidate_version`
+  returns `{"version_id": …}`, not `{"id": …}`, and my `version["id"]` raised *outside* the helper's
+  try — turning a good save into a 500 and leaving an orphan version row. The call is guarded now.
+
+**Separate stems** moved out of the console and next to Start analysis, renamed, and is now its own
+action (`separateStems`, with its own `separating` flag) rather than always dragging a measuring
+pass behind it. A version with no stems can be separated and simply looked at.
+
+**Worth knowing for later:** `song_stem_sets.source_version_id` is **ON DELETE SET NULL**, so
+deleting a version orphans its kept stems — invisible under version scoping, and ~350 MB a time.
+That interaction is now live and unhandled.
 ### 2026-09-21 — Released v0.17.3 (patch bump — the version-scoped stems fix, tagging code already live)
 Tagged `main` at `1da724e` as **v0.17.3**. Patch rather than minor: the range is PR #94 alone (plus
 its merge) — the produce console showed the song's *newest* stems instead of the selected version's,

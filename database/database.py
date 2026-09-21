@@ -953,6 +953,15 @@ class DatabaseManager:
             rows = await conn.fetch(query, song_id)
         return [dict(row) for row in rows]
 
+    async def set_stem_set_origin(self, stem_set_id: int, origin: str) -> None:
+        """Record how a stem set's audio was made (see migration 17)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE song_stem_sets SET origin = $2 WHERE id = $1",
+                stem_set_id,
+                origin,
+            )
+
     async def add_stem(
         self, stem_set_id: int, name: str, path: str
     ) -> Dict[str, Any]:
