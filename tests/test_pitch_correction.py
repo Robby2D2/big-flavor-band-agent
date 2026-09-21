@@ -7,7 +7,8 @@ among otherwise-correct notes) and a polyphonic chord, so they exercise:
     the correct notes stay materially unchanged) — unlike the old whole-file
     median shift,
   * the correction_strength (0 = no-op) convention,
-  * the polyphony guard (fall back to a whole-file shift and say so),
+  * the polyphony guard (a chord is returned unharmed; material with no
+    single line to follow falls back to a whole-file shift and says so),
   * and the unchanged manual `semitones`-only whole-file mode.
 
 No database, LLM, or real catalog file is touched.
@@ -195,9 +196,18 @@ async def test_manual_semitones_only_shifts_whole_file(server, tmp_path):
         assert abs(got - (base + 2)) < 0.4, f"note {i}: {got} vs {base + 2}"
 
 
-async def test_polyphonic_input_falls_back_not_garbled(server, tmp_path):
-    """A sustained chord (polyphonic) must not be silently garbled: the tool
-    reports a global-shift fallback so the caller can tell what happened."""
+async def test_polyphonic_input_is_not_garbled(server, tmp_path):
+    """A sustained chord must come back out unharmed.
+
+    It no longer takes the ``global_fallback`` branch: the monophony gate was
+    recalibrated on real stems in #89 (pyin's voiced_prob sits at 0.21-0.24 even
+    on a clean solo vocal, so the old 0.5 floor rejected every real vocal stem
+    and auto-tune had never once run per-note on one). Stacked pure sines are
+    unnaturally clean and now clear that gate — but pyin reports the chord as its
+    root, a single in-tune note, so nothing is shifted and the audio is returned
+    intact. That is the property this test is really about, so it is what it
+    asserts; real polyphonic stems measure 0.05-0.17 and still fall back.
+    """
     in_path = tmp_path / "chord.wav"
     out_path = tmp_path / "out.wav"
 
@@ -208,6 +218,26 @@ async def test_polyphonic_input_falls_back_not_garbled(server, tmp_path):
         chord += np.sin(2 * np.pi * midi_to_hz(m) * t)
     chord = (chord / np.max(np.abs(chord)) * 0.8).astype(np.float32)
     sf.write(str(in_path), chord, SR)
+
+    result = await server.correct_pitch(
+        str(in_path), semitones=0, auto_tune=True, output_path=str(out_path)
+    )
+    assert result["status"] == "success", result
+    assert result.get("notes_corrected", 0) == 0, result
+    assert Path(out_path).exists()
+
+    out, _ = sf.read(str(out_path))
+    assert np.max(np.abs(chord[: len(out)] - out[: len(chord)])) < 1e-3
+
+
+async def test_unpitched_input_still_falls_back_and_says_so(server, tmp_path):
+    """Material with no single line to follow takes the whole-file shift and
+    reports it, so a caller can tell note-level correction did not happen."""
+    in_path = tmp_path / "noise.wav"
+    out_path = tmp_path / "out.wav"
+
+    rng = np.random.default_rng(7)
+    sf.write(str(in_path), (rng.standard_normal(int(4.0 * SR)) * 0.3).astype(np.float32), SR)
 
     result = await server.correct_pitch(
         str(in_path), semitones=0, auto_tune=True, output_path=str(out_path)

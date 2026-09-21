@@ -74,14 +74,55 @@ export interface FixEntry {
   source: 'analysis' | 'manual';
 }
 
-// Tools whose analyze() returns real measurements (Phase B) — the only ones
-// worth *calling during analysis*; the rest always report `recommended: false`
-// and would just be wasted requests (src/production/toolkit.py's base analyze()
+// Tools whose analyze() returns real measurements — the only ones worth
+// *calling during analysis*; the rest always report `recommended: false` and
+// would just be wasted requests (src/production/toolkit.py's base analyze()
 // stub). This is an analysis concern only: what a producer may add by hand is
 // decided by ADDABLE_SCOPE below, since "no detector" is no reason to hide a
 // fix somebody can hear.
-const PER_STEM_TOOLS = ['reduce_noise', 'apply_eq', 'remove_hum', 'correct_beats'] as const;
-const MASTER_TOOLS = ['trim_silence', 'apply_eq', 'normalize_audio', 'apply_mastering'] as const;
+const PER_STEM_TOOLS = [
+  'reduce_noise', 'apply_eq', 'remove_hum', 'correct_beats', 'remove_artifacts',
+] as const;
+const MASTER_TOOLS = [
+  'trim_silence', 'apply_eq', 'normalize_audio', 'apply_mastering', 'remove_artifacts',
+] as const;
+
+// Demucs source names whose stem is a single line. pyin tracks one pitch at a
+// time, so note detection means nothing anywhere else — and it is the most
+// expensive measurement in the pass, so it is worth not spending it.
+// `bass` is deliberately out: the detector's floor is C2 (~65 Hz), and a real
+// bass stem voiced 2% of the analysis window against a vocal stem's 79%.
+const MONOPHONIC_SOURCES = new Set(['vocals']);
+
+// ...and the tagger labels (src/production/instrument_tagging.py's vocabulary)
+// that name a single-line instrument, so a fiddle or a harmonica sitting inside
+// `other` is measured too.
+const MONOPHONIC_INSTRUMENTS = new Set([
+  'Vocal', 'Male vocal', 'Female vocal', 'Whistling', 'Humming',
+  'Fiddle / violin', 'Cello', 'Harmonica', 'Trumpet', 'Trombone',
+  'Saxophone', 'Flute', 'Clarinet', 'French horn',
+]);
+
+/**
+ * Whether a console row is worth measuring for tuning.
+ *
+ * The full mix never is — it is polyphonic by definition. The backend refuses
+ * a polyphonic source on its own (it can't segment notes out of a chord), so
+ * this is about not spending a pyin pass to be told that.
+ */
+export function isPitchAnalyzable(stem: StemInfo): boolean {
+  if (stem.id === FULL_MIX_STEM_ID) return false;
+  if (MONOPHONIC_SOURCES.has(stem.name)) return true;
+  const strongest = stem.instruments[0];
+  return !!strongest && MONOPHONIC_INSTRUMENTS.has(strongest.label);
+}
+
+/** The tools to measure on one stem row. */
+function analysisToolsFor(stem: StemInfo): string[] {
+  return isPitchAnalyzable(stem)
+    ? [...PER_STEM_TOOLS, 'correct_pitch']
+    : [...PER_STEM_TOOLS];
+}
 
 // Where a tool may be added by hand. Every non-hidden single-file tool the
 // registry reports is offered on both rows by default — add a tool to the
@@ -120,14 +161,24 @@ const MANUAL_PARAM_OVERRIDES: Record<string, Record<string, any>> = {
   correct_pitch: { auto_tune: true },
 };
 
-/** A tool's declared defaults, as the starting params for a producer-added fix. */
-function defaultParamsFor(tool: ToolInfo | undefined): Record<string, any> {
+/**
+ * A tool's declared defaults, as the starting params for a producer-added fix.
+ *
+ * `measured` carries anything the analysis pass already knows about this row —
+ * today only the detected tempo, which is what keeps a hand-added `match_tempo`
+ * card from arriving in the "needs setup" state. It wins over the declared
+ * default, because a number measured from this very song beats a generic one.
+ */
+function defaultParamsFor(
+  tool: ToolInfo | undefined,
+  measured: Record<string, any> = {}
+): Record<string, any> {
   const out: Record<string, any> = {};
   for (const p of tool?.params ?? []) {
     if (NON_TUNABLE_PARAMS.has(p.name) || p.default == null) continue;
     out[p.name] = p.default;
   }
-  return { ...out, ...(tool ? MANUAL_PARAM_OVERRIDES[tool.name] ?? {} : {}) };
+  return { ...out, ...(tool ? MANUAL_PARAM_OVERRIDES[tool.name] ?? {} : {}), ...measured };
 }
 
 /**
@@ -271,12 +322,78 @@ function mergeStemTags(current: StemInfo[], incoming: StemInfo[]): StemInfo[] {
   return changed ? merged : current;
 }
 
-/** Run `jobs` a few at a time, keeping only the fixes that came back. */
+/**
+ * One tool's verdict on one console row.
+ *
+ * Kept whole rather than reduced to a fix on the spot, because a *not*
+ * recommended result still carries measurements worth having — `correct_beats`
+ * reports the song's tempo either way, and that is what a hand-added tempo card
+ * starts from.
+ */
+interface AnalyzeResult {
+  recommended?: boolean;
+  confidence?: Confidence;
+  reason?: string;
+  /** Open-shaped by design: every tool measures its own thing. */
+  findings?: Record<string, any>;
+  params?: Record<string, any>;
+}
+
+interface AnalyzeOutcome {
+  rowId: number;
+  tool: string;
+  result: AnalyzeResult;
+}
+
+/** Run `jobs` a few at a time, keeping the outcomes that came back. */
 async function runAnalyzeJobs(
-  jobs: Array<() => Promise<FixEntry | null>>
-): Promise<FixEntry[]> {
+  jobs: Array<() => Promise<AnalyzeOutcome | null>>
+): Promise<AnalyzeOutcome[]> {
   const results = await mapWithConcurrency(jobs, ANALYZE_CONCURRENCY, (job) => job());
-  return results.filter((entry): entry is FixEntry => entry !== null);
+  return results.filter((entry): entry is AnalyzeOutcome => entry !== null);
+}
+
+/** The recommended outcomes, as queue cards. */
+function toFixEntries(outcomes: AnalyzeOutcome[]): FixEntry[] {
+  return outcomes
+    .filter((o) => o.result?.recommended)
+    .map(({ rowId, tool, result }): FixEntry => {
+      const isMaster = rowId === FULL_MIX_STEM_ID;
+      const copy = fixCopyFor(
+        tool, result.findings, result.reason ?? '', isMaster ? 'master' : 'stem'
+      );
+      return {
+        id: isMaster ? `master:${tool}` : `stem:${rowId}:${tool}`,
+        scope: isMaster ? 'master' : 'stem',
+        stemId: isMaster ? null : rowId,
+        tool,
+        title: copy.title,
+        body: copy.body,
+        confidence: result.confidence ?? null,
+        reason: result.reason ?? '',
+        findings: result.findings || {},
+        suggestedParams: result.params || {},
+        currentParams: result.params || {},
+        enabled: true,
+        source: 'analysis',
+      };
+    });
+}
+
+/**
+ * The tempo each row measured, recommended or not.
+ *
+ * `correct_beats` reports `detected_bpm` on every analysis whether or not it
+ * thinks the grid is worth correcting, so the song's own tempo is already in
+ * hand by the time a producer reaches for the tempo tool.
+ */
+function measuredTempos(outcomes: AnalyzeOutcome[]): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const { rowId, result } of outcomes) {
+    const bpm = result?.findings?.detected_bpm;
+    if (typeof bpm === 'number' && bpm > 0) out[rowId] = bpm;
+  }
+  return out;
 }
 
 async function postJson(url: string, body: unknown): Promise<any> {
@@ -328,6 +445,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     setAnalysisNote(null);
   }, [sourceVersionId]);
   const [analyzingStemIds, setAnalyzingStemIds] = useState<Set<number>>(new Set());
+  // Tempo as each row measured it. Kept from the analysis pass so a hand-added
+  // tempo card can start from the song's own BPM instead of the "needs setup"
+  // state — `match_tempo.target_bpm` is the one required param in the registry,
+  // and coerce_args raises rather than inventing a value.
+  const [detectedBpm, setDetectedBpm] = useState<Record<number, number>>({});
   const [identifyingStemIds, setIdentifyingStemIds] = useState<Set<number>>(new Set());
 
   // Optimistic preload: a stem set from an earlier session may already sit
@@ -418,7 +540,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   );
 
   const analyzeStemTool = useCallback(
-    async (stemId: number, tool: string): Promise<FixEntry | null> => {
+    async (stemId: number, tool: string): Promise<AnalyzeOutcome | null> => {
       const res = await fetch(`/api/produce/tools/${tool}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -428,30 +550,14 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       // response never making it back — shouldn't sink the whole queue.
       if (!res.ok) return null;
       const data = await readJson(res);
-      const r = data.result;
-      if (!r || !r.recommended) return null;
-      const copy = fixCopyFor(tool, r.findings, r.reason);
-      return {
-        id: `stem:${stemId}:${tool}`,
-        scope: 'stem',
-        stemId,
-        tool,
-        title: copy.title,
-        body: copy.body,
-        confidence: r.confidence ?? null,
-        reason: r.reason,
-        findings: r.findings || {},
-        suggestedParams: r.params || {},
-        currentParams: r.params || {},
-        enabled: true,
-        source: 'analysis',
-      };
+      if (!data.result) return null;
+      return { rowId: stemId, tool, result: data.result };
     },
     [songId]
   );
 
   const analyzeMasterTool = useCallback(
-    async (tool: string): Promise<FixEntry | null> => {
+    async (tool: string): Promise<AnalyzeOutcome | null> => {
       const res = await fetch(`/api/produce/tools/${tool}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -459,24 +565,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       });
       if (!res.ok) return null;
       const data = await readJson(res);
-      const r = data.result;
-      if (!r || !r.recommended) return null;
-      const copy = fixCopyFor(tool, r.findings, r.reason);
-      return {
-        id: `master:${tool}`,
-        scope: 'master',
-        stemId: null,
-        tool,
-        title: copy.title,
-        body: copy.body,
-        confidence: r.confidence ?? null,
-        reason: r.reason,
-        findings: r.findings || {},
-        suggestedParams: r.params || {},
-        currentParams: r.params || {},
-        enabled: true,
-        source: 'analysis',
-      };
+      if (!data.result) return null;
+      return { rowId: FULL_MIX_STEM_ID, tool, result: data.result };
     },
     [songId, sourceVersionId]
   );
@@ -502,13 +592,15 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
             : FULL_MIX_STEM_ID
         );
 
-        const jobs: Array<() => Promise<FixEntry | null>> = [];
+        const jobs: Array<() => Promise<AnalyzeOutcome | null>> = [];
         for (const stem of stemSet.stems) {
-          for (const tool of PER_STEM_TOOLS) jobs.push(() => analyzeStemTool(stem.id, tool));
+          for (const tool of analysisToolsFor(stem)) jobs.push(() => analyzeStemTool(stem.id, tool));
         }
         for (const tool of MASTER_TOOLS) jobs.push(() => analyzeMasterTool(tool));
 
-        const results = await runAnalyzeJobs(jobs);
+        const outcomes = await runAnalyzeJobs(jobs);
+        const results = toFixEntries(outcomes);
+        setDetectedBpm(measuredTempos(outcomes));
         // A re-separation mints new stem ids, so a manual card pinned to a stem
         // that no longer exists has nothing left to run against.
         const liveStemIds = new Set(stemSet.stems.map((s) => s.id));
@@ -543,11 +635,16 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setAnalyzingStemIds((prev) => new Set(prev).add(stemId));
       setError(null);
       try {
-        const results = await runAnalyzeJobs(
+        const stem = stems.find((s) => s.id === stemId);
+        const outcomes = await runAnalyzeJobs(
           isFullMix
             ? MASTER_TOOLS.map((tool) => () => analyzeMasterTool(tool))
-            : PER_STEM_TOOLS.map((tool) => () => analyzeStemTool(stemId, tool))
+            : (stem ? analysisToolsFor(stem) : [...PER_STEM_TOOLS]).map(
+                (tool) => () => analyzeStemTool(stemId, tool)
+              )
         );
+        const results = toFixEntries(outcomes);
+        setDetectedBpm((prev) => ({ ...prev, ...measuredTempos(outcomes) }));
         setFixes((prev) => {
           const onThisRow = (f: FixEntry) =>
             isFullMix ? f.scope === 'master' : f.scope === 'stem' && f.stemId === stemId;
@@ -567,7 +664,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         });
       }
     },
-    [sourceVersionId, analyzeStemTool, analyzeMasterTool]
+    [sourceVersionId, stems, analyzeStemTool, analyzeMasterTool]
   );
 
   const startAnalysis = useCallback(() => runAnalysis(false), [runAnalysis]);
@@ -690,12 +787,36 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
    * render fingerprint) reads `tool` + `currentParams` and never asks where a
    * card came from, so it behaves like any other from here on.
    */
+  /**
+   * The tempo to start a hand-added `match_tempo` card from.
+   *
+   * The row's own measurement first, then any other row's — the stems are all
+   * the same performance, so the drums' BPM is the song's BPM, which is what
+   * lets the full-mix row (whose analysis list has no beat detector) offer a
+   * runnable card too.
+   */
+  const tempoSeedFor = useCallback(
+    (rowId: number): number | undefined => {
+      const own = detectedBpm[rowId];
+      if (own) return own;
+      const any = Object.values(detectedBpm).filter((bpm) => bpm > 0);
+      return any.length ? any[0] : undefined;
+    },
+    [detectedBpm]
+  );
+
   const addManualFix = useCallback(
     (stemId: number, tool: string) => {
       const isFullMix = stemId === FULL_MIX_STEM_ID;
       const id = isFullMix ? `master:${tool}` : `stem:${stemId}:${tool}`;
-      const params = defaultParamsFor(toolsByName[tool]);
-      const copy = manualFixCopy(tool, toolsByName[tool]?.summary, isFullMix ? 'master' : 'stem');
+      const bpm = tool === 'match_tempo' ? tempoSeedFor(stemId) : undefined;
+      const params = defaultParamsFor(
+        toolsByName[tool],
+        bpm ? { target_bpm: Math.round(bpm * 10) / 10 } : {}
+      );
+      const copy = manualFixCopy(
+        tool, toolsByName[tool]?.summary, isFullMix ? 'master' : 'stem', params
+      );
       setFixes((prev) =>
         prev.some((f) => f.id === id)
           ? prev
@@ -719,7 +840,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
             ]
       );
     },
-    [toolsByName]
+    [toolsByName, tempoSeedFor]
   );
 
   /**
@@ -870,37 +991,6 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     [fixesForStem, songId, sourceVersionId, isRunnable]
   );
 
-  // "Hear it" on a single card — renders just that one fix, ignoring every
-  // other card's enabled state, so a producer can audition a fix in
-  // isolation before deciding whether to keep it.
-  const previewSingleFix = useCallback(
-    async (fix: FixEntry): Promise<string> => {
-      // Said here rather than let the render come back with a ValueError from
-      // coerce_args: the card knows exactly which knob is missing.
-      const missing = missingRequiredParams(toolsByName[fix.tool], fix.currentParams);
-      if (missing.length > 0) {
-        throw new Error(
-          `Set ${missing.map((p) => p.label).join(' and ')} under Adjust before hearing this.`
-        );
-      }
-      if (fix.scope === 'stem' && fix.stemId != null) {
-        const data = await postJson(`/api/produce/stems/${fix.stemId}/preview-chain`, {
-          fixes: [{ tool: fix.tool, params: fix.currentParams }],
-        });
-        return data.candidate_path as string;
-      }
-      const data = await postJson('/api/produce/accept-fixes', {
-        song_id: songId,
-        source_version_id: sourceVersionId,
-        stems: [],
-        master_fixes: [{ tool: fix.tool, params: fix.currentParams }],
-        preview: true,
-      });
-      return data.candidate_path as string;
-    },
-    [songId, sourceVersionId, toolsByName]
-  );
-
   const ensureToolParams = useCallback(async () => {
     if (Object.keys(toolsByName).length) return;
     try {
@@ -962,7 +1052,6 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     acceptAll,
     warmRender,
     previewStemChain,
-    previewSingleFix,
     toolParamsByTool,
     ensureToolParams,
   };

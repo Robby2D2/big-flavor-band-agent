@@ -287,21 +287,28 @@ export default function AudioProcessingTab({
   // to stay disabled until at least one has landed.
   const playbackReady = Object.keys(buffers).length > 0;
 
-  const playWhenRenderedRef = useRef(false);
+  /**
+   * Which fix card started the transport.
+   *
+   * A fix used to be auditioned through its own `<audio>` element, which meant
+   * judging it as an isolated clip: no other stems, no solo/mute, and as many
+   * playheads on the page as there were cards. Hear it now drives the console's
+   * one transport instead, so the fix is heard where it will actually live.
+   */
+  const [audition, setAudition] = useState<{ fixId: string; rowId: number } | null>(null);
+
+  const playWhenRenderedRef = useRef<{ from?: number } | null>(null);
 
   /**
    * Render any row whose enabled chain isn't already decoded, then start playback.
    *
    * Chain-applying is real DSP on the server, so it happens on demand at play
-   * time rather than on every toggle in the fix queue — pressing play is the
-   * point where the producer has actually asked to hear the result.
+   * time rather than on every toggle in the fix queue — pressing play (or Hear
+   * it on a card) is the point where the producer has actually asked to hear
+   * the result. `from` resumes at a position, so a toggle mid-audition picks up
+   * where it left off instead of starting the song again.
    */
-  const handleTogglePlay = async () => {
-    if (playback.playing) {
-      playback.pause();
-      return;
-    }
-
+  const renderStaleThenPlay = async (from?: number) => {
     const stale = queue.consoleStems.filter((stem) => {
       const signature = fixSignature[stem.id];
       if (!signature) return false; // no enabled fixes — the raw audio is correct
@@ -309,7 +316,7 @@ export default function AudioProcessingTab({
     });
 
     if (stale.length === 0) {
-      void playback.play();
+      void playback.play(from);
       return;
     }
 
@@ -327,27 +334,87 @@ export default function AudioProcessingTab({
       // Start playing from the effect below rather than here: `playback.play`
       // closes over the buffers of the render it came from, so calling it now
       // would play the pre-render audio we just replaced.
-      playWhenRenderedRef.current = true;
+      playWhenRenderedRef.current = { from };
       setFixedBuffers((prev) => ({ ...prev, ...Object.fromEntries(rendered) }));
     } catch (err) {
       // Fall through to playing what we have: the raw stems are still a
       // truthful rendition of the song, just without the pending fixes.
       setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
-      void playback.play();
+      void playback.play(from);
     } finally {
       setRenderingFixes(false);
     }
   };
 
+  const handleTogglePlay = () => {
+    if (playback.playing) {
+      playback.pause();
+      return;
+    }
+    // The transport's own play button means "play the song", not "audition
+    // this fix" — so it takes the page back to plain playback. (Pausing needs
+    // no such reset: `activeAudition` derives from `playback.playing`.)
+    setAudition(null);
+    void renderStaleThenPlay();
+  };
+
   useEffect(() => {
-    if (!playWhenRenderedRef.current) return;
-    playWhenRenderedRef.current = false;
-    void playback.play();
+    const request = playWhenRenderedRef.current;
+    if (!request) return;
+    playWhenRenderedRef.current = null;
+    void playback.play(request.from);
     // Only the freshly committed buffers should trigger this; `playback` is
     // deliberately not a dependency, since its identity changes on every tick
     // of the playhead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveBuffers]);
+
+  // A play request that has to wait for the commit: Hear it may turn the fix on
+  // first, and the render has to be built from the signature *after* that
+  // toggle, not the one the click handler closed over.
+  const [playRequestSeq, setPlayRequestSeq] = useState(0);
+  const playRequestFrom = useRef<number | undefined>(undefined);
+
+  const requestPlay = (from?: number) => {
+    playRequestFrom.current = from;
+    setPlayRequestSeq((n) => n + 1);
+  };
+
+  useEffect(() => {
+    if (playRequestSeq === 0) return;
+    void renderStaleThenPlay(playRequestFrom.current);
+    // Fires once per request. `renderStaleThenPlay` is redefined every render
+    // and reads the current fix signature, which is the whole point of
+    // deferring the call to here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playRequestSeq]);
+
+  const handleHear = (fix: FixEntry) => {
+    const rowId = fix.scope === 'master' ? FULL_MIX_STEM_ID : fix.stemId;
+    if (rowId == null) return;
+    // Scope the queue to the row being auditioned, so the solo/mute controls
+    // and the cards on screen are the ones this fix belongs to.
+    queue.setSelectedStemId(rowId);
+    if (!fix.enabled) queue.toggleFix(fix.id);
+    setAudition({ fixId: fix.id, rowId });
+    requestPlay(playback.playhead);
+  };
+
+  /**
+   * ON/OFF while a fix is being auditioned is a question about the mix, so the
+   * transport answers it: re-render the row and pick playback up at the same
+   * position rather than making the producer press play again. Only toggles —
+   * a slider drag in the Adjust drawer must not kick off a render per keystroke.
+   */
+  const handleToggleFix = (id: string) => {
+    queue.toggleFix(id);
+    if (audition && playback.playing) requestPlay(playback.playhead);
+  };
+
+  const handleRemoveFix = (id: string) => {
+    queue.removeFix(id);
+    if (audition && playback.playing) requestPlay(playback.playhead);
+  };
 
   const setControl = (id: number, patch: Partial<StemPlaybackControl>) => {
     setControls((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -356,6 +423,16 @@ export default function AudioProcessingTab({
   useEffect(() => {
     setRegion(null);
   }, [queue.selectedStemId]);
+
+  // Derived rather than cleared: the audition is over the moment the transport
+  // stops, and deriving it means there is no stale "now playing" to tidy up.
+  const activeAudition = playback.playing || renderingFixes ? audition : null;
+  const auditionFix = activeAudition
+    ? queue.fixes.find((f) => f.id === activeAudition.fixId) ?? null
+    : null;
+  const auditionRow = activeAudition
+    ? queue.consoleStems.find((s) => s.id === activeAudition.rowId) ?? null
+    : null;
 
   const selectedStem = queue.consoleStems.find((s) => s.id === queue.selectedStemId) ?? null;
   const fullMixSelected = queue.selectedStemId === FULL_MIX_STEM_ID;
@@ -458,6 +535,11 @@ export default function AudioProcessingTab({
                 maxDuration={playback.maxDuration}
                 onTogglePlay={handleTogglePlay}
                 renderingFixes={renderingFixes || renderInProgress}
+                audition={
+                  auditionFix && auditionRow
+                    ? { fixTitle: auditionFix.title, rowName: stemLabel(auditionRow) }
+                    : null
+                }
                 onSeek={playback.seek}
                 separating={queue.analyzing}
                 analyzed={queue.analyzed}
@@ -491,14 +573,17 @@ export default function AudioProcessingTab({
                       ? queue.addableToolsForStem(queue.selectedStemId)
                       : []
                   }
-                  onToggle={queue.toggleFix}
+                  onToggle={handleToggleFix}
                   onAdjust={setDrawerFix}
-                  onHear={queue.previewSingleFix}
+                  onHear={handleHear}
+                  auditionFixId={activeAudition?.fixId ?? null}
+                  rendering={renderingFixes}
+                  canHear={playbackReady}
                   onAddFix={(tool) =>
                     queue.selectedStemId != null && queue.addManualFix(queue.selectedStemId, tool)
                   }
                   missingParamsFor={queue.missingParamsFor}
-                  onRemoveFix={queue.removeFix}
+                  onRemoveFix={handleRemoveFix}
                 />
               ) : (
                 <p className="text-sm text-text/45 py-4 text-center">

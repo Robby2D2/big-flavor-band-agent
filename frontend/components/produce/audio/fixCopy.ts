@@ -24,10 +24,10 @@ const FIX_TITLES: Record<string, string> = {
   trim_silence: 'Trim the silence at each end',
   normalize_audio: 'Even out the level',
   apply_mastering: 'Bring it to full loudness',
-  // The three with no analyze() of their own: nothing can ever recommend them,
-  // so the picker is the only place they appear.
   correct_pitch: 'Pull the notes to pitch',
   remove_artifacts: 'Clean up clicks and pops',
+  // The one left with no analyze() of its own — deliberately, since there is no
+  // *correct* BPM for a song — so the picker is the only place it appears.
   match_tempo: 'Stretch it to a target tempo',
 };
 
@@ -47,7 +47,8 @@ function db(n: unknown, digits = 1): string {
 export function fixCopyFor(
   tool: string,
   findings: Record<string, any> | undefined,
-  reason: string
+  reason: string,
+  scope: 'stem' | 'master' = 'stem'
 ): FixCopy {
   const f = findings || {};
   const title = fixTitleFor(tool);
@@ -93,6 +94,35 @@ export function fixCopyFor(
         title,
         body: `Measured ${f.current_lufs ?? '—'} LUFS; ~${f.estimated_gain_db ?? '—'} dB to reach the target.`,
       };
+    case 'correct_pitch': {
+      // The counts come from the loudest window, not the whole stem — pyin over
+      // a full file is far too slow to run per row. Saying so keeps "15 of 46"
+      // from reading as a whole-song tally.
+      const measuredIn = f.analyzed_seconds
+        ? `the loudest ${Math.round(f.analyzed_seconds)} seconds`
+        : 'the part measured';
+      return {
+        title,
+        body:
+          `${f.notes_off_target ?? '—'} of ${f.notes_detected ?? '—'} notes in ${measuredIn} sit ` +
+          `noticeably off pitch (median ${Math.round(f.median_deviation_cents ?? 0)} cents), in ` +
+          `${f.key ?? 'an undetermined key'}. Auto-tune is pre-set to pull every note onto its ` +
+          `nearest semitone — the same target these numbers are measured against.`,
+      };
+    }
+    case 'remove_artifacts': {
+      const n = f.count ?? 0;
+      // The same physical click lands in a stem *and* in the mix those stems
+      // sum to, so each card says which one it is repairing — otherwise it
+      // reads as two problems and gets fixed twice.
+      const where = scope === 'master' ? 'in the whole mix' : 'in this stem';
+      return {
+        title,
+        body: `${n} click${n === 1 ? '' : 's'}/pop${n === 1 ? '' : 's'} ${where} (${
+          f.per_minute ?? '—'
+        } per minute) — sharp jumps the music itself doesn't make.`,
+      };
+    }
     default:
       return { title, body: reason };
   }
@@ -112,8 +142,8 @@ const MANUAL_SETUP_HINTS: Record<string, string> = {
     "You added this — the analysis didn't flag it. Pick 50 or 60 Hz under Adjust: " +
     'with no mains frequency set it just re-runs the detection that already heard no hum.',
   match_tempo:
-    'You added this. Set the target BPM under Adjust — it has no default, and the ' +
-    'whole track is stretched to whatever you choose.',
+    'You added this. Set the target BPM under Adjust — nothing measured a tempo for ' +
+    'this row, and the whole track is stretched to whatever you choose.',
 };
 
 /**
@@ -136,10 +166,22 @@ const MANUAL_SCOPE_NOTES: Record<string, string> = {
  * report — the whole point is that the analysis didn't flag it — so the body
  * says where the card came from and points at where the amount is set.
  */
-export function manualFixCopy(tool: string, summary?: string, scope?: 'stem' | 'master'): FixCopy {
+export function manualFixCopy(
+  tool: string,
+  summary?: string,
+  scope?: 'stem' | 'master',
+  /** The params the card is starting from, so the copy can name a real number. */
+  params: Record<string, any> = {}
+): FixCopy {
+  // A tempo card seeded from the song's own measured BPM is a different card
+  // from one that has nothing to start from, and should not tell the producer
+  // to go and set a value that is already there.
   const base =
-    MANUAL_SETUP_HINTS[tool] ??
-    "You added this — the analysis didn't flag it. Set the amount under Adjust.";
+    tool === 'match_tempo' && params.target_bpm != null
+      ? `You added this. Starts at the ${params.target_bpm} BPM measured for this row — ` +
+        'change it under Adjust to stretch the performance anywhere you want.'
+      : MANUAL_SETUP_HINTS[tool] ??
+        "You added this — the analysis didn't flag it. Set the amount under Adjust.";
   // The stretch warning is only true of a stem; the full mix has nothing to
   // drift against.
   const note =
