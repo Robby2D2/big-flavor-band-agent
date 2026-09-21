@@ -2,11 +2,15 @@
 
 import { useState } from 'react';
 
+import type { FixNotice } from '@/hooks/useAcceptJob';
+
+import FixNoticePanel from './FixNoticePanel';
+
 interface ResultSidebarProps {
   enabledCount: number;
   totalCount: number;
-  onAcceptAll: () => Promise<any>;
-  onPreviewFull: () => Promise<string>;
+  onAcceptAll: () => Promise<void>;
+  onPreviewFull: () => Promise<{ path: string; notices?: FixNotice[] }>;
   onAccepted: () => void;
   /** A render is already running — starting another would only queue behind it. */
   renderInProgress?: boolean;
@@ -29,13 +33,18 @@ export default function ResultSidebar({
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState(false);
+  // Only a preview reports here. A save's render finishes long after this
+  // component has gone — selecting the version it produced clears the queue
+  // that renders this sidebar — so the page shows what a save had to say.
+  const [previewNotices, setPreviewNotices] = useState<FixNotice[]>([]);
 
   const handlePreview = async () => {
     setBusy('preview');
     setError(null);
     try {
-      const path = await onPreviewFull();
+      const { path, notices: raised } = await onPreviewFull();
       setPreviewPath(path);
+      setPreviewNotices(raised ?? []);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -92,6 +101,8 @@ export default function ResultSidebar({
       </div>
 
       {error && <p className="text-xs text-red-400">{error}</p>}
+
+      <FixNoticePanel notices={previewNotices} />
 
       {previewPath && (
         <div className="bg-raised border border-white/8 rounded-xl p-3.5">

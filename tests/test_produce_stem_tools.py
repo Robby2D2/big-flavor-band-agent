@@ -112,7 +112,7 @@ async def test_chain_apply_tools_empty_specs_passthrough(tmp_path):
     source_path = tmp_path / "source.wav"
     source_path.write_bytes(b"not-really-audio")
 
-    result = await produce._chain_apply_tools(
+    result, notices = await produce._chain_apply_tools(
         agent=_AgentNeverCalled(),
         specs=[],
         source_path=source_path,
@@ -121,6 +121,7 @@ async def test_chain_apply_tools_empty_specs_passthrough(tmp_path):
     )
 
     assert result == source_path
+    assert notices == []
     # No intermediate directory should have been created for a no-op chain.
     assert not (tmp_path / "out" / "vocals").exists()
 
@@ -145,7 +146,7 @@ async def test_chain_apply_tools_feeds_output_to_next_step(tmp_path):
     source_path.write_bytes(b"original")
     agent = _AgentChainRecorder()
 
-    result = await produce._chain_apply_tools(
+    result, notices = await produce._chain_apply_tools(
         agent=agent,
         specs=[
             produce.StemFixSpec(tool="reduce_noise"),
@@ -156,6 +157,7 @@ async def test_chain_apply_tools_feeds_output_to_next_step(tmp_path):
         tag="vocals",
     )
 
+    assert notices == [], "tools that did what they said raise nothing"
     assert [c[0] for c in agent.calls] == ["reduce_noise", "apply_eq"]
     # Step 1 reads the original source; step 2 reads step 1's output, not the source.
     assert agent.calls[0][1] == str(source_path)
@@ -164,3 +166,73 @@ async def test_chain_apply_tools_feeds_output_to_next_step(tmp_path):
     # The chain's return value is step 2's output file, with its content.
     assert result == Path(agent.calls[1][2])
     assert result.read_bytes() == b"after-apply_eq"
+
+
+class _AgentThatFallsBack:
+    """A tool that succeeds but reports doing less than it was asked — what
+    ``correct_pitch`` returns when a source turns out not to be a single line."""
+
+    async def execute_tool(self, tool, args):
+        Path(args["output_path"]).write_bytes(b"shifted")
+        if tool == "correct_pitch":
+            return {
+                "status": "success",
+                "mode": "global_fallback",
+                "fallback_reason": "Input does not look like a single line in its "
+                                   "loudest 20s; applied a whole-file shift instead.",
+            }
+        return {"status": "success"}
+
+
+@pytest.mark.asyncio
+async def test_chain_apply_tools_reports_a_fix_that_did_less_than_it_said(tmp_path):
+    """A successful-but-downgraded fix has to come back as a notice.
+
+    Accepting a fix and being handed back unchanged audio, with nothing said, is
+    the outcome issue #91 exists to prevent. The chain used to read each result
+    only for ``status``, so ``fallback_reason`` could not reach the producer at
+    all — the render simply looked like it had worked.
+    """
+    source_path = tmp_path / "source.wav"
+    source_path.write_bytes(b"original")
+
+    result, notices = await produce._chain_apply_tools(
+        agent=_AgentThatFallsBack(),
+        specs=[
+            produce.StemFixSpec(tool="reduce_noise"),
+            produce.StemFixSpec(tool="correct_pitch"),
+        ],
+        source_path=source_path,
+        output_dir=tmp_path / "out",
+        tag="guitar",
+    )
+
+    assert result.exists()
+    assert len(notices) == 1, notices
+    assert notices[0]["tool"] == "correct_pitch"
+    # The scope is the row the producer is looking at, so a notice can be read
+    # without cross-referencing which stem it came from.
+    assert notices[0]["scope"] == "guitar"
+    assert "single line" in notices[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_notice_scope_names_the_row_not_the_run_directory(tmp_path):
+    """A single-stem preview needs a unique directory per run, and still has to
+    tell the producer which row the notice is about — so ``scope`` is separate
+    from the directory ``tag``. Without this the UI would show a timestamp."""
+    source_path = tmp_path / "source.wav"
+    source_path.write_bytes(b"original")
+
+    _result, notices = await produce._chain_apply_tools(
+        agent=_AgentThatFallsBack(),
+        specs=[produce.StemFixSpec(tool="correct_pitch")],
+        source_path=source_path,
+        output_dir=tmp_path / "out",
+        tag="run1790001977094",
+        scope="vocals",
+    )
+
+    assert notices[0]["scope"] == "vocals"
+    # ...while the intermediate files still live under the unique run tag.
+    assert (tmp_path / "out" / "run1790001977094").exists()

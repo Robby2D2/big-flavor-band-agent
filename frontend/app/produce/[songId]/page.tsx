@@ -4,6 +4,7 @@ import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import AudioProcessingTab from '@/components/produce/audio/AudioProcessingTab';
+import FixNoticePanel from '@/components/produce/audio/FixNoticePanel';
 import type { VersionDetail } from '@/components/produce/audio/VersionDetails';
 import {
   formatBytes,
@@ -117,7 +118,7 @@ export default function ProduceSongPage({
     }
   };
 
-  const { job: renderJob, refresh: refreshRenderJob } = useAcceptJob(
+  const { job: renderJob, saveNotices, refresh: refreshRenderJob } = useAcceptJob(
     songId,
     handleVersionSaved
   );
@@ -419,6 +420,15 @@ export default function ProduceSongPage({
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* A save's render finishes after the review queue that started it has
+              been cleared for the new version, so this is where it gets to
+              report a fix that did less than its card said (issue #91). */}
+          {saveNotices.length > 0 && (
+            <div className="mt-4">
+              <FixNoticePanel notices={saveNotices} />
             </div>
           )}
           </section>

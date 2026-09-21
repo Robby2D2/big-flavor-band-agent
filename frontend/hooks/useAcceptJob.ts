@@ -13,6 +13,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type AcceptJobStatus = 'idle' | 'running' | 'complete' | 'failed';
 
+/**
+ * A fix that succeeded but did less than its card promised.
+ *
+ * Today only `correct_pitch` raises one, when the source turns out not to be a
+ * single line and it shifts the whole file instead of correcting note by note.
+ * Accepting a fix and being handed back unchanged audio with nothing said is
+ * the outcome this exists to prevent (issue #91).
+ */
+export interface FixNotice {
+  /** The stem name the fix ran on, or `master` for the full-mix bucket. */
+  scope: string;
+  tool: string;
+  /** The tool's own words for what it did instead. */
+  reason: string;
+}
+
 export interface AcceptJob {
   status: AcceptJobStatus;
   /** A preview render makes no version; a save does. */
@@ -23,6 +39,8 @@ export interface AcceptJob {
   error?: string | null;
   /** The render was already on disk — nothing was re-rendered. */
   reused?: boolean;
+  /** Fixes that ran but did less than their card said. */
+  notices?: FixNotice[];
 }
 
 const POLL_MS = 2500;
@@ -62,6 +80,11 @@ export function useAcceptJob(
   // Bumped to re-run the poll loop after starting a render, so there is only
   // ever one implementation of the polling itself.
   const [nonce, setNonce] = useState(0);
+  // Notices belong to the finished render, but a save's response returns long
+  // before the render finishes — so the only place they can be read is the poll
+  // that completes the job, and that poll dismisses the job in the same breath.
+  // Kept here so they outlive it and the page can still report them (issue #91).
+  const [saveNotices, setSaveNotices] = useState<FixNotice[]>([]);
 
   // Keep the callback current without restarting the loop on every render.
   const savedCallback = useRef(onVersionSaved);
@@ -101,6 +124,7 @@ export function useAcceptJob(
       // then clear the job so the progress row goes away. A cache hit lands
       // here on the very first poll, having never been "running".
       if (current.status === 'complete' && !current.preview) {
+        setSaveNotices(current.notices ?? []);
         savedCallback.current(current.version?.version_id ?? null);
         void dismiss();
         return;
@@ -120,7 +144,12 @@ export function useAcceptJob(
   }, [songId, nonce, dismiss]);
 
   /** Called right after starting a render, so polling picks it up at once. */
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    // A new render is under way: whatever the last save reported describes a
+    // mix that is no longer the one on screen.
+    setSaveNotices([]);
+    setNonce((n) => n + 1);
+  }, []);
 
-  return { job, refresh, dismiss };
+  return { job, saveNotices, refresh, dismiss };
 }
