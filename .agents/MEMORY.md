@@ -26,6 +26,26 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-21 — Released v0.17.3 (patch bump — the version-scoped stems fix, tagging code already live)
+Tagged `main` at `1da724e` as **v0.17.3**. Patch rather than minor: the range is PR #94 alone (plus
+its merge) — the produce console showed the song's *newest* stems instead of the selected version's,
+so a cleaned mix was being reviewed, and measured, against the original's stems. It is a correctness
+fix on shipped behaviour with no new capability: no `feat:` commit, no `enhancement` label, and the
+PR closes no issue (issue-less fix), so **no issues were notified**.
+
+Sanity gate ran in full: `bigflavor-backend` restarted to `Startup complete: backend ready to serve
+requests` with no errors, and `npm run build` compiled the frontend clean.
+
+**The tag trailed the deploy again** — `1da724e` was built, deployed and verified in production
+before this run, so the Release body says "already deployed" rather than "ready to deploy". Second
+time in three releases (see v0.17.1); the tag history is a record of what was released, not of when
+it went live.
+
+PR #95 (keep the stems a save rendered; separating as its own button) was approved but **not merged**
+at tag time, so it is not in v0.17.3 — same shape as v0.17.0/#90, and it lands in the next release.
+
+---
+
 ### 2026-09-21 — Stems belonged to the song; they belong to a version (song 1144)
 Reported from production: a popping sound audible in song 1144's *cleaned* mix could not be found
 in any stem. It wasn't a hearing problem — the stems were the **original's**.
