@@ -21,6 +21,7 @@ existing tools endpoint (issue #1).
 """
 import json
 import logging
+import shutil
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -1192,6 +1193,8 @@ def _stem_set_view(stem_set: Dict[str, Any]) -> Dict[str, Any]:
         "model": stem_set["model"],
         "status": stem_set["status"],
         "error": stem_set["error"],
+        # NULL on every set Demucs made; see migration 17.
+        "origin": stem_set.get("origin") or "separated",
         "created_at": created_at.isoformat() if created_at else None,
     }
 
@@ -1582,6 +1585,7 @@ async def _render_mix(
 
     notices: List[Dict[str, Any]] = []
     remix_inputs: List[Dict[str, str]] = []
+    source_model: Optional[str] = None
     for stem_spec in request.stems:
         stem = await db.get_stem(stem_spec.stem_id)
         if stem is None:
@@ -1591,6 +1595,9 @@ async def _render_mix(
             raise HTTPException(
                 status_code=404, detail=f"Stem {stem_spec.stem_id} not found for this song"
             )
+        # Carried onto the set this render may produce, so a kept set still
+        # names the separator its audio ultimately came from.
+        source_model = source_model or stem_set.get("model")
         fixed_path, stem_notices = await _chain_apply_tools(
             agent, stem_spec.fixes, Path(stem["path"]), run_dir, tag=stem["name"]
         )
@@ -1617,13 +1624,94 @@ async def _render_mix(
     )
     notices.extend(master_notices)
 
-    return final_path, notices
+    # `remix_inputs` is every stem that went into this mix: the fixed ones as
+    # freshly written files, and — because _chain_apply_tools returns its source
+    # untouched for an empty chain — the unmodified ones as their existing stem
+    # files. Either way it is a complete, authoritative part list for the mix,
+    # which is what makes keeping it as the saved version's stem set possible
+    # without re-separating anything.
+    return final_path, notices, remix_inputs, source_model
+
+
+async def _keep_rendered_stems(
+    song_id: int,
+    version_id: int,
+    parts: List[Dict[str, str]],
+    had_master_fixes: bool,
+    model: Optional[str],
+    db: DatabaseManager,
+) -> Optional[Dict[str, Any]]:
+    """Keep the stems a save just rendered as that new version's stem set.
+
+    The fix queue has already produced per-stem audio for this exact mix, so the
+    new version's parts exist the moment it is saved. Registering them here is
+    the difference between selecting the version you just made and reviewing it,
+    and selecting it and being told to wait minutes for Demucs — on a mix that
+    was itself assembled from stems, which would stack a second generation of
+    separation artifacts on the first.
+
+    **Every part is copied** into the set's own directory, including the ones no
+    fix touched. Those arrive pointing at the *previous* set's file, and two sets
+    sharing one path is a trap: re-separating or cleaning up the older set would
+    hollow out this one. A copy costs disk; a dangling row costs the producer
+    their stems.
+
+    Best-effort by design. The version is already saved and is the thing the
+    producer asked for — if keeping the stems fails, they can still separate by
+    hand, so a failure here is logged and swallowed rather than turned into a
+    failed save.
+    """
+    if not parts:
+        return None
+
+    from src.api.stem_jobs import tag_stems
+
+    try:
+        stem_set = await db.create_stem_set(
+            song_id, model or stem_separation.DEFAULT_MODEL, version_id
+        )
+        target_dir = _stem_set_output_dir(song_id, stem_set["id"])
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        rows: List[Dict[str, Any]] = []
+        for part in parts:
+            source = Path(part["path"])
+            if not source.exists():
+                logger.warning("Rendered stem missing, skipping: %s", source)
+                continue
+            destination = target_dir / f"{part['name']}{source.suffix or '.wav'}"
+            await run_in_threadpool(shutil.copyfile, str(source), str(destination))
+            rows.append(await db.add_stem(stem_set["id"], part["name"], str(destination)))
+
+        if not rows:
+            await db.set_stem_set_status(stem_set["id"], "failed", "no stem files to keep")
+            return None
+
+        await db.set_stem_set_status(stem_set["id"], "complete")
+        # Same order as a real separation: the set is usable before the purely
+        # cosmetic instrument labels land.
+        await tag_stems(rows, db)
+        origin = "fixes_premaster" if had_master_fixes else "fixes"
+        await db.set_stem_set_origin(stem_set["id"], origin)
+        logger.info(
+            "Kept %d rendered stems as set %s for version %s",
+            len(rows), stem_set["id"], version_id,
+        )
+        # Returned from what was just written rather than re-read: one less
+        # round trip, and one less way for a set that *was* kept to come back
+        # looking like it wasn't.
+        return {**stem_set, "status": "complete", "origin": origin}
+    except Exception:
+        logger.exception("Could not keep rendered stems for version %s", version_id)
+        return None
 
 
 async def _finalize_save(
     request: AcceptFixesRequest,
     final_path: Path,
     db: DatabaseManager,
+    parts: Optional[List[Dict[str, str]]] = None,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The cheap half: measure the rendered mix and record it as a version.
 
@@ -1640,7 +1728,24 @@ async def _finalize_save(
         "produced_at": time.time(),
     }
     version = await save_candidate_version(request.song_id, str(final_path), metrics, db)
-    return {"version": version}
+
+    # The version is saved and is what the producer asked for. Keeping its stems
+    # is a bonus on top, so nothing from here on may turn a good save into a
+    # failed request — including reading the id wrong.
+    stem_set = None
+    try:
+        stem_set = await _keep_rendered_stems(
+            request.song_id,
+            version["version_id"],
+            parts or [],
+            had_master_fixes=bool(request.master_fixes),
+            model=model,
+            db=db,
+        )
+    except Exception:
+        logger.exception("Could not keep rendered stems for song %s", request.song_id)
+
+    return {"version": version, "stem_set": _stem_set_view(stem_set) if stem_set else None}
 
 
 async def _render_accept_fixes(
@@ -1649,14 +1754,17 @@ async def _render_accept_fixes(
     db: DatabaseManager,
 ) -> Dict[str, Any]:
     """Render, remember the result, and save it unless this was a preview."""
-    final_path, notices = await _render_mix(request, agent, db)
+    final_path, notices, parts, model = await _render_mix(request, agent, db)
     accept_jobs.remember_render(
-        request.song_id, _accept_fingerprint(request), str(final_path), notices
+        request.song_id, _accept_fingerprint(request), str(final_path), notices, parts
     )
 
     if request.preview:
         return {"candidate_path": str(final_path), "notices": notices}
-    return {**await _finalize_save(request, final_path, db), "notices": notices}
+    return {
+        **await _finalize_save(request, final_path, db, parts, model),
+        "notices": notices,
+    }
 
 
 @router.post("/api/produce/accept-fixes")
@@ -1701,10 +1809,14 @@ async def start_accept_fixes(
         # it — Start analysis warms almost every render, so reading them back
         # here is what keeps a reused result as honest as a fresh one.
         remembered = accept_jobs.cached_notices(request.song_id, print_)
+        # The parts belong to the render too: a save that reuses one still keeps
+        # its stems, rather than making the producer separate a mix whose pieces
+        # are already on disk.
+        remembered_parts = accept_jobs.cached_stems(request.song_id, print_)
         result = (
             {"candidate_path": cached, "notices": remembered}
             if request.preview
-            else {**await _finalize_save(request, Path(cached), db),
+            else {**await _finalize_save(request, Path(cached), db, remembered_parts),
                   "notices": remembered}
         )
         logger.info("Accept-fixes reused an existing render for song %s", request.song_id)

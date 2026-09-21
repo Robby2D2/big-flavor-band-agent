@@ -169,6 +169,47 @@ describe('useProcessingQueue — Start analysis vs Re-separate', () => {
     expect(api.separations()).toHaveLength(1);
   });
 
+  it('separates without running a measuring pass', async () => {
+    // The point of the separate button: a producer who only wants the parts
+    // should not have to sit through analysis to get them.
+    const api = installFakeApi([]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    await runPass(() => result.current.separateStems());
+
+    expect(api.separations()).toHaveLength(1);
+    expect(result.current.stems).toHaveLength(4);
+    // Nothing was measured, so nothing claims to have been.
+    expect(result.current.analyzed).toBe(false);
+    expect(result.current.fixes).toEqual([]);
+    expect(result.current.separating).toBe(false);
+  });
+
+  it('makes a fresh set when the version already has stems', async () => {
+    const api = installFakeApi([completeSet(9)]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    await runPass(() => result.current.separateStems());
+
+    // This is what "Re-separate" used to do from inside the console.
+    expect(api.separations()).toHaveLength(1);
+  });
+
+  it('drops fixes measured from the stems it just replaced', async () => {
+    const api = installFakeApi([completeSet(9)]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    await runPass(() => result.current.startAnalysis());
+    expect(result.current.analyzed).toBe(true);
+
+    await runPass(() => result.current.separateStems());
+
+    // Those fixes were measurements of audio that no longer exists.
+    expect(result.current.analyzed).toBe(false);
+    expect(result.current.fixes).toEqual([]);
+    expect(api.separations()).toHaveLength(1);
+  });
+
   it('re-separates on demand even though complete stems exist', async () => {
     const api = installFakeApi([completeSet(9)]);
     const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));

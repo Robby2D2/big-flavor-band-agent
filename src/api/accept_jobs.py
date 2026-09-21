@@ -80,9 +80,13 @@ class AcceptJobManager:
         print_: str,
         path: str,
         notices: Optional[List[Dict[str, Any]]] = None,
+        stems: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         self._renders[song_id] = {
-            "fingerprint": print_, "path": path, "notices": notices or [],
+            "fingerprint": print_,
+            "path": path,
+            "notices": notices or [],
+            "stems": stems or [],
         }
 
     def cached_notices(self, song_id: int, print_: str) -> List[Dict[str, Any]]:
@@ -96,6 +100,20 @@ class AcceptJobManager:
         if not entry or entry["fingerprint"] != print_:
             return []
         return entry.get("notices") or []
+
+    def cached_stems(self, song_id: int, print_: str) -> List[Dict[str, str]]:
+        """The per-stem audio that went into the remembered render.
+
+        Same reasoning as :meth:`cached_notices`: a save that reuses an earlier
+        render never ran the DSP itself, so without this the stems it would keep
+        for the new version exist on disk but are unknown to the request that
+        saves it — and the producer would be told to re-separate a mix whose
+        parts are sitting right there.
+        """
+        entry = self._renders.get(song_id)
+        if not entry or entry["fingerprint"] != print_:
+            return []
+        return entry.get("stems") or []
 
     def is_running(self, song_id: int) -> bool:
         job = self._jobs.get(song_id)

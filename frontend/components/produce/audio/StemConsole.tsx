@@ -42,7 +42,6 @@ interface StemConsoleProps {
   separating: boolean;
   analyzed: boolean;
   analysisNote: string | null;
-  onReseparate: () => void;
 }
 
 /**
@@ -78,7 +77,6 @@ export default function StemConsole({
   separating,
   analyzed,
   analysisNote,
-  onReseparate,
 }: StemConsoleProps) {
   const fullMixPeaks = peaks[FULL_MIX_STEM_ID]?.peaks ?? null;
   const fullMixLoading = !fullMixPeaks && peaksLoadingIds.has(FULL_MIX_STEM_ID);
@@ -109,16 +107,9 @@ export default function StemConsole({
               ? analysisNote ?? 'Analyzing — the stems and fixes below are from the previous run.'
               : analyzed
                 ? 'Each stem is analyzed on its own — a hiss fix that saves the vocal can wreck the cymbals.'
-                : 'Loaded from a previous run — press Start analysis above, or analyze one part at a time.'}
+                : 'Loaded from a previous run — press Start analysis above, or analyze one part at a time. Separate stems (also above) makes a fresh set.'}
           </p>
         </div>
-        <button
-          onClick={onReseparate}
-          disabled={separating}
-          className="flex-none text-xs font-semibold text-text/70 border border-white/14 rounded-lg px-3 py-1.5 hover:bg-white/5 disabled:opacity-50"
-        >
-          {separating ? 'Re-separating…' : 'Re-separate'}
-        </button>
       </div>
 
       {/* Transport: the whole song's waveform, with a playhead you can click or

@@ -448,6 +448,9 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // before any stem has been picked.
   const [selectedStemId, setSelectedStemId] = useState<number | null>(FULL_MIX_STEM_ID);
   const [analyzing, setAnalyzing] = useState(false);
+  // Separation as an action in its own right — a producer can make stems
+  // without committing to a full measuring pass.
+  const [separating, setSeparating] = useState(false);
   const [analyzed, setAnalyzed] = useState(false);
   const [analysisNote, setAnalysisNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -735,6 +738,43 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // "Re-separate": always runs a fresh Demucs job before re-analyzing, unlike
   // Start analysis which reuses an already-complete stem set.
   const reseparateAndAnalyze = useCallback(() => runAnalysis(true), [runAnalysis]);
+
+  /**
+   * Separate this version into stems and stop there.
+   *
+   * Start analysis separates only as a means to measuring, which makes the
+   * first press on an unseparated version a minutes-long wait for something the
+   * producer may only have wanted to *look* at. This is the same separation
+   * without the measuring pass, so the console fills and nothing is analysed
+   * until it is asked for. On a version that already has stems it makes a fresh
+   * set — what "Re-separate" used to do from inside the console.
+   */
+  const separateStems = useCallback(async () => {
+    if (sourceVersionId == null) return;
+    setSeparating(true);
+    setAnalysisNote(null);
+    setError(null);
+    try {
+      const stemSet = await waitForStemSet(true);
+      setStems(stemSet.stems);
+      setStemsOnAnotherVersion(false);
+      setSelectedStemId((prev) =>
+        prev === FULL_MIX_STEM_ID || (prev != null && stemSet.stems.some((s) => s.id === prev))
+          ? prev
+          : FULL_MIX_STEM_ID
+      );
+      // Fixes measured from the previous stems describe audio that no longer
+      // exists; the new set has not been measured at all.
+      setFixes([]);
+      setAnalyzed(false);
+      setAnalyzedStemIds(new Set());
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSeparating(false);
+      setAnalysisNote(null);
+    }
+  }, [sourceVersionId, waitForStemSet]);
 
   /**
    * Relabel a stem — Demucs can only call a banjo "other", so the producer
@@ -1106,6 +1146,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     enabledCount,
     startAnalysis,
     reseparateAndAnalyze,
+    separateStems,
+    separating,
     analyzeStem,
     renameStem,
     identifyStem,
