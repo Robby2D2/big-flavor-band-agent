@@ -1637,6 +1637,25 @@ async def _render_mix(
     return final_path, notices, remix_inputs, source_model
 
 
+# Background tagging tasks, held so the event loop's only reference to a running
+# task is not the one we just dropped. Every other job runner here keeps one —
+# StemJobManager says why in as many words: "so a job isn't garbage-collected
+# while it runs". This one is suspended across ~18s of threadpool work, which is
+# a long time to be collectable.
+_TAGGING_TASKS: set = set()
+
+
+def _tag_in_background(rows: List[Dict[str, Any]], db: DatabaseManager) -> None:
+    """Run instrument tagging behind the response, keeping a strong reference."""
+    # Imported here rather than at module scope, like every other stem_jobs use
+    # in this router — the router loads without the optional DSP stack installed.
+    from src.api.stem_jobs import tag_stems
+
+    task = asyncio.create_task(tag_stems(rows, db))
+    _TAGGING_TASKS.add(task)
+    task.add_done_callback(_TAGGING_TASKS.discard)
+
+
 async def _keep_rendered_stems(
     song_id: int,
     version_id: int,
@@ -1667,8 +1686,6 @@ async def _keep_rendered_stems(
     """
     if not parts:
         return None
-
-    from src.api.stem_jobs import tag_stems
 
     try:
         stem_set = await db.create_stem_set(
@@ -1701,7 +1718,7 @@ async def _keep_rendered_stems(
         # stems, so they land behind the set rather than on the request the
         # producer is waiting on — the same order a real separation uses, and
         # the 2026-08 decision that put tagging after the set is complete.
-        asyncio.create_task(tag_stems(rows, db))
+        _tag_in_background(rows, db)
         logger.info(
             "Kept %d rendered stems as set %s for version %s",
             len(rows), stem_set["id"], version_id,
