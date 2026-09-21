@@ -293,9 +293,33 @@ async function fetchStemSets(songId: number): Promise<StemSetRow[]> {
   }));
 }
 
-function latestComplete(sets: StemSetRow[]): StemSetRow | undefined {
+/**
+ * The newest usable stem set **for one version** of the song.
+ *
+ * Scoping to the version is the whole point: a stem set is separated from one
+ * specific version's audio, and showing another version's stems means
+ * auditioning — and measuring — audio the producer is not listening to. That is
+ * how a fix could be recommended for a "cleaned" mix from the *original*'s
+ * stems, with the cleaned mix's own artifacts audible in the full-mix row and
+ * present in none of the stems below it.
+ *
+ * A set whose `source_version_id` is null came from before the column existed;
+ * it belongs to no version we can name, so it matches none. Migration 16
+ * attributes the ones that can be attributed; anything left is re-separated
+ * rather than guessed at.
+ */
+function latestCompleteForVersion(
+  sets: StemSetRow[],
+  sourceVersionId: number | null
+): StemSetRow | undefined {
+  if (sourceVersionId == null) return undefined;
   return sets
-    .filter((s) => s.status === 'complete' && s.stems.length > 0)
+    .filter(
+      (s) =>
+        s.status === 'complete' &&
+        s.stems.length > 0 &&
+        s.source_version_id === sourceVersionId
+    )
     .sort((a, b) => b.id - a.id)[0];
 }
 
@@ -433,11 +457,20 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // reads "not analyzed" rather than "clean"), and which are measuring right
   // now — both keyed by stem id, with FULL_MIX_STEM_ID for the whole mix.
   const [analyzedStemIds, setAnalyzedStemIds] = useState<Set<number>>(new Set());
+  // Another version of this song has stems, but the selected one does not.
+  // Without saying so, switching version just makes the console empty out,
+  // which reads as a fault rather than as the stems being version-specific.
+  const [stemsOnAnotherVersion, setStemsOnAnotherVersion] = useState(false);
 
   // Fixes are measurements of one particular version. The moment you work from
   // a different one — including the version a save just produced — they
-  // describe audio you are no longer looking at, so they go. Stems are not
-  // cleared: they belong to the song, not to a version.
+  // describe audio you are no longer looking at, so they go. The stems go the
+  // same way, and for the same reason: a stem set is separated from one
+  // version's audio and is only that version's. (This used to read "stems
+  // belong to the song, not to a version", and that was the bug — a cleaned
+  // mix was reviewed against the original's stems, so an artifact the cleaning
+  // introduced was audible in the full-mix row and in none of the stems.) The
+  // preload effect below refetches for the newly selected version.
   const previousSourceId = useRef<number | null>(null);
   useEffect(() => {
     const previous = previousSourceId.current;
@@ -458,19 +491,32 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const [detectedBpm, setDetectedBpm] = useState<Record<number, number>>({});
   const [identifyingStemIds, setIdentifyingStemIds] = useState<Set<number>>(new Set());
 
-  // Optimistic preload: a stem set from an earlier session may already sit
-  // complete on disk. Show it (waveforms, playback) the moment the tab
-  // mounts instead of making the user press "Start analysis" just to see
-  // what's already there — fixes still require a real analysis pass, so
-  // `analyzed` stays false until that runs.
+  // Optimistic preload: a stem set for *this version* may already sit complete
+  // on disk. Show it (waveforms, playback) the moment the tab mounts instead of
+  // making the user press "Start analysis" just to see what's already there —
+  // fixes still require a real analysis pass, so `analyzed` stays false until
+  // that runs.
+  //
+  // Re-runs on a version change and *replaces* what is on screen, including
+  // with nothing: a version with no stems of its own must show none, rather
+  // than leave the previous version's sitting there looking like its own.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const sets = await fetchStemSets(songId);
-        const complete = latestComplete(sets);
-        if (!complete || cancelled) return;
-        setStems((prev) => (prev.length > 0 ? prev : complete.stems));
+        if (cancelled) return;
+        const mine = latestCompleteForVersion(sets, sourceVersionId);
+        setStems(mine?.stems ?? []);
+        setStemsOnAnotherVersion(
+          !mine &&
+            sets.some(
+              (set) =>
+                set.status === 'complete' &&
+                set.stems.length > 0 &&
+                set.source_version_id !== sourceVersionId
+            )
+        );
       } catch {
         // Silent — this is just an optimistic preload; Start analysis will
         // surface any real fetch failure.
@@ -479,7 +525,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     return () => {
       cancelled = true;
     };
-  }, [songId]);
+  }, [songId, sourceVersionId]);
 
   // Instrument labels land after separation reports complete, so refresh them
   // in the background while any stem is still untagged. Bounded: tagging that
@@ -497,7 +543,10 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         return;
       }
       try {
-        const complete = latestComplete(await fetchStemSets(songId));
+        const complete = latestCompleteForVersion(
+          await fetchStemSets(songId),
+          sourceVersionId
+        );
         if (!complete || cancelled) return;
         setStems((prev) => mergeStemTags(prev, complete.stems));
       } catch {
@@ -508,23 +557,27 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       cancelled = true;
       clearInterval(timer);
     };
-  }, [songId, untaggedCount]);
+  }, [songId, untaggedCount, sourceVersionId]);
 
   // `forceNew=false` (normal "Start analysis"): never separate over stems that
-  // already exist — if the song has a complete stem set, reuse it and go
-  // straight to measuring. Demucs costs minutes, so making *new* stems is
-  // "Re-separate"'s job alone; separation here is only the first-time path,
-  // when the song has no usable stems at all.
+  // already exist *for this version* — if it has a complete stem set, reuse it
+  // and go straight to measuring. Demucs costs minutes, so making *new* stems
+  // is "Re-separate"'s job alone; separation here is the first-time path, now
+  // per version rather than per song. Selecting a version nothing has been
+  // separated from therefore does cost a Demucs run — which is the only honest
+  // option, since the alternative is measuring another version's audio.
   // `forceNew=true` ("Re-separate"): always wait for the *newest* set to
   // finish, even if an older one is already complete — otherwise a forced
   // re-separation would short-circuit straight back to the stale stems.
   const waitForStemSet = useCallback(
     async (forceNew: boolean): Promise<StemSetRow> => {
       let sets = await fetchStemSets(songId);
-      const existing = latestComplete(sets);
+      const existing = latestCompleteForVersion(sets, sourceVersionId);
       if (!forceNew && existing) return existing;
 
-      const alreadyRunning = sets.some((s) => IN_FLIGHT.has(s.status));
+      const alreadyRunning = sets.some(
+        (s) => IN_FLIGHT.has(s.status) && s.source_version_id === sourceVersionId
+      );
       if (!alreadyRunning) {
         await postJson('/api/produce/stems/separate', {
           song_id: songId,
@@ -535,7 +588,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       while (true) {
         await sleep(POLL_MS);
         sets = await fetchStemSets(songId);
-        const newest = sets.slice().sort((a, b) => b.id - a.id)[0];
+        // This version's newest set, not the song's — a separation running for
+        // a different version must not satisfy this wait.
+        const newest = sets
+          .filter((s) => s.source_version_id === sourceVersionId)
+          .sort((a, b) => b.id - a.id)[0];
         if (newest && newest.status === 'complete' && newest.stems.length > 0) return newest;
         if (newest && newest.status === 'failed') {
           throw new Error((newest as any).error || 'Stem separation failed');
@@ -592,6 +649,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         const stemSet = await waitForStemSet(forceNew);
         setAnalysisNote(null);
         setStems(stemSet.stems);
+        setStemsOnAnotherVersion(false);
         setSelectedStemId((prev) =>
           prev === FULL_MIX_STEM_ID || (prev != null && stemSet.stems.some((s) => s.id === prev))
             ? prev
@@ -701,10 +759,13 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setStems((prev) => prev.map((s) => (s.id === stemId ? toStemInfo(data.stem) : s)));
     } catch (err) {
       setError((err as Error).message);
-      const complete = latestComplete(await fetchStemSets(songId).catch(() => []));
+      const complete = latestCompleteForVersion(
+        await fetchStemSets(songId).catch(() => []),
+        sourceVersionId
+      );
       if (complete) setStems((prev) => mergeStemTags(prev, complete.stems));
     }
-  }, [songId]);
+  }, [songId, sourceVersionId]);
 
   /** Re-run instrument detection on one stem (the retry path for a failed tag). */
   const identifyStem = useCallback(async (stemId: number) => {
@@ -1034,6 +1095,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     analyzing,
     analyzed,
     analyzedStemIds,
+    stemsOnAnotherVersion,
     analyzingStemIds,
     identifyingStemIds,
     analysisNote,

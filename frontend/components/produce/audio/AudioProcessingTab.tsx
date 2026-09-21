@@ -495,8 +495,20 @@ export default function AudioProcessingTab({
         <div className="flex flex-col gap-4 min-w-0">
           {queue.stems.length === 0 && !queue.analyzing && (
             <p className="text-sm text-text/45 py-6 text-center">
-              Press <span className="text-text/70 font-medium">Start analysis</span> above — it
-              separates the song into stems, then measures each one on its own.
+              {queue.stemsOnAnotherVersion ? (
+                <>
+                  The stems on this song were separated from a{' '}
+                  <span className="text-text/70 font-medium">different version</span>, so they are
+                  not this one&apos;s to review. Press{' '}
+                  <span className="text-text/70 font-medium">Start analysis</span> above to separate
+                  the version you have selected.
+                </>
+              ) : (
+                <>
+                  Press <span className="text-text/70 font-medium">Start analysis</span> above — it
+                  separates this version into stems, then measures each one on its own.
+                </>
+              )}
             </p>
           )}
 

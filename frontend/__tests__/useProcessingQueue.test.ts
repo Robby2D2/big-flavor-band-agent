@@ -31,6 +31,11 @@ function completeSet(id: number): FakeSet {
   return { id, status: 'complete', source_version_id: VERSION_ID, stems: stemRows(id) };
 }
 
+/** A finished set belonging to some *other* version of the same song. */
+function completeSetForVersion(id: number, versionId: number | null): FakeSet {
+  return { id, status: 'complete', source_version_id: versionId, stems: stemRows(id) };
+}
+
 /**
  * Stand-in for the produce API: serves the song's stem sets, and records every
  * request so a test can assert on what the hook did (and didn't) call. A POST
@@ -98,6 +103,49 @@ describe('useProcessingQueue — Start analysis vs Re-separate', () => {
       'bass',
       'other',
     ]);
+  });
+
+  // The bug this scoping exists to prevent: song 1144 had one stem set, from
+  // the original, and selecting the cleaned version showed those stems. An
+  // artifact the cleaning introduced was audible in the full-mix row and in
+  // none of the stems below it, because they were a different recording.
+  it('ignores a complete set that belongs to a different version', async () => {
+    const OTHER_VERSION = 51;
+    const api = installFakeApi([completeSetForVersion(9, OTHER_VERSION)]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    await runPass(() => result.current.startAnalysis());
+
+    // It must separate this version rather than reuse the other one's stems.
+    expect(api.separations()).toHaveLength(1);
+    expect(
+      result.current.stems.every((stem) => stem.id >= 1000)
+    ).toBe(true);
+  });
+
+  it('shows no stems at all for a version that has none', async () => {
+    const api = installFakeApi([completeSetForVersion(9, 51)]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    // The mount preload alone, with no analysis pass: another version's stems
+    // must not appear just because they are the song's newest.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    expect(result.current.stems).toEqual([]);
+    expect(api.separations()).toHaveLength(0);
+  });
+
+  it('leaves a legacy set with no recorded version unattributed', async () => {
+    // Pre-dates source_version_id. It belongs to no version we can name, so it
+    // is shown for none — migration 16 attributes the ones that can be.
+    const api = installFakeApi([completeSetForVersion(9, null)]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    await runPass(() => result.current.startAnalysis());
+
+    expect(api.separations()).toHaveLength(1);
   });
 
   it('separates when the song has no stems yet', async () => {

@@ -257,9 +257,11 @@ export default function ProduceSongPage({
         <div className="bg-panel border border-white/8 rounded-xl p-6">
           <h2 className="text-xl font-semibold text-text mb-1">Audio processing</h2>
           <p className="text-sm text-text/50 mb-4">
-            Pick a starting version, then Start analysis — it separates the song
-            into stems the first time and measures each one on its own; after
-            that it reuses the stems you have (Re-separate makes new ones).
+            Pick a starting version, then Start analysis — it separates{' '}
+            <em>that version</em> into stems the first time and measures each one on
+            its own; after that it reuses the stems you have for it (Re-separate
+            makes new ones). Stems belong to the version they came from, so
+            switching version shows that version&apos;s stems, not the song&apos;s.
             Review the detected fixes below, adjust or skip what you don&apos;t
             want, then accept the rest as a new version. The version you start
             from is never overwritten.
