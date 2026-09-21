@@ -26,6 +26,45 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-21 — Stems belonged to the song; they belong to a version (song 1144)
+Reported from production: a popping sound audible in song 1144's *cleaned* mix could not be found
+in any stem. It wasn't a hearing problem — the stems were the **original's**.
+
+Song 1144 had two versions (75 original, 76 cleaned) and exactly one stem set, `source_version_id`
+= 75. `latestComplete()` picked the song's newest complete set and **never looked at
+`source_version_id`**, even though the field was fetched and sat on the row. Meanwhile the full-mix
+console row is built from `/api/produce/versions/{sourceVersionId}/…`, so it *did* follow the
+selection. That split is the whole symptom: the artifact was in the mix row and in none of the stems
+below it, because they were a different recording.
+
+- **Worse than a display bug.** `waitForStemSet(forceNew=false)` used the same function, so Start
+  analysis on the cleaned version *reused the original's stems* and filed the measurements against
+  the version selected. Every per-stem fix accepted was computed from audio nobody was listening to.
+- The root cause was written down in prose and believed: a comment read *"Stems are not cleared:
+  they belong to the song, not to a version."* That is the defect, stated as intent. Stems now clear
+  and refetch on a version change like fixes do.
+- **Four call sites** inherited it (mount preload, tag poll, Start analysis reuse, rename fallback),
+  plus the separation wait loop and its already-running guard, which watched the song's newest set
+  rather than this version's.
+- **The cost is honest and real:** selecting a version nothing has been separated from now means a
+  Demucs run. The alternative is measuring another version's audio, so there isn't a cheaper correct
+  option. The empty state says *why* the stems vanished (`stemsOnAnotherVersion`), because otherwise
+  switching version just empties the console and reads as a fault.
+- **Migration 16** backfills legacy `source_version_id IS NULL` sets (added before the column) to the
+  song's `original` version — provably the file those runs used, since a null request resolves to the
+  catalog original. Only where exactly one original exists; anything ambiguous stays null and is
+  re-separated rather than guessed. Applied: 4 rows on song 1650, re-run is `UPDATE 0`.
+
+Also fixed here: `__tests__/ResultSidebar.test.tsx` had two mocks left behind by PR #92's prop
+retyping. `next build` does not typecheck test files, so `npm run build` was green while
+`tsc --noEmit` was red on main — worth remembering that the build gate alone does not cover tests.
+
+The three new hook tests were confirmed **red against the old selector** before being kept, and
+`--max-warnings=0` again caught two stale dependency arrays (the tag poll would have merged tags
+from the wrong version's set after a switch).
+
+---
+
 ### 2026-09-21 — Released v0.17.2 (patch bump — the pitch gate scope fix, plus a release-loop fix)
 Tagged `main` at `68febac` as **v0.17.2**. Patch rather than minor: the range is PR #92 (issue #91 —
 one shared monophony measurement across analyze/apply, and a fix-that-fell-short now reported on a

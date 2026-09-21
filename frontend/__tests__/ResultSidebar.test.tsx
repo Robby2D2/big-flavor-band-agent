@@ -6,8 +6,10 @@ import ResultSidebar from '@/components/produce/audio/ResultSidebar';
 const props = {
   enabledCount: 17,
   totalCount: 17,
-  onAcceptAll: vi.fn(async () => ({})),
-  onPreviewFull: vi.fn(async () => '/tmp/mix.wav'),
+  // `Promise<void>` since PR #92 — the sidebar no longer reads a return value.
+  onAcceptAll: vi.fn(async () => undefined),
+  // Also PR #92: a preview resolves to its path plus any notices raised.
+  onPreviewFull: vi.fn(async () => ({ path: '/tmp/mix.wav' })),
   onAccepted: vi.fn(),
 };
 
