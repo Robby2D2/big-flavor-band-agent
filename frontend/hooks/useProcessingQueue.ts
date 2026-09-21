@@ -109,12 +109,18 @@ const MONOPHONIC_INSTRUMENTS = new Set([
  * The full mix never is — it is polyphonic by definition. The backend refuses
  * a polyphonic source on its own (it can't segment notes out of a chord), so
  * this is about not spending a pyin pass to be told that.
+ *
+ * *Any* of the stem's tags qualifying is enough, not just the highest-scoring
+ * one (issue #91). The tagger is multi-label precisely because one stem holds
+ * several instruments, and `other` is where the single-line instruments the
+ * Demucs model has no source for end up — a fiddle over a pad is tagged second
+ * and was silently skipped, which is the case the comment above always claimed
+ * to cover.
  */
 export function isPitchAnalyzable(stem: StemInfo): boolean {
   if (stem.id === FULL_MIX_STEM_ID) return false;
   if (MONOPHONIC_SOURCES.has(stem.name)) return true;
-  const strongest = stem.instruments[0];
-  return !!strongest && MONOPHONIC_INSTRUMENTS.has(strongest.label);
+  return stem.instruments.some((i) => MONOPHONIC_INSTRUMENTS.has(i.label));
 }
 
 /** The tools to measure on one stem row. */

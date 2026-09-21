@@ -449,15 +449,40 @@ def detect_hum(y, sr) -> dict:
 PITCH_ANALYSIS_WINDOW_S = 20.0
 PITCH_ANALYSIS_SR = 22050     # fmax is C7 (~2093 Hz); Nyquist here is 11 kHz
 
-# Monophony gate, shared with correct_pitch.apply() so the two halves of the
-# tool agree about what they can work on. Calibrated against real Demucs stems
-# rather than guessed: across four songs, vocal stems voice 74-86% of the window
-# at a mean pyin confidence of 0.21-0.24, while the polyphonic stems that voice
-# just as often (`other`, `guitar`) sit at 0.05-0.17. pyin's voiced_prob comes
-# out of Viterbi-decoded candidates, so it is nowhere near 1.0 even on a clean
-# solo line — the 0.5 this guard used to carry rejected every real vocal stem,
-# which meant per-note auto-tune silently fell back to a whole-file shift every
-# single time it was asked for.
+# Monophony gate. Both halves of ``correct_pitch`` read these, and — since
+# issue #91 — both halves measure them through ``measure_monophony()`` below, on
+# one scope. That sharing is the point: the numbers here are only meaningful
+# against the loudest-window-at-22.05 kHz measurement they were calibrated on,
+# so a caller that measures differently makes them mean something else.
+#
+# Calibrated against real Demucs stems rather than guessed: across four songs,
+# vocal stems voice 74-86% of the window at a mean pyin confidence of 0.21-0.24,
+# while the polyphonic stems that voice just as often (`other`, `guitar`) sit at
+# 0.05-0.17. pyin's voiced_prob comes out of Viterbi-decoded candidates, so it is
+# nowhere near 1.0 even on a clean solo line — the 0.5 this guard used to carry
+# rejected every real vocal stem, which meant per-note auto-tune silently fell
+# back to a whole-file shift every single time it was asked for.
+#
+# Re-measured for issue #91 over **66 stems / 10 songs** (every separated set in
+# the catalog). The values are unchanged; what changed is that they are now
+# enforced on the scope they were calibrated on. ``apply()`` used to re-derive
+# them over the *whole file at native rate*, and on that scope they mean
+# something else entirely:
+#
+#   * 6 of the 15 stems the analysis recommended were then refused by apply().
+#   * The two scopes do not differ by an offset that could be calibrated away —
+#     the per-stem gap ran from -0.43 to +0.69.
+#   * Giving the file-wide check its own constants cannot work: the loosest pair
+#     that removes all 6 contradictions (ratio 0.25 / confidence 0.07) admits 33
+#     of the 66 stems — drum and near-silent stems included — to per-note
+#     correction. That is not a calibration, it is the gate switched off.
+#   * Scope alone was not enough either: sample rate moves pyin's confidence on
+#     low sources. Gating on apply()'s own native-rate f0, windowed, still left
+#     two bass stems refused (confidence 0.14 native vs 0.29 at 22.05 kHz).
+#
+# Hence one shared measurement rather than a second constant. On the same 66
+# stems that takes recommended-but-refused from 6 to **0**, while per-note
+# eligibility *rises* from 12 stems to 22.
 PITCH_MIN_VOICED_RATIO = 0.6
 PITCH_MIN_VOICED_CONFIDENCE = 0.18
 
@@ -493,6 +518,66 @@ def _loudest_window(y, sr: int, window_s: float):
     return start, min(len(y), start + want)
 
 
+def measure_monophony(y, sr: int):
+    """The one monophony measurement both halves of ``correct_pitch`` use.
+
+    Returns ``(stats, f0, voiced_flag)`` for the canonical scope: the loudest
+    ``PITCH_ANALYSIS_WINDOW_S`` seconds, resampled to ``PITCH_ANALYSIS_SR``.
+    ``f0``/``voiced_flag`` are the window's pyin output, handed back so a caller
+    that also wants notes does not pay for a second pass; they are ``None`` when
+    there was not enough audio to measure.
+
+    This exists so the gate cannot drift apart again (issue #91). ``analyze()``
+    measured here while ``apply()`` re-derived the same two numbers over the
+    whole file at native rate, and the two scopes disagreed enough that a fix
+    could be recommended with measured numbers on the card and then decline to
+    run — handing the producer back unchanged audio after a render. Sharing the
+    *measurement*, not just the thresholds, is what makes that structurally
+    impossible: ``detect_pitch_issues`` recommends nothing it has not passed
+    through this gate, and ``apply()`` asks this same question of the same audio.
+
+    Why this scope and not the whole file: a stem is mostly silence and bleed
+    around the part that actually plays, so a file-wide voiced ratio measures how
+    much of the song the instrument sits out, not whether it is a single line.
+    Measured over the catalog's 66 separated stems, a clean vocal with long
+    instrumental stretches reads 0.94 voiced here and 0.45 across the file.
+    """
+    import librosa
+    import numpy as np
+
+    if sr > PITCH_ANALYSIS_SR:
+        y = librosa.resample(y, orig_sr=sr, target_sr=PITCH_ANALYSIS_SR)
+        sr = PITCH_ANALYSIS_SR
+    start, end = _loudest_window(y, sr, PITCH_ANALYSIS_WINDOW_S)
+    window = y[start:end]
+
+    stats = {
+        "voiced_ratio": 0.0,
+        "voiced_confidence": 0.0,
+        "analyzed_seconds": round(len(window) / sr, 2) if sr else 0.0,
+    }
+    if len(window) < sr // 2:
+        return stats, None, None
+
+    f0, voiced_flag, voiced_prob = librosa.pyin(
+        window, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr
+    )
+    voiced_ratio = float(np.mean(voiced_flag)) if len(voiced_flag) else 0.0
+    voiced_conf = float(np.mean(voiced_prob[voiced_flag])) if voiced_ratio > 0 else 0.0
+    # Rounded before the comparison, not after, so the gate tests exactly the
+    # figures the fix card goes on to display — a card reading 0.18 against a
+    # threshold of 0.18 should not be a refusal.
+    stats["voiced_ratio"] = round(voiced_ratio, 3)
+    stats["voiced_confidence"] = round(voiced_conf, 3)
+    return stats, f0, voiced_flag
+
+
+def passes_monophony_gate(stats: dict) -> bool:
+    """Whether ``measure_monophony`` stats clear the gate for per-note work."""
+    return (stats["voiced_ratio"] >= PITCH_MIN_VOICED_RATIO
+            and stats["voiced_confidence"] >= PITCH_MIN_VOICED_CONFIDENCE)
+
+
 def detect_pitch_issues(y, sr: int, key: Optional[str] = None) -> dict:
     """Measure how far a monophonic line's notes sit from their own pitch.
 
@@ -505,7 +590,6 @@ def detect_pitch_issues(y, sr: int, key: Optional[str] = None) -> dict:
     error. The key is still detected (and reported, since key-aware auto-tune is
     what gets recommended), with ``notes_out_of_key`` alongside.
     """
-    import librosa
     import numpy as np
 
     blank = {
@@ -525,27 +609,23 @@ def detect_pitch_issues(y, sr: int, key: Optional[str] = None) -> dict:
     if y is None or len(y) == 0:
         return blank
 
-    if sr > PITCH_ANALYSIS_SR:
-        y = librosa.resample(y, orig_sr=sr, target_sr=PITCH_ANALYSIS_SR)
-        sr = PITCH_ANALYSIS_SR
-    start, end = _loudest_window(y, sr, PITCH_ANALYSIS_WINDOW_S)
-    window = y[start:end]
-    blank["analyzed_seconds"] = round(len(window) / sr, 2)
-    if len(window) < sr // 2:
+    stats, f0, voiced_flag = measure_monophony(y, sr)
+    blank["analyzed_seconds"] = stats["analyzed_seconds"]
+    if f0 is None:
         return blank
 
-    f0, voiced_flag, voiced_prob = librosa.pyin(
-        window, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr
+    out = dict(
+        blank,
+        voiced_ratio=stats["voiced_ratio"],
+        voiced_confidence=stats["voiced_confidence"],
     )
-    voiced_ratio = float(np.mean(voiced_flag)) if len(voiced_flag) else 0.0
-    voiced_conf = float(np.mean(voiced_prob[voiced_flag])) if voiced_ratio > 0 else 0.0
-    out = dict(blank, voiced_ratio=round(voiced_ratio, 3), voiced_confidence=round(voiced_conf, 3))
 
     # A chord or a full mix voices sparsely and with low confidence; pyin tracks
     # one pitch at a time, so note segmentation there is meaningless rather than
-    # merely noisy. apply() refuses the same input and falls back to a whole-file
-    # shift, so declining to recommend it is the consistent answer.
-    if voiced_ratio < PITCH_MIN_VOICED_RATIO or voiced_conf < PITCH_MIN_VOICED_CONFIDENCE:
+    # merely noisy. apply() asks this same question of the same audio through
+    # the same helper, so anything recommended below is something it will run
+    # per-note rather than quietly downgrade to a whole-file shift (issue #91).
+    if not passes_monophony_gate(stats):
         return out
 
     notes = _segment_notes(f0, voiced_flag)

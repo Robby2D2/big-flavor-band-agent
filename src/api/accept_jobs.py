@@ -22,7 +22,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger("backend-api")
 
@@ -60,7 +60,7 @@ class AcceptJobManager:
         # song_id -> (fingerprint, rendered file). The rendered mix from the
         # last successful render, kept so an unchanged fix set never renders
         # twice: Start analysis warms this, and Preview/Save then hit it.
-        self._renders: Dict[int, Dict[str, str]] = {}
+        self._renders: Dict[int, Dict[str, Any]] = {}
 
     def cached_render(self, song_id: int, print_: str) -> Optional[str]:
         """The already-rendered file for this exact fix set, if it still exists."""
@@ -74,8 +74,28 @@ class AcceptJobManager:
             return None
         return entry["path"]
 
-    def remember_render(self, song_id: int, print_: str, path: str) -> None:
-        self._renders[song_id] = {"fingerprint": print_, "path": path}
+    def remember_render(
+        self,
+        song_id: int,
+        print_: str,
+        path: str,
+        notices: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        self._renders[song_id] = {
+            "fingerprint": print_, "path": path, "notices": notices or [],
+        }
+
+    def cached_notices(self, song_id: int, print_: str) -> List[Dict[str, Any]]:
+        """What the remembered render reported doing less of than asked.
+
+        Stored with the render rather than the job: a reused render answers a
+        later request that never ran the DSP itself, and a producer accepting
+        that result needs the same warning the first one got (issue #91).
+        """
+        entry = self._renders.get(song_id)
+        if not entry or entry["fingerprint"] != print_:
+            return []
+        return entry.get("notices") or []
 
     def is_running(self, song_id: int) -> bool:
         job = self._jobs.get(song_id)
@@ -104,6 +124,7 @@ class AcceptJobManager:
             "finished_at": None,
             "version": None,
             "candidate_path": None,
+            "notices": [],
             "error": None,
         }
         self._jobs[song_id] = job
@@ -129,6 +150,7 @@ class AcceptJobManager:
             result = await render()
             job["version"] = result.get("version")
             job["candidate_path"] = result.get("candidate_path")
+            job["notices"] = result.get("notices") or []
             job["status"] = STATUS_COMPLETE
             logger.info(
                 "Accept-fixes render complete for song %s (job %s)", song_id, job["job_id"]
@@ -163,6 +185,7 @@ class AcceptJobManager:
             "finished_at": now,
             "version": result.get("version"),
             "candidate_path": result.get("candidate_path"),
+            "notices": result.get("notices") or [],
             "error": None,
         }
         return self.status(song_id)

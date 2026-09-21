@@ -13,6 +13,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type AcceptJobStatus = 'idle' | 'running' | 'complete' | 'failed';
 
+/**
+ * A fix that succeeded but did less than its card promised.
+ *
+ * Today only `correct_pitch` raises one, when the source turns out not to be a
+ * single line and it shifts the whole file instead of correcting note by note.
+ * Accepting a fix and being handed back unchanged audio with nothing said is
+ * the outcome this exists to prevent (issue #91).
+ */
+export interface FixNotice {
+  /** The stem name the fix ran on, or `master` for the full-mix bucket. */
+  scope: string;
+  tool: string;
+  /** The tool's own words for what it did instead. */
+  reason: string;
+}
+
 export interface AcceptJob {
   status: AcceptJobStatus;
   /** A preview render makes no version; a save does. */
@@ -23,6 +39,8 @@ export interface AcceptJob {
   error?: string | null;
   /** The render was already on disk — nothing was re-rendered. */
   reused?: boolean;
+  /** Fixes that ran but did less than their card said. */
+  notices?: FixNotice[];
 }
 
 const POLL_MS = 2500;

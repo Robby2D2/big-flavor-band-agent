@@ -609,7 +609,10 @@ export default function AudioProcessingTab({
               onPreviewFull={async () => {
                 const job = await queue.acceptAll(true);
                 onRenderStarted();
-                return job.candidate_path as string;
+                return {
+                  path: job.candidate_path as string,
+                  notices: job.notices,
+                };
               }}
               onAccepted={onApplied}
               renderInProgress={renderInProgress}

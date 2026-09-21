@@ -10,7 +10,7 @@ try:
     from ..analysis import (
         _segment_notes, _parse_key, _detect_key, _scale_midi_set, _snap_midi, _NOTE_NAMES,
         detect_pitch_issues, load_for_analysis,
-        PITCH_MIN_VOICED_CONFIDENCE, PITCH_MIN_VOICED_RATIO,
+        measure_monophony, passes_monophony_gate,
         PITCH_OFF_TARGET_CENTS, PITCH_RECOMMEND_RATIO,
     )
 except ImportError:
@@ -20,7 +20,7 @@ except ImportError:
     from analysis import (
         _segment_notes, _parse_key, _detect_key, _scale_midi_set, _snap_midi, _NOTE_NAMES,
         detect_pitch_issues, load_for_analysis,
-        PITCH_MIN_VOICED_CONFIDENCE, PITCH_MIN_VOICED_RATIO,
+        measure_monophony, passes_monophony_gate,
         PITCH_OFF_TARGET_CENTS, PITCH_RECOMMEND_RATIO,
     )
 
@@ -186,7 +186,6 @@ class CorrectPitch(AudioTool):
     ) -> dict:
         try:
             import librosa
-            import numpy as np
 
             # Load audio (channel count preserved; pitch detection on mono mix).
             y_full, sr = _load_audio(file_path)
@@ -203,45 +202,54 @@ class CorrectPitch(AudioTool):
             strength = float(min(1.0, max(0.0, correction_strength)))
             mono = _to_mono(y)
 
-            # Probabilistic YIN: continuous f0 + per-frame voicing, far more
-            # robust than piptrack peak-picking for a monophonic line.
-            fmin = librosa.note_to_hz("C2")
-            fmax = librosa.note_to_hz("C7")
-            f0, voiced_flag, voiced_prob = librosa.pyin(
-                mono, fmin=fmin, fmax=fmax, sr=sr
-            )
-            hop_length = 512  # librosa.pyin default
-
-            voiced_ratio = float(np.mean(voiced_flag)) if len(voiced_flag) else 0.0
-            # Mean pyin confidence over the frames it flagged as voiced. A clean
-            # solo line sits high (~0.8+); a chord / full mix drags this down.
-            voiced_conf = (
-                float(np.mean(voiced_prob[voiced_flag])) if voiced_ratio > 0 else 0.0
-            )
-
             # Polyphony / non-monophonic guard: a chord or full mix yields sparse
-            # and/or low-confidence voicing. Rather than garble the audio, fall
-            # back to the old whole-file shift and say so. The thresholds are
-            # shared with analyze() (and calibrated on real stems there) so the
-            # tool can never recommend a correction it then declines to make.
-            if (voiced_ratio < PITCH_MIN_VOICED_RATIO
-                    or voiced_conf < PITCH_MIN_VOICED_CONFIDENCE):
+            # and/or low-confidence voicing, and pyin tracks one pitch at a time,
+            # so note segmentation there would garble the audio. Rather than do
+            # that, fall back to the old whole-file shift and say so.
+            #
+            # This asks analyze()'s *own* question, through analyze()'s own
+            # helper, on the same scope it was calibrated on (issue #91). It used
+            # to re-derive the two numbers over the whole file at native rate
+            # instead, which measures how much of the song the instrument sits
+            # out rather than whether it is a single line — so a recommended fix
+            # could arrive here and be refused. Measured over the catalog's 66
+            # separated stems, that happened to 6 of the 15 stems the analysis
+            # recommended.
+            #
+            # It also runs *before* the full-length pyin below, so a refusal is
+            # now the cheap path rather than the expensive one.
+            stats, _window_f0, _window_voiced = measure_monophony(mono, sr)
+            if not passes_monophony_gate(stats):
                 fallback = _apply_global_shift(
                     y_full, sr, semitones, file_path, output_path,
                     auto_tune_enabled=True, start_s=start_s, end_s=end_s,
                 )
                 fallback["mode"] = "global_fallback"
                 fallback["fallback_reason"] = (
-                    "Input does not look monophonic (voiced "
-                    f"{voiced_ratio * 100:.0f}% of the time, mean confidence "
-                    f"{voiced_conf:.2f}); note-level correction is unreliable, "
-                    "applied a whole-file shift instead."
+                    "Input does not look like a single line in its loudest "
+                    f"{stats['analyzed_seconds']:.0f}s (voiced "
+                    f"{stats['voiced_ratio'] * 100:.0f}% of the time, mean confidence "
+                    f"{stats['voiced_confidence']:.2f}); note-level correction is "
+                    "unreliable, applied a whole-file shift instead."
                 )
                 logger.info(
                     "correct_pitch: polyphonic/low-voicing input "
-                    f"(ratio={voiced_ratio:.2f}, conf={voiced_conf:.2f}) → global fallback"
+                    f"(ratio={stats['voiced_ratio']:.2f}, "
+                    f"conf={stats['voiced_confidence']:.2f}) → global fallback"
                 )
                 return fallback
+
+            # Probabilistic YIN: continuous f0 + per-frame voicing, far more
+            # robust than piptrack peak-picking for a monophonic line. The gate
+            # above measures a 20s window; the correction itself needs f0 across
+            # everything it is about to touch, so this pass stays full-length and
+            # at the native rate.
+            fmin = librosa.note_to_hz("C2")
+            fmax = librosa.note_to_hz("C7")
+            f0, voiced_flag, _voiced_prob = librosa.pyin(
+                mono, fmin=fmin, fmax=fmax, sr=sr
+            )
+            hop_length = 512  # librosa.pyin default
 
             # Segment the f0 curve into discrete note events.
             notes = _segment_notes(f0, voiced_flag)

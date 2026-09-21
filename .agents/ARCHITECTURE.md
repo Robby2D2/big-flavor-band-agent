@@ -327,10 +327,18 @@ whole-song `analyze_and_recommend_processing`, for auto-clean and the agent) mea
   would move the very chromatic notes the measurement exists to leave alone. The key is still
   detected, reported, and shipped as the `key` param: inert while chromatic is on, and the seed the
   Adjust drawer needs the moment a producer turns it off.
-  The monophony gate (`PITCH_MIN_VOICED_RATIO` / `PITCH_MIN_VOICED_CONFIDENCE`) is now **shared with
+  The monophony gate (`PITCH_MIN_VOICED_RATIO` / `PITCH_MIN_VOICED_CONFIDENCE`) is **shared with
   `apply()`**, so the tool cannot recommend a correction it would then decline to make — the
   previous `apply()`-only threshold of 0.5 rejected every real Demucs vocal stem, silently turning
   per-note auto-tune into a whole-file shift.
+  **Sharing the constants was not enough (2026-09-21, issue #91):** `apply()` re-derived the same two
+  numbers over the *whole file at native rate*, while the constants were calibrated on the loudest
+  20 s window at 22.05 kHz. A file-wide voiced ratio measures how much of the song the instrument
+  sits out, not whether it is a single line — so a vocal with long instrumental stretches passed the
+  card and failed the render. Both halves now measure through one helper,
+  `measure_monophony()` + `passes_monophony_gate()` in `analysis.py`; `apply()` runs it *before* its
+  own full-length pyin, so a refusal is the cheap path. The full-length pass still happens, because
+  the correction needs f0 across everything it touches — it is the *gate* that moved, not the DSP.
 - **Clicks** use an *absolute* outlier rule: a sample-to-sample jump ≥8x the track's own
   99th-percentile jump, grouped into events. This is deliberately **not** `apply()`'s threshold,
   which is the `100 - sensitivity * 20` percentile and so flags a fixed fraction of every file by
@@ -345,8 +353,9 @@ whole-song `analyze_and_recommend_processing`, for auto-clean and the agent) mea
   handful of events counted. Repairing only the measured clicks needs `apply()` to take sample
   positions rather than a threshold; that is a deliberate follow-up, not part of #89.
 - **Which rows get measured** is a frontend decision (`isPitchAnalyzable` in
-  `useProcessingQueue.ts`): the vocal stem, plus any stem the tagger labels a single-line
-  instrument. Never the full mix. `remove_artifacts` runs on every row, and its card copy names its
+  `useProcessingQueue.ts`): the vocal stem, plus any stem **any** of whose tagger labels names a
+  single-line instrument (it read only `instruments[0]` until issue #91, so a fiddle tagged second
+  inside `other` was skipped despite the comment saying otherwise). Never the full mix. `remove_artifacts` runs on every row, and its card copy names its
   scope ("in this stem" / "in the whole mix") because one physical click lands in both.
 - **`match_tempo` stays un-recommended** — there is no *correct* BPM for a song, so recommending a
   stretch would assert a creative preference as a defect. Its only change is that a hand-added card
@@ -454,6 +463,18 @@ token utilities at any time without breaking in the meantime.
   `python scripts/run_migration.py <migration-file.sql>`.
 
 ---
+
+### A fix that did less than its card said is reported (2026-09-21, issue #91)
+
+`_chain_apply_tools` read each tool result only for `status`, so `correct_pitch`'s `fallback_reason`
+— the one case where a tool succeeds but does less than asked — could not reach the producer at all:
+accepting the fix returned unchanged audio and looked like it had worked. The chain now also returns
+**notices** (`{scope, tool, reason}`), carried through `_render_mix` → the accept/preview responses
+and onto the job, and rendered by `ResultSidebar`. They are stored with the *render* in
+`accept_jobs.remember_render`, not with the job, because Start analysis warm-renders almost
+everything — a reused render has to be as honest as a fresh one. `scope` is deliberately separate
+from the intermediate-directory `tag`: a single-stem preview needs a unique directory per run and
+still has to say "vocals".
 
 ### Accepting fixes is a background render (2026-09-16)
 
@@ -591,6 +612,7 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-08 | Stem-scoped `apply` never writes a version; only `/api/produce/accept-fixes` does | Keeps "create a version" a single seam. Per-stem/per-fix "Hear it" and "Preview with fixes" auditioning needed to be cheap and side-effect-free, so every per-tool or per-stem render is a preview; only the explicit accept-fixes orchestrator (which composes every stem + master fix into one file) is allowed to call `save_candidate_version`. |
 | 2026-08 | Tag instruments on stems instead of trying to separate more of them | Demucs' source list is baked into the model weights, so "add banjo/mandolin" is not a config change — it needs either query-based separation (materially worse quality than Demucs on its native sources) or a fine-tune on isolated multitracks the band doesn't have. But nothing is actually *lost*: the 6 stems sum back to the mix, so a banjo is present, just inside `other`. The gap is naming, not coverage — so an AudioSet tagger names what's in each stem and the producer can override the label by hand. Query-based separation stays on the table if per-instrument isolation later proves worth it. |
 | 2026-08 | Instrument tagging runs after the stem set is marked `complete`, not before | Separation already takes minutes; making the producer wait on a second model pass before any waveform appears would compound the exact slowness the console was being fixed for. Tags are a labelling pass over stems that already exist, so the console renders immediately and the labels fill in behind via a bounded poll. It also means a tagging failure can't fail a separation that produced perfectly usable stems. |
+| 2026-09 | The pitch monophony gate is one shared *measurement*, not two calibrated constants (issue #91) | #89 shared the thresholds but not the scope: `analyze()` measured the loudest 20 s window at 22.05 kHz, `apply()` the whole file at native rate. Measured over all 66 separated stems in the catalog, 6 of the 15 stems the analysis recommended were then refused by the render. Giving the file-wide check its own constants cannot work — the loosest pair that removes all 6 (ratio 0.25 / confidence 0.07) admits 33 of 66 stems, drums included; and the two scopes differ by no fixed offset (-0.43 to +0.69), so nothing could be calibrated away. Scope alone was not enough either, since sample rate moves pyin's confidence on low sources (two bass stems still refused at 0.14 native vs 0.29 at 22.05 kHz). So both halves now call `measure_monophony()`: contradictions 6 → 0, while per-note eligibility *rose* 12 → 22. The test asserts the property (recommended ⇒ per-note-runnable), not the numbers, because the property is what kept breaking. |
 | 2026-09 | Pitch and clicks are measured by the per-tool `analyze()`s, and the monophony gate moved into shared constants `apply()` also reads (issue #89) | A fix nothing can detect is a fix only an expert finds. Both detections already existed inside `apply()`; what was missing was running them without the write. The gate had to be shared because `apply()`'s 0.5 voiced-confidence threshold rejected every real vocal stem — a recommended card whose Hear it silently fell back to a zero-semitone whole-file shift would have been worse than no card. Clicks needed a genuinely new *statistic* (absolute outlier, not a percentile of every file) for the same reason: the apply-side rule cannot distinguish a clean file from a clicky one. That fixes *detection* only — `sensitivity` is still a percentile of the whole file, so even the recommended value (usually its `0.005` floor, = the top 0.1% of jumps) repairs far more than the events counted — measured, 41 clicks vs 78,597 samples touched. Making the repair as targeted as the measurement means `apply()` taking sample positions instead of a threshold: a deliberate follow-up, out of scope here. |
 | 2026-09 | "Hear it" drives the stem console's single transport instead of a per-card `<audio>` element (issue #89) | Deciding whether to keep a fix means hearing it against the rest of the song — soloing the drums against the de-hissed vocal, toggling it on and off in the mix. A player per card could do none of that, and put as many playheads on the page as there were cards. The transport already rendered per-row fix chains on demand, so this was a rewiring rather than new machinery. |
 | 2026-09 | Frontend linting migrated to a flat `eslint.config.mjs` and driven by the eslint CLI, not `next lint` | Next 16 removed the `next lint` command, so `npm run lint` had been reading "lint" as a directory and failing repo-wide — every frontend PR shipped with the gate declared broken. `eslint-config-next` 16 already ships flat-config arrays, so the migration was a config file plus a script change. Turning it back on found 11 real errors (full-page-reload `<a>` links, dead vars, two setState-in-effect bugs in `AudioPlayer`); they were fixed rather than rule-disabled, so the repo sits at zero problems and any lint output now means the change in front of you. `no-explicit-any` is off rather than `warn`: ~100 `any`s exist today, two thirds of them in the `app/api/` BFF routes that forward whatever JSON the backend returns, and the lint script runs `--max-warnings=0`, so a warning would be a failure. Typing them properly is its own piece of work; until then `.agents/CODING.md` asks for a real type where one fits and review enforces it. |

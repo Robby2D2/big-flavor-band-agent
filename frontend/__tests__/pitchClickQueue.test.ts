@@ -127,8 +127,50 @@ describe('which rows are worth measuring for tuning', () => {
     ).toBe(false);
   });
 
-  it('never measures the full mix, which is polyphonic by definition', () => {
+  it('qualifies on any tag, not just the highest-scoring one', () => {
+    // The tagger is multi-label because one stem holds several instruments, and
+    // `other` is where the single-line instruments Demucs has no source for end
+    // up. A fiddle over a sustained pad is tagged second and used to be skipped,
+    // though the gate always claimed to cover it (issue #91).
+    expect(
+      isPitchAnalyzable(
+        info({
+          name: 'other',
+          instruments: [
+            { label: 'Synthesizer', score: 0.71 },
+            { label: 'Fiddle / violin', score: 0.64 },
+          ],
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('still declines a stem whose tags are all polyphonic', () => {
+    expect(
+      isPitchAnalyzable(
+        info({
+          name: 'other',
+          instruments: [
+            { label: 'Synthesizer', score: 0.71 },
+            { label: 'Piano', score: 0.64 },
+          ],
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('never measures the full mix, however it is tagged', () => {
     expect(isPitchAnalyzable(info({ id: FULL_MIX_STEM_ID, name: 'Full mix' }))).toBe(false);
+    // ...not even when a qualifying instrument is named in its tags.
+    expect(
+      isPitchAnalyzable(
+        info({
+          id: FULL_MIX_STEM_ID,
+          name: 'Full mix',
+          instruments: [{ label: 'Fiddle / violin', score: 0.9 }],
+        })
+      )
+    ).toBe(false);
   });
 });
 

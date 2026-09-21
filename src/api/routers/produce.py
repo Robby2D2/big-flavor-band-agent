@@ -24,7 +24,7 @@ import logging
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -1439,21 +1439,37 @@ async def _chain_apply_tools(
     source_path: Path,
     output_dir: Path,
     tag: str,
-) -> Path:
+    scope: Optional[str] = None,
+) -> Tuple[Path, List[Dict[str, Any]]]:
     """Sequentially apply each fix spec, step N's output feeding step N+1.
+
+    Returns the final path plus any **notices** the tools raised — a tool that
+    succeeded but did less than its card promised. Only ``correct_pitch`` reports
+    one today (``fallback_reason``, when a source turns out not to be a single
+    line and it shifts the whole file instead of correcting note by note), but
+    the rule is generic: a successful result carrying ``fallback_reason`` is
+    something the producer has to be told about. Accepting a fix and getting
+    audio back that is unchanged, with nothing said, is the failure this exists
+    to prevent (issue #91).
 
     Returns ``source_path`` unchanged (no processing, no file written) when
     ``specs`` is empty — an unmodified stem or a master bucket with every fix
     skipped is a valid, cheap no-op. Intermediate files land under
     ``output_dir / tag /`` so a multi-stem chain-apply run can never collide
     with another stem's or another run's files.
+
+    ``tag`` names that directory; ``scope`` is what a notice calls the row the
+    producer is looking at. They are usually the same word, but not always — a
+    single-stem preview needs a unique directory per run and still has to say
+    "vocals" rather than a timestamp — so a caller can set them apart.
     """
     if not specs:
-        return source_path
+        return source_path, []
 
     chain_dir = output_dir / tag
     chain_dir.mkdir(parents=True, exist_ok=True)
     current = source_path
+    notices: List[Dict[str, Any]] = []
     for i, spec in enumerate(specs):
         next_path = chain_dir / f"{i:02d}_{spec.tool}_{int(time.time() * 1000)}.wav"
         args = {
@@ -1468,8 +1484,14 @@ async def _chain_apply_tools(
             raise HTTPException(
                 status_code=502, detail=result.get("error", f"{spec.tool} failed")
             )
+        if result.get("fallback_reason"):
+            notices.append({
+                "scope": scope or tag,
+                "tool": spec.tool,
+                "reason": result["fallback_reason"],
+            })
         current = next_path
-    return current
+    return current, notices
 
 
 class StemPreviewChainRequest(BaseModel):
@@ -1498,10 +1520,11 @@ async def preview_stem_fix_chain(
         raise HTTPException(status_code=404, detail="Stem set not found")
 
     output_dir = _produced_dir() / str(stem_set["song_id"]) / "stem_preview" / str(stem_id)
-    candidate_path = await _chain_apply_tools(
-        agent, request.fixes, Path(stem["path"]), output_dir, tag=f"run{int(time.time() * 1000)}"
+    candidate_path, notices = await _chain_apply_tools(
+        agent, request.fixes, Path(stem["path"]), output_dir,
+        tag=f"run{int(time.time() * 1000)}", scope=stem["name"],
     )
-    return {"stem_id": stem_id, "candidate_path": str(candidate_path)}
+    return {"stem_id": stem_id, "candidate_path": str(candidate_path), "notices": notices}
 
 
 class StemAcceptSpec(BaseModel):
@@ -1546,14 +1569,18 @@ async def _render_mix(
     request: AcceptFixesRequest,
     agent: BigFlavorAgent,
     db: DatabaseManager,
-) -> Path:
+) -> Tuple[Path, List[Dict[str, Any]]]:
     """The expensive half: chain every fix onto its stem, remix, master.
 
     Minutes of DSP for a full queue, and the only part worth caching — the
     result is byte-identical whether it was asked for as a preview or a save.
+
+    Also returns every notice the chains raised, so a fix that quietly did less
+    than its card said can be reported next to the result it produced.
     """
     run_dir = _produced_dir() / str(request.song_id) / "accept_fixes" / str(int(time.time() * 1000))
 
+    notices: List[Dict[str, Any]] = []
     remix_inputs: List[Dict[str, str]] = []
     for stem_spec in request.stems:
         stem = await db.get_stem(stem_spec.stem_id)
@@ -1564,9 +1591,10 @@ async def _render_mix(
             raise HTTPException(
                 status_code=404, detail=f"Stem {stem_spec.stem_id} not found for this song"
             )
-        fixed_path = await _chain_apply_tools(
+        fixed_path, stem_notices = await _chain_apply_tools(
             agent, stem_spec.fixes, Path(stem["path"]), run_dir, tag=stem["name"]
         )
+        notices.extend(stem_notices)
         remix_inputs.append({"name": stem["name"], "path": str(fixed_path)})
 
     if remix_inputs:
@@ -1584,11 +1612,12 @@ async def _render_mix(
             request.song_id, request.source_version_id, db
         )
 
-    final_path = await _chain_apply_tools(
+    final_path, master_notices = await _chain_apply_tools(
         agent, request.master_fixes, downmix_path, run_dir, tag="master"
     )
+    notices.extend(master_notices)
 
-    return final_path
+    return final_path, notices
 
 
 async def _finalize_save(
@@ -1620,14 +1649,14 @@ async def _render_accept_fixes(
     db: DatabaseManager,
 ) -> Dict[str, Any]:
     """Render, remember the result, and save it unless this was a preview."""
-    final_path = await _render_mix(request, agent, db)
+    final_path, notices = await _render_mix(request, agent, db)
     accept_jobs.remember_render(
-        request.song_id, _accept_fingerprint(request), str(final_path)
+        request.song_id, _accept_fingerprint(request), str(final_path), notices
     )
 
     if request.preview:
-        return {"candidate_path": str(final_path)}
-    return await _finalize_save(request, final_path, db)
+        return {"candidate_path": str(final_path), "notices": notices}
+    return {**await _finalize_save(request, final_path, db), "notices": notices}
 
 
 @router.post("/api/produce/accept-fixes")
@@ -1668,10 +1697,15 @@ async def start_accept_fixes(
     # an insert against a file that already exists, not minutes of DSP again.
     cached = accept_jobs.cached_render(request.song_id, print_)
     if cached is not None and not accept_jobs.is_running(request.song_id):
+        # The notices belong to the render, not to the request that triggered
+        # it — Start analysis warms almost every render, so reading them back
+        # here is what keeps a reused result as honest as a fresh one.
+        remembered = accept_jobs.cached_notices(request.song_id, print_)
         result = (
-            {"candidate_path": cached}
+            {"candidate_path": cached, "notices": remembered}
             if request.preview
-            else await _finalize_save(request, Path(cached), db)
+            else {**await _finalize_save(request, Path(cached), db),
+                  "notices": remembered}
         )
         logger.info("Accept-fixes reused an existing render for song %s", request.song_id)
         return accept_jobs.complete_now(

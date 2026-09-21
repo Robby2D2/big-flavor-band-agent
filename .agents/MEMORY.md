@@ -26,6 +26,53 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-21 — The pitch gate was two scopes wearing one constant (issue #91)
+#89 moved the monophony thresholds into shared constants so the tool "cannot recommend a correction
+it would then decline to make". It still could. `analyze()` measured the loudest 20 s window at
+22.05 kHz; `apply()` re-derived the same two numbers over the **whole file at native rate**. Sharing
+the numbers is not sharing the measurement.
+
+**Measured before choosing anything** — 66 stems, 10 songs, every separated set in the catalog, via
+the shipping functions rather than a re-implementation:
+- **6 of the 15 recommended stems were refused by the render.** The producer accepted a card with
+  numbers on it, waited, and got their audio back unchanged.
+- The issue guessed it was `PITCH_MIN_VOICED_RATIO`. Half right: **3 of the 6 failed on
+  *confidence*** instead, and those three basses passed the file-wide ratio comfortably. Both
+  constants had the scope problem.
+- **Option 1 (a separately calibrated file-wide constant) is dead on the numbers.** The loosest pair
+  that removes all 6 contradictions is ratio 0.25 / confidence 0.07 — which admits **33 of 66
+  stems**, drums and near-silent stems included. That is the gate switched off, not calibrated. And
+  no offset could be calibrated away anyway: the per-stem gap between the two scopes ran **-0.43 to
+  +0.69**.
+- **Scope alone was not enough either.** Gating on apply()'s own native-rate f0, windowed, still left
+  two bass stems refused — pyin's confidence moves with sample rate on low sources (0.14 at 44.1 kHz
+  vs 0.29 at 22.05 kHz). Rate is part of the measurement, not an implementation detail.
+
+So: **one shared measurement**, `measure_monophony()` + `passes_monophony_gate()`, called by both
+halves. Contradictions **6 → 0** across all 66 stems; per-note eligibility *rose* **12 → 22** rather
+than collapsing. Verified end-to-end by running the real analyze → apply path on the 6 former
+failures: all now correct per-note (284-684 notes each), and drums / a polyphonic guitar still
+refuse. Bonus: the gate runs *before* apply()'s full-length pyin, so a refusal went from ~12 s to
+~2-4 s.
+
+**The test asserts the property, not a number** — recommended ⇒ per-note-runnable — because the
+property is what kept breaking, and a threshold test would have passed through both versions of this
+bug. It carries a guard-the-guard case asserting its own fixture still reproduces the scope gap, so
+it cannot quietly stop covering anything. Checked it fails against the old code before keeping it.
+
+**A second, quieter half:** `_chain_apply_tools` read tool results only for `status`, so
+`fallback_reason` had **no route to the UI at all** — the silent-unchanged-audio outcome was
+unreportable by construction. Chains now return notices, stored with the *render* (Start analysis
+warm-renders nearly everything, so a reused render must be as honest as a fresh one) and shown in
+`ResultSidebar`. And `isPitchAnalyzable` read only `instruments[0]`, so a fiddle tagged second inside
+`other` was skipped though the comment claimed otherwise; it reads all tags now.
+
+Backend boots, 38 pytest green on the touched files, 157 vitest (+2), lint at zero warnings, build
+clean. `tests/test_editing_tools.py` fails on `input()` — pre-existing, one of the ad-hoc scripts
+TESTING.md documents.
+
+---
+
 ### 2026-09-21 — Released v0.17.1 (patch bump — the pitch/click work v0.17.0 just missed)
 Tagged `main` at `1fc1382` as **v0.17.1**. Patch rather than minor: the whole range is PR #90
 (issue #89) plus the v0.17.0 memory commit and its merge, and every commit in it is `fix:`-prefixed
