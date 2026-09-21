@@ -26,6 +26,22 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-21 — Released v0.17.1 (patch bump — the pitch/click work v0.17.0 just missed)
+Tagged `main` at `1fc1382` as **v0.17.1**. Patch rather than minor: the whole range is PR #90
+(issue #89) plus the v0.17.0 memory commit and its merge, and every commit in it is `fix:`-prefixed
+with no `enhancement` label — it finishes work already scoped, rather than opening new capability.
+It is the tail of v0.17.0: that release was cut while #90 was approved-but-unmerged, and this one
+picks it up. Issue #89 notified.
+
+Sanity gate ran in full: `bigflavor-backend` restarted to `Application startup complete` and healthy,
+`npm run build` compiled clean.
+
+**The tag trailed the deploy this time.** A human had already deployed and verified `1fc1382` in
+production before the release ran, so v0.17.1 names what was live rather than queuing it. Harmless,
+but worth knowing when reading the tag history: a tag date here is not necessarily a deploy date.
+
+---
+
 ### 2026-09-20 — Released v0.17.0 (minor bump — 58 commits, first release since v0.16.2)
 Tagged `main` at `2412341` as **v0.17.0**. Minor rather than patch: the range carries real new
 capability, not just fixes — timed lyrics with follow-along highlighting, editor invite links (and
