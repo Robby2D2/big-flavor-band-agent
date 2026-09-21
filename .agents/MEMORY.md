@@ -26,6 +26,21 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-20 — Released v0.17.0 (minor bump — 58 commits, first release since v0.16.2)
+Tagged `main` at `2412341` as **v0.17.0**. Minor rather than patch: the range carries real new
+capability, not just fixes — timed lyrics with follow-along highlighting, editor invite links (and
+the auth holes closed building them), the full mix + real transport in the stem console, the
+per-tool audio registry with its `analyze`/`apply` contract, per-step tunable cleaning, search
+ranked on what a song *is* (with "why did this match" explanations), and the fix picker offering
+every DSP tool rather than only the four with detectors. Issues #82 and #86 notified.
+
+Sanity gate ran fully this time: `bigflavor-backend` restarted to `Application startup complete`
+and healthy, and `npm run build` compiled the frontend clean. Note that PR #90 (pitch/click
+detection, issue #89) was approved but **not merged** at tag time, so it is *not* in v0.17.0 — it
+lands in the next release.
+
+---
+
 ### 2026-09-19 — Pitch and clicks are measured now, and a fix is auditioned in the mix (issue #89)
 Two halves of the same idea: a fix you can only find by ear isn't leverage, and a fix you can only
 hear as an isolated clip can't be judged.
@@ -87,6 +102,7 @@ same snap target the deviation is measured against, the other pins the sensitivi
 says in its name that the floor is what it is testing.
 
 ---
+
 ### 2026-09-18 — Every DSP tool is addable by hand, not just the four with detectors
 Asked why the picker offered only 4 options. Traced it: `PER_STEM_TOOLS`/`MASTER_TOOLS` were the
 *analysis* lists — tools with a real `analyze()` — and the manual picker had been built from them.
