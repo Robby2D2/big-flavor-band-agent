@@ -242,16 +242,29 @@ has unreleased commits. Skip this step entirely for `/fix-issue <number>` and `/
 ```bash
 git fetch --quiet origin
 git fetch --quiet --tags origin
+
+# The release-manager records each release in .agents/MEMORY.md and commits that
+# to main *after* tagging, so its own bookkeeping commit always sits past the
+# newest tag. Counting it would make every sweep cut a release for the previous
+# release's paperwork, for ever. Must stay in step with the same pattern in
+# .claude/agents/release-manager.md (Step 2).
+RELEASE_CHORE='^chore: record v[0-9]+\.[0-9]+\.[0-9]+ release in agent memory$'
+
 latest_tag=$(git tag -l 'v*' --sort=-v:refname | head -1)
 if [ -z "$latest_tag" ]; then
-  unreleased=$(git rev-list origin/main --count)
+  range="origin/main"
 else
-  unreleased=$(git rev-list "origin/main" "^$latest_tag" --count)
+  range="$latest_tag..origin/main"
 fi
-echo "Release check: latest tag ${latest_tag:-<none>}, unreleased commits on main: $unreleased"
+# `grep -cv` exits 1 when nothing survives the filter — a legitimate zero here.
+unreleased=$(git log --pretty=format:%s $range | grep -cvE "$RELEASE_CHORE" || true)
+unreleased=${unreleased:-0}
+echo "Release check: latest tag ${latest_tag:-<none>}, releasable commits on main: $unreleased"
 ```
 
-If `unreleased` is `0`, print `No unreleased commits on main — skipping release.` and exit.
+If `unreleased` is `0`, print `No releasable commits on main — skipping release.` and exit. The
+usual reason for zero is that the only commit past the tag is the previous release's own memory
+commit; that is the steady state after a release, not something to report as a problem.
 
 If `unreleased` is greater than `0`, dispatch the release-manager:
 

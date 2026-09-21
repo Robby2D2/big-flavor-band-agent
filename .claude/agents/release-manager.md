@@ -42,18 +42,32 @@ git fetch --quiet --tags origin
 git checkout main
 git pull --ff-only --quiet origin main || { echo "git pull --ff-only failed — main diverged from origin/main; needs human cleanup."; exit 1; }
 
+# Your own Step 8.5 memory commit lands on main *after* the tag, so it is
+# always sitting past the newest tag by the time the next sweep looks. Counted
+# naively that is "1 unreleased commit", so the next sweep cuts a release for
+# it — which writes another memory commit, which justifies another release, for
+# ever. Release bookkeeping is not releasable work: exclude it from the count.
+# The pattern matches only the exact subject Step 8.5 writes, so a human commit
+# that merely mentions a release still counts.
+RELEASE_CHORE='^chore: record v[0-9]+\.[0-9]+\.[0-9]+ release in agent memory$'
+
 # Latest v-tag, or empty if none exists yet.
 latest_tag=$(git tag -l 'v*' --sort=-v:refname | head -1)
 if [ -z "$latest_tag" ]; then
   echo "No v* tag yet — this will be the first release."
-  unreleased=$(git rev-list HEAD --count)
+  range="HEAD"
 else
-  unreleased=$(git rev-list "HEAD" "^$latest_tag" --count)
+  range="$latest_tag..HEAD"
 fi
-echo "Latest tag: ${latest_tag:-<none>}, unreleased commits on main (HEAD = $(git rev-parse --short HEAD)): $unreleased"
+# `grep -cv` exits 1 when it matches nothing, which is a legitimate zero here.
+unreleased=$(git log --pretty=format:%s $range | grep -cvE "$RELEASE_CHORE" || true)
+unreleased=${unreleased:-0}
+echo "Latest tag: ${latest_tag:-<none>}, releasable commits on main (HEAD = $(git rev-parse --short HEAD)): $unreleased"
 ```
 
-If `unreleased` is `0`, exit with: `No commits beyond ${latest_tag} — nothing to release.`
+If `unreleased` is `0`, exit with: `No releasable commits beyond ${latest_tag} — nothing to release.`
+That includes the case where the only thing past the tag is your own memory commit from the
+previous release — which is the normal steady state, not a problem to report.
 
 ## Step 3 — Compute the next version
 
@@ -191,6 +205,10 @@ git config user.name "bigflavor-bot"
 git config user.email "rdanek@gmail.com"
 
 git add .agents/MEMORY.md
+# This subject line is load-bearing: Step 2 (and the /fix-issue release check)
+# match it exactly to keep this bookkeeping commit from counting as releasable
+# work. Change the wording here and you reintroduce the release-every-sweep loop —
+# change $RELEASE_CHORE in both places to match if you ever must.
 git commit -m "chore: record v$next_version release in agent memory" || { echo "Nothing to commit for memory — continuing."; }
 
 # origin/main may have advanced since you tagged (e.g. a PR merged mid-sweep). Rebase, then push.
@@ -221,6 +239,7 @@ Released v$next_version — N issues notified, GH Release created, memory commit
 | Tag didn't reach origin after push | Abort before creating a Release (Step 6); flag for a human. |
 | GitHub Release creation failed | Retry once; if still failing, post partial-state comment and exit. |
 | Nothing to commit for `.agents/MEMORY.md` (Step 8.5) | Benign — the entry is already recorded; continue. |
+| Only the previous release's memory commit sits past the tag (Step 2) | **Benign, and the normal steady state** — `unreleased` filters it out and comes to `0`. Exit with "nothing to release"; do not tag. |
 | Memory commit push to `main` rejected / rebase diverged (Step 8.5) | Unrecoverable — the tag/Release are already published, so post a `<!-- release-agent:partial -->` comment noting the memory commit didn't land, and flag for a human. Do not leave it unreported. |
 
 ## Do not
