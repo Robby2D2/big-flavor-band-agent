@@ -169,3 +169,42 @@ async def test_all_parts_missing_marks_the_set_failed(produced_dir, tmp_path):
         song_id=7, version_id=42, parts=parts, had_master_fixes=False, model=None, db=db
     ) is None
     assert [r["status"] for r in db.stem_sets.values()] == ["failed"]
+
+
+# ---- the invariant the feature was asked for: previews keep nothing ---------
+
+
+@pytest.mark.asyncio
+async def test_a_preview_never_registers_a_stem_set(produced_dir, tmp_path, monkeypatch):
+    """Guarded at two independent call sites, so worth pinning at the seam both share.
+
+    A preview is an audition. Registering its parts would attach stems to a
+    version that was never saved — and every warm-up render the queue fires is a
+    preview.
+    """
+    kept = []
+
+    async def spy(*args, **kwargs):
+        kept.append(kwargs or args)
+        return None
+
+    monkeypatch.setattr(produce, "_keep_rendered_stems", spy)
+
+    async def fake_render(request, agent, db):
+        return Path(tmp_path / "mix.wav"), [], [{"name": "vocals", "path": "x"}], "htdemucs_6s"
+
+    monkeypatch.setattr(produce, "_render_mix", fake_render)
+    monkeypatch.setattr(produce.accept_jobs, "remember_render", lambda *a, **k: None)
+
+    class Req:
+        song_id = 7
+        source_version_id = 3
+        stems = []
+        master_fixes = []
+        preview = True
+
+    monkeypatch.setattr(produce, "_accept_fingerprint", lambda r: "print")
+    result = await produce._render_accept_fixes(Req(), agent=None, db=None)
+
+    assert "candidate_path" in result
+    assert kept == [], "a preview must not keep stems"

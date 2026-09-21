@@ -19,6 +19,7 @@ never leave the server and a cleanup run can never overwrite the original catalo
 audio or trigger a re-index of the original. Editor-gated, consistent with the
 existing tools endpoint (issue #1).
 """
+import asyncio
 import json
 import logging
 import shutil
@@ -1572,8 +1573,11 @@ async def _render_mix(
     request: AcceptFixesRequest,
     agent: BigFlavorAgent,
     db: DatabaseManager,
-) -> Tuple[Path, List[Dict[str, Any]]]:
+) -> Tuple[Path, List[Dict[str, Any]], List[Dict[str, str]], Optional[str]]:
     """The expensive half: chain every fix onto its stem, remix, master.
+
+    Returns the rendered mix, the notices its chains raised, the per-stem parts
+    that went into it, and the separator model those stems came from.
 
     Minutes of DSP for a full queue, and the only part worth caching — the
     result is byte-identical whether it was asked for as a preview or a save.
@@ -1687,12 +1691,17 @@ async def _keep_rendered_stems(
             await db.set_stem_set_status(stem_set["id"], "failed", "no stem files to keep")
             return None
 
-        await db.set_stem_set_status(stem_set["id"], "complete")
-        # Same order as a real separation: the set is usable before the purely
-        # cosmetic instrument labels land.
-        await tag_stems(rows, db)
+        # Origin first: between marking the set complete and recording where it
+        # came from, a reader would see a finished set claiming to be a plain
+        # separation.
         origin = "fixes_premaster" if had_master_fixes else "fixes"
         await db.set_stem_set_origin(stem_set["id"], origin)
+        await db.set_stem_set_status(stem_set["id"], "complete")
+        # Instrument labels are cosmetic and the tagger takes ~18s over six
+        # stems, so they land behind the set rather than on the request the
+        # producer is waiting on — the same order a real separation uses, and
+        # the 2026-08 decision that put tagging after the set is complete.
+        asyncio.create_task(tag_stems(rows, db))
         logger.info(
             "Kept %d rendered stems as set %s for version %s",
             len(rows), stem_set["id"], version_id,
@@ -1756,7 +1765,7 @@ async def _render_accept_fixes(
     """Render, remember the result, and save it unless this was a preview."""
     final_path, notices, parts, model = await _render_mix(request, agent, db)
     accept_jobs.remember_render(
-        request.song_id, _accept_fingerprint(request), str(final_path), notices, parts
+        request.song_id, _accept_fingerprint(request), str(final_path), notices, parts, model
     )
 
     if request.preview:
@@ -1813,10 +1822,13 @@ async def start_accept_fixes(
         # its stems, rather than making the producer separate a mix whose pieces
         # are already on disk.
         remembered_parts = accept_jobs.cached_stems(request.song_id, print_)
+        remembered_model = accept_jobs.cached_model(request.song_id, print_)
         result = (
             {"candidate_path": cached, "notices": remembered}
             if request.preview
-            else {**await _finalize_save(request, Path(cached), db, remembered_parts),
+            else {**await _finalize_save(
+                      request, Path(cached), db, remembered_parts, remembered_model
+                  ),
                   "notices": remembered}
         )
         logger.info("Accept-fixes reused an existing render for song %s", request.song_id)

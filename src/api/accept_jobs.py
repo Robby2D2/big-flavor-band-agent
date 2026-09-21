@@ -81,12 +81,14 @@ class AcceptJobManager:
         path: str,
         notices: Optional[List[Dict[str, Any]]] = None,
         stems: Optional[List[Dict[str, str]]] = None,
+        model: Optional[str] = None,
     ) -> None:
         self._renders[song_id] = {
             "fingerprint": print_,
             "path": path,
             "notices": notices or [],
             "stems": stems or [],
+            "model": model,
         }
 
     def cached_notices(self, song_id: int, print_: str) -> List[Dict[str, Any]]:
@@ -114,6 +116,18 @@ class AcceptJobManager:
         if not entry or entry["fingerprint"] != print_:
             return []
         return entry.get("stems") or []
+
+    def cached_model(self, song_id: int, print_: str) -> Optional[str]:
+        """The separator the remembered render's stems came from.
+
+        Travels with the stems for the same reason they do: most saves reuse a
+        warm render, so without this the set kept on that path would name the
+        default model rather than the one that actually produced the audio.
+        """
+        entry = self._renders.get(song_id)
+        if not entry or entry["fingerprint"] != print_:
+            return None
+        return entry.get("model")
 
     def is_running(self, song_id: int) -> bool:
         job = self._jobs.get(song_id)

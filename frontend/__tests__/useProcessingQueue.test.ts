@@ -210,14 +210,4 @@ describe('useProcessingQueue — Start analysis vs Re-separate', () => {
     expect(api.separations()).toHaveLength(1);
   });
 
-  it('re-separates on demand even though complete stems exist', async () => {
-    const api = installFakeApi([completeSet(9)]);
-    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
-
-    await runPass(() => result.current.reseparateAndAnalyze());
-
-    expect(api.separations()).toHaveLength(1);
-    // The newer set's stems replaced the old ones.
-    expect(result.current.stems[0].id).toBe(1000);
-  });
 });

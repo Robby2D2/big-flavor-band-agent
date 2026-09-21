@@ -737,8 +737,6 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const startAnalysis = useCallback(() => runAnalysis(false), [runAnalysis]);
   // "Re-separate": always runs a fresh Demucs job before re-analyzing, unlike
   // Start analysis which reuses an already-complete stem set.
-  const reseparateAndAnalyze = useCallback(() => runAnalysis(true), [runAnalysis]);
-
   /**
    * Separate this version into stems and stop there.
    *
@@ -1145,7 +1143,6 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     masterFixes,
     enabledCount,
     startAnalysis,
-    reseparateAndAnalyze,
     separateStems,
     separating,
     analyzeStem,
