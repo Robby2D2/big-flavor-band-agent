@@ -54,7 +54,11 @@ covers what genuinely needs a DOM (highlighting, click-to-seek, scroll). jsdom i
 
 > **venv first.** Per `.github/copilot-instructions.md`, activate the venv before any Python command
 > (`venv\Scripts\Activate.ps1` on Windows) and prefer `python -m …`. Most backend code, though, is
-> exercised inside the `bigflavor-backend` container — `docker exec bigflavor-backend python -m pytest …`.
+> exercised inside the `bigflavor-backend` container, but **`tests/` is not mounted into it** —
+> only `src`, `database`, `backend_api.py`, `scripts` and `streaming` are. So
+> `docker exec bigflavor-backend python -m pytest tests/…` fails with "file or directory not
+> found"; **run backend tests from the host venv** instead. Use `docker exec` for driving the
+> *running* app (calling a tool, hitting an endpoint), not for the test suite.
 
 ---
 

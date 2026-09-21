@@ -1642,7 +1642,7 @@ async def _render_mix(
 # StemJobManager says why in as many words: "so a job isn't garbage-collected
 # while it runs". This one is suspended across ~18s of threadpool work, which is
 # a long time to be collectable.
-_TAGGING_TASKS: set = set()
+_TAGGING_TASKS: "set[asyncio.Task]" = set()
 
 
 def _tag_in_background(rows: List[Dict[str, Any]], db: DatabaseManager) -> None:
