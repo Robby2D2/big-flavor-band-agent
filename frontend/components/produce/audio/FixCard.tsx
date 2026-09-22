@@ -37,6 +37,12 @@ export default function FixCard({
 }: FixCardProps) {
   const incomplete = missingParams.length > 0;
 
+  // Phone-only minimum: at `py-1` these sit around 26px, which is under a
+  // comfortable finger target. The floor is lifted below `sm` only, so the
+  // label size and the desktop card height are unchanged.
+  const actionButton =
+    'text-xs font-semibold border border-white/14 rounded-lg px-2.5 py-1 min-h-[44px] sm:min-h-0 inline-flex items-center justify-center';
+
   // What the queue will really run: enabled and complete.
   const on = fix.enabled && !incomplete;
 
@@ -98,20 +104,20 @@ export default function FixCard({
               onClick={onHear}
               disabled={incomplete || !canHear || rendering}
               title={hearTitle}
-              className="text-xs font-semibold text-text/70 border border-white/14 rounded-lg px-2.5 py-1 hover:bg-white/5 disabled:opacity-50"
+              className={`${actionButton} text-text/70 hover:bg-white/5 disabled:opacity-50`}
             >
               {hearLabel}
             </button>
             <button
               onClick={onAdjust}
-              className="text-xs font-semibold text-text/70 border border-white/14 rounded-lg px-2.5 py-1 hover:bg-white/5"
+              className={`${actionButton} text-text/70 hover:bg-white/5`}
             >
               Adjust
             </button>
             {onRemove && (
               <button
                 onClick={onRemove}
-                className="text-xs font-semibold text-text/50 border border-white/14 rounded-lg px-2.5 py-1 hover:bg-white/5 hover:text-text/80"
+                className={`${actionButton} text-text/50 hover:bg-white/5 hover:text-text/80`}
               >
                 Remove
               </button>
