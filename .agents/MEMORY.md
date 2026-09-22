@@ -26,6 +26,16 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-22 — Released v0.18.0 (kept stems + standalone Separate stems)
+Tagged `main` as **v0.18.0** — a minor, not a patch, because PR #95 adds capability that did not
+exist before: a save keeps the per-stem audio it just rendered as the new version's stem set, and
+**Separate stems** became its own button beside Start analysis. Migration 17 (`song_stem_sets.origin`)
+ships with it; **migrations 16 and 17 are already applied to the live database**, so a deployer does
+not need to run them. Sanity gate passed (backend booted clean, frontend `npm run build` succeeded).
+PR #95 closed no issues, so no issue notifications went out. Production is still on v0.17.3 — this
+one is tagged and **waiting on a human deploy**, unlike the previous two releases. PRs #99 and #100
+are QA-approved but unmerged and are not in this release.
+
 ### 2026-09-21 — A save keeps the stems it just rendered, and separating is its own button
 Follow-on from the version-scoping fix: once stems belong to a version, saving fixes produced a
 version with *no* stems, so the producer was told to run Demucs on a mix that had just been
