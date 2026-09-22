@@ -170,34 +170,42 @@ export default function StemConsole({
         </div>
       </div>
 
-      <div
-        className={`flex flex-col gap-2 transition-opacity ${
-          separating ? 'opacity-40 pointer-events-none select-none' : ''
-        }`}
-      >
-        {stems.filter((stem) => !stem.silent).map((stem) => (
-          <StemRow
-            key={stem.id}
-            stem={stem}
-            peaks={peaks[stem.id]?.peaks ?? null}
-            loading={!peaks[stem.id] && peaksLoadingIds.has(stem.id)}
-            control={controls[stem.id]}
-            setControl={(patch) => setControl(stem.id, patch)}
-            selected={stem.id === selectedStemId}
-            onSelect={() => onSelectStem(stem.id)}
-            fixes={fixesForStem(stem.id)}
-            analyzed={analyzedStemIds.has(stem.id)}
-            analyzing={analyzingStemIds.has(stem.id)}
-            onAnalyze={() => onAnalyzeStem(stem.id)}
-            identifying={identifyingStemIds.has(stem.id)}
-            onIdentify={() => onIdentifyStem(stem.id)}
-            onRename={(displayName) => onRenameStem(stem.id, displayName)}
-            playhead={playhead}
-            maxDuration={maxDuration}
-            onSeek={onSeek}
-            disabled={separating}
-          />
-        ))}
+      {/* A row's name column and meter are fixed-width on purpose — the console
+          is read by comparing those columns down the rows — so on a phone the
+          row is simply wider than the screen. Scrolling that here keeps the
+          document itself from scrolling sideways and taking the header with it.
+          The transport above stays outside this region: it is fully fluid, so
+          Play and the clock remain in place while the rows are scrolled. */}
+      <div className="overflow-x-auto" data-testid="stem-rows-scroll">
+        <div
+          className={`flex flex-col gap-2 min-w-[40rem] transition-opacity ${
+            separating ? 'opacity-40 pointer-events-none select-none' : ''
+          }`}
+        >
+          {stems.filter((stem) => !stem.silent).map((stem) => (
+            <StemRow
+              key={stem.id}
+              stem={stem}
+              peaks={peaks[stem.id]?.peaks ?? null}
+              loading={!peaks[stem.id] && peaksLoadingIds.has(stem.id)}
+              control={controls[stem.id]}
+              setControl={(patch) => setControl(stem.id, patch)}
+              selected={stem.id === selectedStemId}
+              onSelect={() => onSelectStem(stem.id)}
+              fixes={fixesForStem(stem.id)}
+              analyzed={analyzedStemIds.has(stem.id)}
+              analyzing={analyzingStemIds.has(stem.id)}
+              onAnalyze={() => onAnalyzeStem(stem.id)}
+              identifying={identifyingStemIds.has(stem.id)}
+              onIdentify={() => onIdentifyStem(stem.id)}
+              onRename={(displayName) => onRenameStem(stem.id, displayName)}
+              playhead={playhead}
+              maxDuration={maxDuration}
+              onSeek={onSeek}
+              disabled={separating}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
