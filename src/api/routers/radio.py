@@ -4,9 +4,11 @@ Thin wrappers over the process-external radio state (RadioStateStore, issue #2)
 and the playback helpers in ``src/api/radio_service.py``. What is playing is
 reconciled against the stream by the background loop (issue #101), and the queue
 top-up is owned by it too (issue #5), so GET /api/radio/state and the /stream
-endpoints are side-effect-free reads. Control routes (skip, remove, play, pause)
-require the editor role (issue #1). Raw exceptions propagate to the centralized
-error handlers (issue #9).
+endpoints are side-effect-free reads. Skip and play/pause require the editor role
+(issue #1); removing a queued song is allowed to whoever added it and to editors
+above that (issue #102), so it is authorized against the queue's own attribution
+rather than on rank alone. Raw exceptions propagate to the centralized error
+handlers (issue #9).
 """
 import uuid
 
@@ -16,7 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from database import RadioStateStore
 from src.agent.big_flavor_agent import BigFlavorAgent
-from src.auth import require_role
+from src.auth import Caller, optional_caller, require_caller, require_role
 from src.api.dependencies import (
     AddToQueueRequest,
     RemoveFromQueueRequest,
@@ -24,7 +26,10 @@ from src.api.dependencies import (
     get_agent,
 )
 from src.api.radio_service import (
+    attribute_queue_entry,
     auto_populate_queue,
+    may_remove_from_queue,
+    queue_entry_for_display,
     skip_on_air,
     write_playlist_file,
     _find_audio_file,
@@ -37,6 +42,7 @@ router = APIRouter()
 async def get_radio_state(
     listener_id: str = None,
     store: RadioStateStore = Depends(get_radio_store),
+    caller: Caller = Depends(optional_caller),
 ):
     """Get current radio state (synchronized for all listeners)"""
     state = await store.load_state()
@@ -61,9 +67,14 @@ async def get_radio_state(
     # observability only.
     active_listeners = await store.count_active_listeners()
 
+    # Each entry says whether *this* caller added it, so the page knows which
+    # remove controls are theirs to offer; the stored adder id never leaves the
+    # backend (issue #102).
     return {
-        "current_song": state["current_song"],
-        "queue": state["queue"][:10],  # Only send next 10 songs
+        "current_song": queue_entry_for_display(state["current_song"], caller),
+        "queue": [
+            queue_entry_for_display(song, caller) for song in state["queue"][:10]
+        ],  # Only send next 10 songs
         "is_playing": state["is_playing"],
         "position": state["position"],
         "queue_length": len(state["queue"]),
@@ -85,8 +96,15 @@ async def add_to_queue(
     request: AddToQueueRequest,
     agent: BigFlavorAgent = Depends(get_agent),
     store: RadioStateStore = Depends(get_radio_store),
+    caller: Caller = Depends(optional_caller),
 ):
-    """Add songs to queue via DJ agent (all authenticated users)"""
+    """Add songs to queue via DJ agent (all authenticated users).
+
+    Who may add is unchanged (RAD-06). Each song is stamped with whoever added it so
+    they can take their own add back later without an editor (ACCT-05, RAD-13); a
+    caller the BFF did not vouch for adds anonymously, and an anonymous add is
+    nobody's own.
+    """
     state = await store.load_state()
 
     # Use agent to find songs
@@ -100,7 +118,7 @@ async def add_to_queue(
             # Normalize field names: duration_seconds -> duration
             if "duration_seconds" in song and "duration" not in song:
                 song["duration"] = song["duration_seconds"]
-            state["queue"].append(song)
+            state["queue"].append(attribute_queue_entry(song, caller.user_id))
             added_count += 1
 
     # The playlist is what the stream plays from, so a queue change reaches the air
@@ -155,23 +173,37 @@ async def skip_song(
 async def remove_from_queue(
     request: RemoveFromQueueRequest,
     store: RadioStateStore = Depends(get_radio_store),
-    _role: str = Depends(require_role("editor")),
+    caller: Caller = Depends(require_caller("listener")),
 ):
-    """Remove a song from the queue (editor/admin only)"""
+    """Remove a song from the queue.
+
+    An editor or admin may remove any queued song; anyone else only one they added
+    themselves (ACCT-05, ACCT-15). The check is made here rather than only in the UI,
+    so hiding the control is a courtesy and this is the authority (ACCT-04).
+    """
     state = await store.load_state()
 
-    # Find and remove the song
-    original_length = len(state["queue"])
+    target = next((s for s in state["queue"] if s.get("id") == request.song_id), None)
+
+    if target is None:
+        # Not a refusal: the stream plays songs out of the queue as it goes, so a
+        # song that has just left it is a race, not an attempt to remove
+        # somebody else's.
+        return {"removed": False, "queue_length": len(state["queue"])}
+
+    if not may_remove_from_queue(target, caller):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only remove songs you added yourself",
+        )
+
     state["queue"] = [s for s in state["queue"] if s.get("id") != request.song_id]
 
-    removed = original_length - len(state["queue"])
-
-    if removed > 0:
-        write_playlist_file(state)
-        await store.save_state(state)
+    write_playlist_file(state)
+    await store.save_state(state)
 
     return {
-        "removed": removed > 0,
+        "removed": True,
         "queue_length": len(state["queue"])
     }
 

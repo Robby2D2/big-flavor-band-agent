@@ -38,15 +38,28 @@ async function fetchUserRole(sub: string): Promise<string | null> {
   return typeof data.role === 'string' ? data.role : null;
 }
 
+/** A signed-in user together with the role the backend confirmed for them. */
+export interface Caller {
+  user: User;
+  role: UserRole;
+}
+
 /**
- * Require a signed-in user of at least `requiredRole`, or throw.
+ * Require a signed-in user of at least `requiredRole`, or throw, and say which role
+ * they turned out to have.
  *
  * Fails **closed**: a role that cannot be read — backend down, user row missing,
  * unrecognised role — is a refusal, not a pass. This previously fell through to
  * returning the user whenever the role lookup answered with anything but 200,
  * so a backend 404 or 500 let the caller through an admin check.
+ *
+ * Use this over `requireAuth` when the handler has to forward the caller's own role
+ * or identity rather than a constant — a listener removing a song they queued reaches
+ * the same route as an editor removing anybody's (ACCT-15).
  */
-export async function requireAuth(requiredRole: UserRole = UserRole.LISTENER): Promise<User> {
+export async function requireCaller(
+  requiredRole: UserRole = UserRole.LISTENER
+): Promise<Caller> {
   const user = await getCurrentUser();
 
   if (!user) {
@@ -68,5 +81,11 @@ export async function requireAuth(requiredRole: UserRole = UserRole.LISTENER): P
     throw new Error(`Forbidden: ${requiredRole} role required`);
   }
 
+  return { user, role: role as UserRole };
+}
+
+/** Require a signed-in user of at least `requiredRole`, or throw. */
+export async function requireAuth(requiredRole: UserRole = UserRole.LISTENER): Promise<User> {
+  const { user } = await requireCaller(requiredRole);
   return user;
 }

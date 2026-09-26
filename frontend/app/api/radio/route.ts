@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, UserRole } from '@/lib/server-auth';
+import { requireCaller, UserRole } from '@/lib/server-auth';
+import { backendAuthHeaders } from '@/lib/backend';
 
 // GET /api/radio - Get current radio state (all users)
 export async function GET(request: NextRequest) {
   try {
     // All authenticated users can listen
-    await requireAuth(UserRole.LISTENER);
+    const { user, role } = await requireCaller(UserRole.LISTENER);
 
     // Pass listener_id if provided
     const { searchParams } = new URL(request.url);
@@ -14,7 +15,10 @@ export async function GET(request: NextRequest) {
       ? `${process.env.AGENT_API_URL}/api/radio/state?listener_id=${listenerId}`
       : `${process.env.AGENT_API_URL}/api/radio/state`;
 
-    const response = await fetch(url);
+    // The caller's identity goes with the read so each queue entry can come back
+    // saying whether *this* user added it — which is what decides whether they are
+    // offered a remove control for it (ACCT-15, RAD-13).
+    const response = await fetch(url, { headers: backendAuthHeaders(role, user.sub) });
 
     if (!response.ok) {
       throw new Error(`Backend API error: ${response.statusText}`);
@@ -35,7 +39,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     // All authenticated users can request songs
-    await requireAuth(UserRole.LISTENER);
+    const { user, role } = await requireCaller(UserRole.LISTENER);
 
     const body = await request.json();
     const { message } = body;
@@ -51,6 +55,9 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        // Who added a song is what later lets them take their own add back without
+        // needing an editor (ACCT-05, RAD-13).
+        ...backendAuthHeaders(role, user.sub),
       },
       body: JSON.stringify({ message }),
     });

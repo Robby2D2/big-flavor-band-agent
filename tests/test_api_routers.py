@@ -178,10 +178,21 @@ class FakeStore:
 
 _EDITOR_SECRET = "test-secret-value"
 
+_ALICE = "google-sub-alice"
+_BOB = "google-sub-bob"
+
 
 def _editor_headers(monkeypatch):
     monkeypatch.setenv("BACKEND_API_SECRET", _EDITOR_SECRET)
     return {"X-Service-Secret": _EDITOR_SECRET, "X-User-Role": "editor"}
+
+
+def _caller_headers(monkeypatch, role="listener", user_id=None):
+    monkeypatch.setenv("BACKEND_API_SECRET", _EDITOR_SECRET)
+    headers = {"X-Service-Secret": _EDITOR_SECRET, "X-User-Role": role}
+    if user_id:
+        headers["X-User-Id"] = user_id
+    return headers
 
 
 def test_remove_from_queue_drops_matching_song(monkeypatch):
@@ -202,6 +213,158 @@ def test_remove_from_queue_drops_matching_song(monkeypatch):
         assert resp.json() == {"removed": True, "queue_length": 1}
         assert [s["id"] for s in fake._state["queue"]] == [1]
         assert fake.saved is True
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+# --- Who may remove a queued song, over HTTP (issue #102) -----------------
+#
+# The rule itself is unit-tested in tests/test_radio_queue_permissions.py. These cover
+# the route: that a listener reaches it at all (it used to require editor), that a
+# refusal is a 403 carrying a reason rather than a silent no-op, and that hiding the
+# button in the UI is not what enforces anything (ACCT-04, ACCT-15).
+
+def _queue_client(monkeypatch, queue):
+    monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
+    fake = FakeStore(_state(queue=queue))
+    backend_api.app.dependency_overrides[get_radio_store] = lambda: fake
+    return TestClient(backend_api.app), fake
+
+
+def test_listener_removes_the_song_they_added(monkeypatch):
+    client, fake = _queue_client(monkeypatch, [
+        {"id": 1, "title": "Mine", "added_by": _ALICE},
+        {"id": 2, "title": "Theirs", "added_by": _BOB},
+    ])
+    try:
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 1},
+            headers=_caller_headers(monkeypatch, "listener", _ALICE),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"removed": True, "queue_length": 1}
+        assert [s["id"] for s in fake._state["queue"]] == [2]
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+def test_listener_is_refused_somebody_elses_song_and_the_queue_is_untouched(monkeypatch):
+    client, fake = _queue_client(monkeypatch, [
+        {"id": 1, "title": "Mine", "added_by": _ALICE},
+        {"id": 2, "title": "Theirs", "added_by": _BOB},
+    ])
+    try:
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 2},
+            headers=_caller_headers(monkeypatch, "listener", _ALICE),
+        )
+        assert resp.status_code == 403
+        # The centralized handlers wrap it: {"error": {"code", "message"}}. The wording
+        # matters because it is what the page shows the user (RAD-09).
+        assert "added yourself" in resp.json()["error"]["message"]
+        assert [s["id"] for s in fake._state["queue"]] == [1, 2]
+        assert fake.saved is False
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+def test_listener_is_refused_an_unattributed_song(monkeypatch):
+    # RAD-13: a song queued before attribution existed, or by the DJ, is nobody own.
+    client, _ = _queue_client(monkeypatch, [{"id": 1, "title": "From before"}])
+    try:
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 1},
+            headers=_caller_headers(monkeypatch, "listener", _ALICE),
+        )
+        assert resp.status_code == 403
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+def test_editor_removes_an_unattributed_song(monkeypatch):
+    client, fake = _queue_client(monkeypatch, [{"id": 1, "title": "From before"}])
+    try:
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 1},
+            headers=_caller_headers(monkeypatch, "editor", _ALICE),
+        )
+        assert resp.status_code == 200
+        assert fake._state["queue"] == []
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+def test_editor_removes_a_song_another_user_added(monkeypatch):
+    client, fake = _queue_client(
+        monkeypatch, [{"id": 1, "title": "Theirs", "added_by": _BOB}]
+    )
+    try:
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 1},
+            headers=_caller_headers(monkeypatch, "editor", _ALICE),
+        )
+        assert resp.status_code == 200
+        assert fake._state["queue"] == []
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+def test_removing_a_song_that_already_left_the_queue_is_not_a_refusal(monkeypatch):
+    # The stream drains the queue as it plays, so a song that has just gone is a race,
+    # not an attempt on somebody else entry.
+    client, _ = _queue_client(
+        monkeypatch, [{"id": 1, "title": "Still here", "added_by": _BOB}]
+    )
+    try:
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 99},
+            headers=_caller_headers(monkeypatch, "listener", _ALICE),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"removed": False, "queue_length": 1}
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+def test_remove_without_the_service_secret_is_401(monkeypatch):
+    client, fake = _queue_client(
+        monkeypatch, [{"id": 1, "title": "Mine", "added_by": _ALICE}]
+    )
+    try:
+        resp = client.post(
+            "/api/radio/queue/remove",
+            json={"song_id": 1},
+            headers={"X-User-Role": "admin", "X-User-Id": _ALICE},
+        )
+        assert resp.status_code == 401
+        assert fake._state["queue"] != []
+    finally:
+        backend_api.app.dependency_overrides.clear()
+
+
+def test_radio_state_marks_the_readers_own_additions_and_hides_the_adder(monkeypatch):
+    client, _ = _queue_client(monkeypatch, [
+        {"id": 1, "title": "Mine", "added_by": _ALICE},
+        {"id": 2, "title": "Theirs", "added_by": _BOB},
+        {"id": 3, "title": "Unattributed"},
+    ])
+    try:
+        resp = client.get(
+            "/api/radio/state",
+            headers=_caller_headers(monkeypatch, "listener", _ALICE),
+        )
+        assert resp.status_code == 200
+        queue = resp.json()["queue"]
+        assert [entry["added_by_me"] for entry in queue] == [True, False, False]
+        # The adder account id is not something one listener learns about another.
+        assert _BOB not in resp.text
+        assert all("added_by" not in entry for entry in queue)
     finally:
         backend_api.app.dependency_overrides.clear()
 
