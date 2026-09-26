@@ -26,6 +26,39 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-26 — Released v0.19.0 (minor bump — radio truth-telling, session import, the requirements record)
+Tagged `main` at `eeeb686` as **v0.19.0**. Minor rather than patch: the range is not only fixes —
+Reaper rehearsal-session scanning/import arrived as `feat:` with **migration 18**, and
+`docs/requirements/` landed as the product contract. 10 releasable commits (the v0.18.0 memory chore
+filtered out). PRs #99/#100 (issues #96/#97) finally landed here after being approved-but-unmerged at
+v0.18.0, joining #103 (#101) and #105 (#102). Four issues notified. Sanity gate ran in full: backend
+restarted to `Startup complete: backend ready to serve requests` with no errors, frontend build clean.
+
+**Writing the deploy summary turned up two ways the deploy script quietly under-delivers**, both now
+called out in the Release notes and on the issues:
+- **`deploy-production.sh` runs a plain `docker-compose build`, which cannot pick up `radio.liq`** —
+  BuildKit caches that `COPY` layer (the `AGENTS.md` no-cache rebuild exists for exactly this). This is
+  the first release where it bites: the harbor listener *is* the #101 fix, so a normal deploy ships the
+  old config, the endpoint never exists, and Now Playing fails **silently** rather than loudly.
+- **The script prints "Set up the database with migrations" and contains no migration step.** Worse,
+  `recording_sessions` is *not* startup-ensured the way `song_versions` / `song_stems` /
+  `song_lyric_timings` are, so migration 18 is genuinely manual or `/produce/sessions` 500s. Worth
+  remembering: "ensured at startup" covers only three tables, not the schema.
+
+Two settings ride along with the checkout rather than needing `.env` edits (`LIQUIDSOAP_HARBOR_URL`,
+the writable `./audio_library/sessions` mount), and `X-User-Id` needs **no** new secret — but it is
+only believed when `BACKEND_API_SECRET` verifies, so a mismatched secret in prod turns "remove the
+song I added" into a blanket rejection.
+
+**Two caveats stated plainly in the notes rather than smoothed over.** Neither radio change has been
+seen in a browser by a human — both rest on unit tests plus live API/stream probes, with QA's
+recommended editor-and-listener click-through on `/radio` still outstanding. And issue #104 is open:
+`fallback_music` is unreachable, so an empty queue serves silence and **RAD-02 remains unmet**. The
+notes say it in one line worth keeping: this release makes the radio *honest* about what is playing, it
+does not yet make it *reliable* about always playing something.
+---
+
+
 ### 2026-09-26 — Now Playing is derived from the stream; the backend's clock is gone (issue #101)
 The radio page named its song from a timer that had no connection to the audio. `update_radio_position()`
 added wall-clock time to a position and rolled over when it passed the catalog `duration`; Liquidsoap
