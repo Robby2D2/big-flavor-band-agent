@@ -52,8 +52,10 @@
 - After backend/frontend code changes, **restart** the container — don't rebuild (source is
   volume-mounted). Rebuild only for dependency/Dockerfile changes.
 - Changes to `streaming/radio.liq` require a **no-cache** Liquidsoap rebuild (see `AGENTS.md`).
-- Preserve the two radio invariants: `mksafe()`-wrapped sources, and the
-  `/app/audio_library` → `/audio_library` playlist path rewrite.
+- Preserve the two radio invariants: the air chain is `mksafe()`d **once, around the whole
+  `fallback`** (never around its children — an always-ready child can never yield, which is what made
+  the catalog fallback dead code in issue #104), and the `/app/audio_library` → `/audio_library`
+  playlist path rewrite.
 
 ---
 

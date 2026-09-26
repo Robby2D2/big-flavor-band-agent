@@ -100,8 +100,18 @@ Every frontend change must also keep `npm run lint` and `npm run build` green.
   say so explicitly in the PR test plan rather than implying a suite ran.
 - Prefer narrow unit tests over broad end-to-end scripts.
 - Never let a "test" be a `print` you eyeball — if you add a backend test, make it assert.
-- Preserve the radio invariants when touching streaming (`mksafe()`, playlist path rewrite) — verify
-  by checking `docker logs bigflavor-liquidsoap` shows it streaming the playlist, not `blank()`.
+- Preserve the radio invariants when touching streaming (`mksafe()` once around the whole `fallback`,
+  playlist path rewrite) — and verify by **measuring the broadcast**, not by reading the config:
+  `docker logs bigflavor-liquidsoap` for which source each `Switch to` picked and which one
+  `Prepared` a track, plus `ffmpeg -nostats -i http://icecast:8000/stream -t <secs>
+  -af silencedetect=noise=-50dB:d=0.5,volumedetect -f null -` (run it *inside* the liquidsoap
+  container — it has an ffmpeg CLI) for whether there is actually audio on the air. Issue #104 was a
+  chain that looked correct and served silence, so the config is not evidence.
+- `tests/test_radio_air_chain.py` pins the shape of that chain. It is a guard against the file
+  drifting back, not a substitute for the live check above.
+- **A `streaming/radio.liq` change needs the no-cache rebuild** (see `AGENTS.md`). A plain
+  `docker restart` runs the *old* config and will happily make your verification say whatever the
+  previous version did.
 
 ---
 

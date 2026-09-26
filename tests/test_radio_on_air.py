@@ -11,7 +11,8 @@ They are the *properties* that kept breaking, not the numbers:
 - nothing compares a position against a duration, so a missing duration cannot pin
   anything (CAT-02);
 - audible audio outside the queue is named as fallback rather than reported as
-  nothing playing (the visible form of RAD-02);
+  nothing playing (the visible form of RAD-02) — including a file the catalog has
+  no row for, which the stream can and does pick (issue #104);
 - a stream that cannot be asked is reported as unknown, never as a guess (PLAT-07).
 
 No live Postgres, no real LLM, no real stream: the catalog lookup and the harbor
@@ -333,3 +334,98 @@ def test_reconciliation_keeps_the_state_json_serializable():
     state["last_update"] = time.time()
 
     json.dumps(state)
+
+
+# --- Playable audio the catalog has no row for (issue #104) ---------------
+# Making the catalog fallback reachable put files on the air that the catalog does
+# not describe: 74 of the 1,415 playable "{song_id}_*.mp3" files have no songs row,
+# so ~1 fallback track in 19 used to report nothing playing over audible music.
+
+@pytest.mark.asyncio
+async def test_a_fallback_file_with_no_catalog_row_is_named_from_the_stream(monkeypatch):
+    """RAD-05: the page must name what is on the air, and the stream knows the
+    track's ID3 title even when the catalog has never heard of the file."""
+    class FakeDb:
+        async def get_song(self, song_id):
+            return None
+
+    async def fake_get_db():
+        return FakeDb()
+
+    monkeypatch.setattr(radio_service, "get_db", fake_get_db)
+    on_air = _on_air("/audio_library/890_KWE_Lull_Me_Away_take_1.mp3", source="fallback")
+    on_air["title"] = "KWE -- Lull Me Away -- take 1"
+
+    song, source = await resolve_on_air_song(on_air, [])
+
+    assert source == "fallback"
+    assert song == {"id": 890, "title": "KWE -- Lull Me Away -- take 1", "duration": None}
+
+
+@pytest.mark.asyncio
+async def test_an_untagged_file_falls_back_to_its_filename_not_to_silence(monkeypatch):
+    class FakeDb:
+        async def get_song(self, song_id):
+            return None
+
+    async def fake_get_db():
+        return FakeDb()
+
+    monkeypatch.setattr(radio_service, "get_db", fake_get_db)
+    on_air = _on_air("/audio_library/890_KWE_Lull_Me_Away_take_1.mp3", source="fallback")
+    on_air["title"] = ""
+
+    song, _source = await resolve_on_air_song(on_air, [])
+
+    assert song == {"id": 890, "title": "KWE Lull Me Away take 1", "duration": None}
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_lookup_that_fails_still_names_what_is_playing(monkeypatch):
+    """A database blip must not make the radio page claim the stream is silent."""
+    async def fake_get_db():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(radio_service, "get_db", fake_get_db)
+    on_air = _on_air("/audio_library/890_Lull_Me_Away.mp3", source="fallback")
+    on_air["title"] = "Lull Me Away"
+
+    song, source = await resolve_on_air_song(on_air, [])
+
+    assert song == {"id": 890, "title": "Lull Me Away", "duration": None}
+    assert source == "fallback"
+
+
+def test_a_stream_named_song_shows_progress_from_the_streams_own_length():
+    """It has no catalog duration, so the progress bar depends on the length the
+    stream reports -- the same path a catalog song with no duration takes (CAT-02)."""
+    state = _state()
+    stream_named = {"id": 890, "title": "Lull Me Away", "duration": None}
+
+    reconcile_with_stream(
+        state,
+        _on_air("/audio_library/890_Lull_Me_Away.mp3", elapsed=18.0, remaining=145.0,
+                source="fallback"),
+        stream_named, "fallback",
+    )
+
+    assert state["current_song"] == stream_named
+    assert state["current_song_source"] == "fallback", "the page must still say it is fallback music"
+    assert state["stream_duration"] == 163.0
+
+
+def test_naming_from_the_stream_needs_no_catalog_lookup_and_no_id_guess():
+    """Only files whose name carries an id are named this way: an id is what the
+    queue, the playlist writer and /api/audio/stream all key on, so inventing one
+    would be worse than saying nothing."""
+    assert radio_service._song_from_stream(890, {"title": " Lull Me Away ", "filename": "x"}) == {
+        "id": 890, "title": "Lull Me Away", "duration": None
+    }
+    assert radio_service._song_from_stream(890, {}) == {
+        "id": 890, "title": "Song 890", "duration": None
+    }
+    # A published version's file need not start with the id (issue #30), so the
+    # prefix is stripped only when it is really there.
+    assert radio_service._song_from_stream(
+        42, {"filename": "/audio_library/produced/42/cleaned_v3.mp3"}
+    )["title"] == "cleaned v3"
