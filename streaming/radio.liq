@@ -21,8 +21,19 @@ radio_queue = playlist(
   "/playlist/radio.m3u"
 )
 
-# Fallback to random songs from library if playlist is empty
+# Fallback to random songs from library if playlist is empty.
+# Restricted to the catalog's own "{song_id}_*.mp3" files, because the directory scan
+# is recursive and /audio_library also holds produced/ (isolated Demucs stems, .opus
+# previews) and sessions/ (rehearsal takes) -- 2255 files against 1415 catalog songs.
+# Measured on the live stack, it queued produced/.../previews/guitar.opus: a lone
+# guitar stem is not what the station is for, and its filename carries no song id, so
+# the radio page could not name what a listener was hearing (RAD-05).
+def is_catalog_song(r) =
+  string.match(pattern="^/audio_library/[0-9]+_[^/]*[.]mp3$", request.uri(r))
+end
+
 fallback_music = playlist(
+  check_next=is_catalog_song,
   mode="randomize",
   reload=60,
   "/audio_library"
@@ -31,22 +42,36 @@ fallback_music = playlist(
 # Tag which source a track came from, so the backend can say whether what is on the
 # air is something a listener queued or music the stream picked itself (issue #101).
 # Tagged before mksafe, so only real tracks carry the tag.
+# The ids also name these sources in the log's own "Switch to ..." lines, which is
+# how the air chain's decisions are read back (PLAT-10).
 radio_queue = metadata.map(
+  id="radio_queue",
   insert_missing=true,
   fun (_) -> [("bigflavor_source", "queue")],
   radio_queue
 )
 fallback_music = metadata.map(
+  id="catalog_fallback",
   insert_missing=true,
   fun (_) -> [("bigflavor_source", "fallback")],
   fallback_music
 )
 
-# Use queue first, fallback to random if empty
-# mksafe ensures sources don't fail and always provide audio
-radio_queue = mksafe(radio_queue)
-fallback_music = mksafe(fallback_music)
-radio = fallback([radio_queue, fallback_music, blank()])
+# Use the queue first and catalog music whenever the queue has nothing to play.
+#
+# The children stay fallible on purpose and mksafe wraps the *result*. mksafe makes a
+# source always ready -- that is its whole job -- so an mksafe'd child can never yield
+# to the next one: wrapping them individually is what made fallback_music unreachable
+# and sent a drained queue to dead air, and then to a dropped Icecast mount (issue
+# #104, RAD-02). The always-ready guarantee AGENTS.md requires is unchanged, only
+# applied once at the top, so the output still cannot fail and a cold start where
+# neither playlist has resolved a file yet picks audio up on its own. No blank() child
+# either: mksafe *is* that blank, and a blank() in the list would be a second
+# always-ready source with the same effect.
+#
+# track_sensitive=false so a song added to an empty queue takes the air in seconds
+# instead of waiting out the catalog track that is playing (RAD-08).
+radio = mksafe(fallback(track_sensitive=false, [radio_queue, fallback_music]))
 
 # Apply some processing
 radio = normalize(radio)
