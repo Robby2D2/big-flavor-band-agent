@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Header from '@/components/Header';
+import { describeNowPlaying } from '@/lib/nowPlaying';
 
 interface Song {
   id: number;
@@ -18,6 +19,10 @@ interface RadioState {
   queue_length: number;
   listener_id?: string;
   active_listeners?: number;
+  // Reported by the backend's reconciliation against the live stream (issue #101).
+  stream_known?: boolean;
+  current_song_source?: string | null;
+  stream_duration?: number | null;
 }
 
 export default function RadioPage() {
@@ -92,11 +97,16 @@ export default function RadioPage() {
         return;
       }
 
+      // A skip now moves the audio on the stream, so it can genuinely fail — and a
+      // failed queue action has to say so rather than look like it worked (RAD-09).
       if (!response.ok) {
-        throw new Error('Failed to skip song');
+        const body = await response.json().catch(() => null);
+        alert(body?.error || 'Could not skip the song — the stream did not respond.');
+        return;
       }
     } catch (error) {
       console.error('Error skipping song:', error);
+      alert('Could not skip the song — the stream did not respond.');
     }
   };
 
@@ -136,6 +146,9 @@ export default function RadioPage() {
   // prevents the status pill from reading PAUSED while a stream is audibly
   // playing (issue #79).
   const isLive = Boolean(radioState?.is_playing) || isListening;
+
+  // What is on the air, as the stream itself reported it (issue #101).
+  const nowPlaying = describeNowPlaying(radioState);
 
   const toggleListening = () => {
     if (!audioRef.current) return;
@@ -202,14 +215,26 @@ export default function RadioPage() {
             </div>
           </div>
 
-          {radioState?.current_song ? (
+          {nowPlaying.kind === 'unknown' ? (
+            <p className="text-text/55 mb-4">
+              Can&apos;t reach the stream right now, so we don&apos;t know what&apos;s on the air.
+              Retrying every few seconds.
+            </p>
+          ) : nowPlaying.song ? (
             <div>
               <h3 className="text-xl font-semibold text-text mb-2">
-                {radioState.current_song.title}
+                {nowPlaying.song.title}
               </h3>
+              {nowPlaying.kind === 'fallback' && (
+                <p className="text-text/55 mb-2 text-sm">
+                  Catalog music the stream picked — nothing is queued right now.
+                  {isEditor && ' Add some songs to take over the airwaves!'}
+                </p>
+              )}
               <div className="flex items-center gap-4">
                 <span className="text-text/55">
-                  {formatTime(radioState.position)} / {formatTime(radioState.current_song.duration || 0)}
+                  {formatTime(nowPlaying.position)}
+                  {nowPlaying.duration !== null && ` / ${formatTime(nowPlaying.duration)}`}
                 </span>
                 {isEditor && (
                   <button
@@ -220,29 +245,19 @@ export default function RadioPage() {
                   </button>
                 )}
               </div>
-              {/* Progress bar */}
-              <div className="w-full bg-white/10 rounded-full h-2 mt-4">
-                <div
-                  className="bg-blue-600 h-2 rounded-full transition-all"
-                  style={{
-                    width: `${(radioState.position / (radioState.current_song.duration || 1)) * 100}%`
-                  }}
-                />
-              </div>
-            </div>
-          ) : isLive ? (
-            <div>
-              <h3 className="text-xl font-semibold text-text mb-2">
-                Fallback music
-              </h3>
-              <p className="text-text/55 mb-4">
-                Streaming fallback music — no catalog song is queued right now.
-                {isEditor && ' Add some songs to take over the airwaves!'}
-              </p>
+              {/* Progress bar — only when something knows how long the track is (CAT-02) */}
+              {nowPlaying.progress !== null && (
+                <div className="w-full bg-white/10 rounded-full h-2 mt-4">
+                  <div
+                    className="bg-blue-600 h-2 rounded-full transition-all"
+                    style={{ width: `${nowPlaying.progress * 100}%` }}
+                  />
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-text/55 mb-4">
-              No song currently playing. {isEditor && 'Add some songs to get started!'}
+              Nothing recognisable on the air. {isEditor && 'Add some songs to get started!'}
             </p>
           )}
 

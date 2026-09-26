@@ -7,8 +7,14 @@ instances. The helpers here mutate a plain state dict that callers load from and
 save back to the store; the routes in ``src/api/routers/radio.py`` are thin
 wrappers over these functions and the store.
 
-The playback clock and queue top-up are driven by ``radio_background_loop`` —
-the single owner of playback time and top-up (issue #5) — so HTTP reads
+What is playing is decided by the **stream**, not by this layer (issue #101).
+Liquidsoap serves the metadata of the track actually on air over harbor; the
+background loop asks every tick and reconciles the stored state against the
+answer, so the page can never drift away from the audio. The queue is still ours:
+we write it to the playlist Liquidsoap plays from, and drop a song out of it once
+the stream has started playing it.
+
+Queue top-up is driven by ``radio_background_loop`` (issue #5) — so HTTP reads
 (GET /api/radio/state, /stream) stay side-effect-free.
 
 Two radio invariants are preserved here:
@@ -19,12 +25,15 @@ Two radio invariants are preserved here:
 """
 import asyncio
 import logging
+import os
+import re
 import time
-from pathlib import Path
-from typing import Optional, Dict, Any
+from pathlib import Path, PurePosixPath
+from typing import Optional, Dict, Any, Tuple
 
-from database import RadioStateStore
-from src.api.dependencies import get_agent, get_radio_store
+import httpx
+
+from src.api.dependencies import get_agent, get_db, get_radio_store
 
 logger = logging.getLogger("backend-api")
 
@@ -55,10 +64,19 @@ def set_published_version_path(song_id: int, audio_path: str) -> None:
     """Record/replace the published-version override for one song."""
     _published_version_paths[song_id] = audio_path
 
-# How often the background loop ticks the playback clock, and how often (in
-# ticks) it runs the heavier agent/search queue top-up off the request path.
+# How often the background loop asks the stream what it is playing, and how often
+# (in ticks) it runs the heavier agent/search queue top-up off the request path.
 RADIO_TICK_INTERVAL = 1.0  # seconds
 RADIO_TOPUP_EVERY_TICKS = 5
+
+# Where the stream answers "what is on the air" and "skip this track" — the harbor
+# listener in streaming/radio.liq, on the Docker network only. Configurable so a
+# non-Compose deployment can point elsewhere; no secret, so a default is fine.
+LIQUIDSOAP_HARBOR_URL = os.environ.get("LIQUIDSOAP_HARBOR_URL", "http://liquidsoap:8080")
+
+# The stream is on the same Docker network and answers from memory, so a slow
+# reply means something is wrong; a tick must not queue up behind it.
+ON_AIR_TIMEOUT_SECONDS = 2.0
 
 
 # --- Playlist writing -----------------------------------------------------
@@ -106,9 +124,8 @@ def write_playlist_file(state: Dict[str, Any]):
 
     Offloads the blocking glob + file write to a thread so the event loop is
     never stalled. Operates on a snapshot of the given radio state; all callers
-    run on the event loop (async request handlers, or the radio background loop,
-    directly or via advance_to_next_song). The write is a fire-and-forget side
-    effect, so callers do not await the result.
+    run on the event loop (async request handlers, or the radio background loop).
+    The write is a fire-and-forget side effect, so callers do not await the result.
     """
     current_song = state["current_song"]
     queue = list(state["queue"])
@@ -154,72 +171,201 @@ def _find_audio_file(song_id: int) -> Optional[Path]:
     return audio_files[0] if audio_files else None
 
 
-# --- Playback state -------------------------------------------------------
+# --- What is on the air ---------------------------------------------------
 
-def update_radio_position(state: Dict[str, Any]):
-    """Update current playback position based on elapsed time (mutates state in place)."""
-    if state["is_playing"] and state["current_song"]:
-        elapsed = time.time() - state["last_update"]
-        state["position"] += elapsed
-        state["last_update"] = time.time()
-
-        # Check if song finished (only if duration is valid)
-        duration = state["current_song"].get("duration")
-        if duration and duration > 0 and state["position"] >= duration:
-            # Move to next song
-            logger.info(
-                "Song finished: %s (%.1fs / %.1fs)",
-                state["current_song"].get("title"),
-                state["position"],
-                duration,
-            )
-            advance_to_next_song(state)
+# Catalog audio files are named "{song_id}_<title>.mp3", which is what makes the
+# filename the stream reports a usable identity.
+_CATALOG_FILENAME = re.compile(r"^(\d+)_")
 
 
-def advance_to_next_song(state: Dict[str, Any]):
-    """Advance to the next song in queue (mutates state in place)."""
-    if len(state["queue"]) > 0:
-        state["current_song"] = state["queue"].pop(0)
-        state["position"] = 0
-        state["is_playing"] = True
-        state["last_update"] = time.time()
+def song_id_from_filename(filename: Optional[str]) -> Optional[int]:
+    """Map the file the stream is playing back to a catalog song id.
 
-        duration = state["current_song"].get("duration", "NOT SET")
-        logger.info(
-            "Now playing: %s (duration: %ss)",
-            state["current_song"].get("title"),
-            duration,
-        )
-
-        # Update playlist file for Liquidsoap
-        write_playlist_file(state)
-    else:
-        state["current_song"] = None
-        state["position"] = 0
-        state["is_playing"] = False
-        logger.info("Queue empty - stopping playback")
-
-        # Update playlist file for Liquidsoap
-        write_playlist_file(state)
-
-
-def ensure_playback_started(state: Dict[str, Any]) -> bool:
-    """Start the always-on broadcast when content is waiting but nothing plays.
-
-    The radio is a continuous broadcast owned by ``radio_background_loop`` (issue
-    #5). If the queue has songs but no song is current (right after startup, or
-    after the queue drained and was refilled), promote the next song so
-    ``radio_state`` reflects the live stream instead of sitting at the empty,
-    "PAUSED" default while Liquidsoap plays fallback music (issue #79).
-
-    An explicit editor pause keeps ``current_song`` set with ``is_playing`` False,
-    so the ``current_song is None`` guard here never resumes a deliberately paused
-    broadcast. Returns True if playback was started (state was mutated).
+    The filename is the identity, not the Icecast title: a title is ID3 text that
+    cannot be mapped back to a song reliably, while the file on disk is the one
+    the playlist writer chose. Returns None for anything unrecognisable — a
+    session render, a produced file nobody published, junk.
     """
-    if state["current_song"] is None and len(state["queue"]) > 0:
-        advance_to_next_song(state)
+    if not filename:
+        return None
+    name = PurePosixPath(str(filename)).name
+    match = _CATALOG_FILENAME.match(name)
+    if match:
+        return int(match.group(1))
+    # A published version (issue #30) is served from its own path, which need not
+    # carry the song id, so fall back to the overrides the playlist writer uses.
+    for song_id, path in _published_version_paths.items():
+        if PurePosixPath(path).name == name:
+            return song_id
+    return None
+
+
+async def fetch_on_air() -> Optional[Dict[str, Any]]:
+    """Ask the stream what it is broadcasting.
+
+    Returns the harbor payload (``filename``, ``title``, ``source``, ``elapsed``,
+    ``remaining``) or None when the stream cannot be reached — which the caller
+    reports as "unknown" rather than presenting a guess.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=ON_AIR_TIMEOUT_SECONDS) as client:
+            response = await client.get(f"{LIQUIDSOAP_HARBOR_URL}/on-air")
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:
+        # Logged by the caller on the transition only, so a stream that stays down
+        # does not write a line a second.
+        logger.debug("Could not read on-air metadata: %s", exc)
+        return None
+
+
+async def skip_on_air() -> bool:
+    """Skip the track the stream is playing. False when the stream can't be reached.
+
+    Skipping has to move the audio; relabelling the state would leave the listener
+    hearing the song they asked to be rid of.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=ON_AIR_TIMEOUT_SECONDS) as client:
+            response = await client.post(f"{LIQUIDSOAP_HARBOR_URL}/skip")
+            response.raise_for_status()
         return True
-    return False
+    except Exception:
+        logger.warning("Could not skip the stream at %s", LIQUIDSOAP_HARBOR_URL, exc_info=True)
+        return False
+
+
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _load_catalog_song(song_id: int) -> Optional[Dict[str, Any]]:
+    """The queue-shaped dict for a catalog song the stream chose on its own.
+
+    Only the fields the radio state carries: the whole row holds dates, which do
+    not survive the JSONB round-trip the store does.
+    """
+    try:
+        db = await get_db()
+        song = await db.get_song(song_id)
+    except Exception:
+        logger.exception("Could not look up on-air song %s", song_id)
+        return None
+    if not song:
+        return None
+    return {
+        "id": song["id"],
+        "title": song.get("title", "Unknown"),
+        "duration": song.get("duration_seconds"),
+    }
+
+
+async def resolve_on_air_song(
+    on_air: Dict[str, Any],
+    queue: list,
+    current_song: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """The song on the air and where it came from ("queue" or "fallback").
+
+    Where it came from is the stream's own answer, not a guess: each Liquidsoap
+    source tags its tracks (``bigflavor_source``), because the playlist holds the
+    current song as well as the queue and can replay it, so "is it still in our
+    queue?" cannot tell the two apart.
+
+    A song still in the queue is returned as its own queue entry, so the display
+    keeps the fields the queue already carried. Anything else is looked up in the
+    catalog, so audible audio is never reported as nothing playing (RAD-02's
+    visible form) — including music the stream picked itself once the queue drained.
+    """
+    song_id = song_id_from_filename(on_air.get("filename"))
+    if song_id is None:
+        return None, None
+    source = "fallback" if on_air.get("source") == "fallback" else "queue"
+    queued = next((s for s in queue if s.get("id") == song_id), None)
+    if queued is not None:
+        return queued, source
+    if current_song is not None and current_song.get("id") == song_id:
+        # Already the song we are reporting: reconciliation runs every second, and a
+        # song is on the air for minutes, so re-reading the catalog row each tick
+        # would be one query a second for an answer we already hold.
+        return current_song, source
+    song = await _load_catalog_song(song_id)
+    return (song, source) if song else (None, None)
+
+
+def reconcile_with_stream(
+    state: Dict[str, Any],
+    on_air: Dict[str, Any],
+    song: Optional[Dict[str, Any]],
+    source: Optional[str],
+) -> bool:
+    """Make the radio state agree with the audio on the air (mutates state).
+
+    This replaces the simulated clock that used to decide what was playing (issue
+    #101). Position is the stream's own elapsed time, read fresh every tick, so it
+    cannot accumulate error; and a song with no catalog duration can no longer pin
+    the display, because nothing here compares a position against a duration.
+
+    Returns True when the queue changed and the playlist needs rewriting.
+    """
+    state["stream_known"] = True
+    state["last_update"] = time.time()
+
+    elapsed = _as_float(on_air.get("elapsed"))
+    remaining = _as_float(on_air.get("remaining"))
+    state["position"] = elapsed if elapsed is not None and elapsed >= 0 else 0
+    # Liquidsoap reports a negative remaining when it does not know the track
+    # length. When it does know, this is a duration for songs the catalog has none
+    # for (CAT-02) — kept beside the song rather than written into it, so catalog
+    # data stays catalog data.
+    if elapsed is not None and remaining is not None and elapsed >= 0 and remaining >= 0:
+        state["stream_duration"] = elapsed + remaining
+    else:
+        state["stream_duration"] = None
+
+    if song is None:
+        # Audio we cannot name (a file outside the catalog). Say nothing rather
+        # than keep naming whatever was playing before.
+        state["current_song"] = None
+        state["current_song_source"] = None
+        return False
+
+    was_idle = state["current_song"] is None
+    # The stream has started it, so it is no longer up next. Keyed on membership
+    # rather than on the source label, so the queue drains as the audio plays.
+    before = len(state["queue"])
+    state["queue"] = [s for s in state["queue"] if s.get("id") != song.get("id")]
+    queue_changed = len(state["queue"]) != before
+
+    state["current_song"] = song
+    state["current_song_source"] = source
+    if was_idle:
+        # Audio is on the air and nothing was playing: the broadcast is live
+        # (issue #79). An explicit pause keeps current_song set, so this cannot
+        # resume one.
+        state["is_playing"] = True
+
+    return queue_changed
+
+
+def mark_stream_unknown(state: Dict[str, Any]) -> None:
+    """Record that the stream could not be asked what it is playing (mutates state).
+
+    The stored current song is left alone — it is what the playlist is built from
+    — but ``stream_known`` is False, and the radio page reports the current song as
+    unknown rather than one that may already be wrong (PLAT-07).
+    """
+    if state.get("stream_known", True):
+        logger.warning(
+            "Cannot reach the stream at %s to ask what is playing — reporting radio "
+            "state as unknown until it answers",
+            LIQUIDSOAP_HARBOR_URL,
+        )
+    state["stream_known"] = False
+    state["last_update"] = time.time()
 
 
 async def auto_populate_queue(state: Dict[str, Any]):
@@ -241,41 +387,18 @@ async def auto_populate_queue(state: Dict[str, Any]):
             logger.exception("Error auto-populating queue")
 
 
-# --- Listener tracking ----------------------------------------------------
-
-async def register_listener(store: RadioStateStore, listener_id: str, state: Dict[str, Any]) -> bool:
-    """Register a listener and start playback if this is the first one.
-
-    Returns True if the radio state was mutated and should be persisted.
-    """
-    was_empty = await store.count_active_listeners() == 0
-    await store.register_listener(listener_id)
-
-    # If this is the first listener, start playing
-    if was_empty and not state["is_playing"]:
-        if state["current_song"] or len(state["queue"]) > 0:
-            if not state["current_song"] and len(state["queue"]) > 0:
-                advance_to_next_song(state)
-            else:
-                state["is_playing"] = True
-                state["last_update"] = time.time()
-            logger.info("First listener connected - starting playback")
-            return True
-    return False
-
-
-# --- Background clock -----------------------------------------------------
+# --- Background reconciliation -------------------------------------------
 
 async def radio_background_loop():
-    """Own the radio playback clock and queue top-up, independent of requests.
+    """Keep the stored radio state in agreement with the stream, and top the queue up.
 
-    Advances the playback position (rolling to the next song when one finishes)
-    every tick, refills the queue periodically, and starts the broadcast when the
-    queue has content but nothing is currently playing (issue #79) — so the radio
-    is genuinely always-on and radio_state mirrors the live stream regardless of
-    whether any listener happens to be polling. This is the single driver of
-    playback time, top-up, and auto-start. State lives in the process-external
-    RadioStateStore (issue #2), so each tick loads, mutates, and saves it back.
+    Every tick asks the stream what it is broadcasting and reconciles the state
+    against the answer (issue #101), so the current song, its position and the
+    queue are derived from the audio rather than from a clock of our own. Refills
+    the queue periodically. State lives in the process-external RadioStateStore
+    (issue #2), so each tick loads, mutates and saves it back — which is also why
+    a backend restart needs no recovery step: the next tick simply asks again
+    (RAD-04, PLAT-12).
     """
     logger.info("Radio background loop started")
     tick = 0
@@ -286,10 +409,24 @@ async def radio_background_loop():
             try:
                 store = await get_radio_store()
                 state = await store.load_state()
-                update_radio_position(state)
+
+                playlist_dirty = False
+                on_air = await fetch_on_air()
+                if on_air is None:
+                    mark_stream_unknown(state)
+                else:
+                    song, source = await resolve_on_air_song(
+                        on_air, state["queue"], state["current_song"]
+                    )
+                    playlist_dirty = reconcile_with_stream(state, on_air, song, source)
+
                 if tick % RADIO_TOPUP_EVERY_TICKS == 0:
+                    queued_before = len(state["queue"])
                     await auto_populate_queue(state)
-                ensure_playback_started(state)
+                    playlist_dirty = playlist_dirty or len(state["queue"]) != queued_before
+
+                if playlist_dirty:
+                    write_playlist_file(state)
                 await store.save_state(state)
             except Exception:
                 logger.exception("Radio background loop tick failed")

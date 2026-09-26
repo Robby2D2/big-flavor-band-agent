@@ -24,6 +24,13 @@ DEFAULT_STATE: Dict[str, Any] = {
     "is_playing": False,
     "position": 0,
     "last_update": 0.0,
+    # Set by the reconciliation against the live stream (issue #101): whether the
+    # stream could be asked what it is playing, whether what it is playing came
+    # from the queue or the fallback source, and the track length the stream
+    # reports (for songs the catalog has no duration for).
+    "stream_known": False,
+    "current_song_source": None,
+    "stream_duration": None,
 }
 
 

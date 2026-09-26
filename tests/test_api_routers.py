@@ -21,7 +21,7 @@ from src.api import radio_service
 from src.api.radio_service import (
     _build_and_write_playlist,
     _find_audio_file,
-    advance_to_next_song,
+    reconcile_with_stream,
 )
 from src.api.dependencies import get_db, get_radio_store
 
@@ -124,26 +124,32 @@ def _state(**overrides):
     return state
 
 
-def test_advance_to_next_song_promotes_queue_head(monkeypatch):
-    # Avoid touching the real /app playlist path during the test.
+def test_current_song_follows_the_stream_not_the_queue_head(monkeypatch):
+    """What is playing comes from the stream (issue #101). The queue head is not
+    promoted by this layer -- the song the stream actually started is, and it leaves
+    the queue when it does."""
     monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
     state = _state(queue=[{"id": 1, "title": "First"}, {"id": 2, "title": "Second"}])
+    on_air = {"filename": "/audio_library/2_second.mp3", "elapsed": 4.0, "remaining": 100.0}
 
-    advance_to_next_song(state)
+    queue_changed = reconcile_with_stream(state, on_air, state["queue"][1], "queue")
 
-    assert state["current_song"]["id"] == 1
+    assert queue_changed is True
+    assert state["current_song"]["id"] == 2
     assert state["is_playing"] is True
-    assert [s["id"] for s in state["queue"]] == [2]
+    assert [s["id"] for s in state["queue"]] == [1]
 
 
-def test_advance_with_empty_queue_stops_playback(monkeypatch):
-    monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
-    state = _state(current_song={"id": 5, "title": "Last"}, is_playing=True)
+def test_playlist_duration_falls_back_when_a_song_has_no_duration():
+    """A song is not required to carry a duration (CAT-02), and the reconciler can now
+    make a catalog row with a null one the current song -- `.get("duration", 180)` does
+    not cover that, because the key is present with a null value."""
+    from src.api.routers.radio import DEFAULT_PLAYLIST_DURATION, _playlist_duration
 
-    advance_to_next_song(state)
-
-    assert state["current_song"] is None
-    assert state["is_playing"] is False
+    assert _playlist_duration({"duration": 240}) == 240
+    assert _playlist_duration({"duration": None}) == DEFAULT_PLAYLIST_DURATION
+    assert _playlist_duration({}) == DEFAULT_PLAYLIST_DURATION
+    assert _playlist_duration({"duration": 0}) == DEFAULT_PLAYLIST_DURATION
 
 
 class FakeStore:

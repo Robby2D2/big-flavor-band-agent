@@ -66,6 +66,9 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # Shared secret the BFF must present to reach protected backend routes
       - BACKEND_API_SECRET=${BACKEND_API_SECRET:-}
+      # Where the stream answers "what is on the air" / "skip this track"
+      # (the harbor listener in streaming/radio.liq). Docker network only.
+      - LIQUIDSOAP_HARBOR_URL=http://liquidsoap:8080
       # LLM Configuration
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - OLLAMA_BASE_URL=http://ollama:11434
