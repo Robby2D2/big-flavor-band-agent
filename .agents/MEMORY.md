@@ -26,6 +26,38 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-26 — `docs/requirements/`: the product contract the PM now guards
+The app's promises were only ever implicit — spread across OKRs, architecture notes, and whatever a
+past spec happened to say — so nothing stopped a change from quietly removing a behavior users
+depend on. `docs/requirements/` now records them: eight area files (search, radio, agent/DJ, catalog,
+production, sessions, accounts, platform) of **MUST** statements with permanent IDs (`SRCH-04`,
+`RAD-02`), seeded from what the app actually does today.
+
+- **Requirements ≠ OKRs.** Requirements are invariants ("what must always be true"); OKRs are
+  targets ("what we're trying to move"). Keeping them in separate files keeps both readable.
+- **IDs are permanent and never reused** — retired requirements stay in the file struck through, so
+  a two-year-old issue citing `SRCH-04` still means the same promise.
+- **A known gap stays in the file, marked inline** rather than being deleted. Two are recorded:
+  the hosted Anthropic path (`PLAT-01`) and the unguarded search/agent routes (`PLAT-03`).
+- **The PM authors, the developer commits, QA checks, a human merges.** The PM agent stays
+  read-only (it ingests untrusted issue text), so requirement changes ride into `main` inside the
+  code's own PR — the merge *is* the approval. Its spec template gained a mandatory
+  `**Requirements.**` section: `Honors:` (IDs this change must not break) and `Impact:` (the exact
+  new/amended text, ready to paste, or `None`).
+- **Conflicts halt for a human.** A greenlit issue that would make a MUST false gets a
+  `<!-- pm-agent:requirements-conflict -->` comment, the `requirements-conflict` label, and no
+  `dev_ready` — the orchestrator's new **REQ-CONFLICT** bucket parks it above the PM buckets so no
+  sweep re-posts it, and it returns to **PM (re-eval)** once a human replies. The gate exists
+  precisely to catch "it's obviously fine" reasoning, so there is no obviousness threshold that lets
+  an agent skip it.
+
+Touched: `docs/requirements/*` (new), `.claude/agents/product-manager.md` (rewritten around the two
+jobs), `.claude/agents/developer.md` (commits the requirement text verbatim),
+`.claude/agents/qa-reviewer.md` (contract check in the review), `.claude/commands/fix-issue.md`
+(REQ-CONFLICT routing + label), `AGENTS.md`, `.agents/memory/pm_conventions.md`.
+
+---
+
 ### 2026-09-25 — Reaper session import: a scanning slice, measured against a real session
 First slice of recording-session import (upload a Reaper session zip, find the songs in it). Six new
 modules under `src/production/` — `rpp_parser.py`, `wavpack_io.py`, `session_detect.py`,

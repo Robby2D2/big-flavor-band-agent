@@ -26,6 +26,7 @@ Read in parallel:
 - `.agents/TESTING.md`
 - `.agents/ARCHITECTURE.md`
 - `AGENTS.md`
+- `docs/requirements/README.md` — the product contract, plus the area file(s) the PR touches
 
 ## Step 2 — Fetch PR details and the linked issue
 
@@ -39,7 +40,9 @@ Extract `ISSUE_NUMBER` from `closingIssuesReferences` (or parse `Closes #N` from
 gh issue view "$ISSUE_NUMBER" --json number,title,body,labels,comments
 ```
 
-Find the most recent `<!-- pm-agent:spec -->` comment — that's the acceptance contract.
+Find the most recent `<!-- pm-agent:spec -->` comment — that's the acceptance contract. Its
+`**Requirements.**` section tells you which requirement IDs the change must honor, and whether the
+PR owes a `docs/requirements/` edit.
 
 ## Step 3 — Skip if already reviewed
 
@@ -53,6 +56,19 @@ For every changed file, evaluate:
 **Correctness**
 - Does the code satisfy each acceptance criterion in the PM spec?
 - Are the edge cases the spec calls out actually handled?
+
+**The product contract (`docs/requirements/`)**
+- Does the change still honor every requirement ID the spec's **Honors** line names? Open each one
+  and check the behavior, not the intent. **A broken requirement is a Required item even when every
+  acceptance criterion passes.**
+- Does the diff break a requirement the spec didn't mention? The area file for the surface it
+  touches is the checklist — a silent regression here is exactly what the file exists to catch.
+- If the spec's **Impact** is not `None`, does the PR carry that `docs/requirements/*.md` edit, with
+  the PM's text **verbatim** and the ID the PM assigned? Missing or reworded → Required.
+- Does the diff change a requirement the spec **didn't** authorize? Requirements are amended through
+  the PM, never by the developer. Unauthorized → Required, and say so plainly.
+- Did the change close a ⚠️ *Known gap*? The note should be gone. Did it open one? Say so in
+  Suggestions.
 
 **Tests / verification**
 - Per `.agents/TESTING.md`, is there a test for the new backend behavior where a test layer can cover
@@ -208,6 +224,8 @@ Return: `Requested changes on PR #N — bounced back to dev (issue #M).`
 - Do not approve a PR that lacks a test for new backend behavior where a test layer can reasonably
   cover it, unless `.agents/TESTING.md` explains why none exists.
 - Do not approve if the backend fails to boot or `npm run lint`/`npm run build` fails on the change.
+- Do not approve a PR that breaks a requirement in `docs/requirements/`, or that changes one the PM
+  spec didn't authorize — route it back to the PM rather than accepting the new behavior.
 
 ## On unexpected failure
 

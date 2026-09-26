@@ -30,7 +30,10 @@ The five specialists:
   `.agents/OKRS.md` and decides whether it's worth fixing at all. Greenlights worthwhile issues to the
   PM, or declines (labels `wont-fix` + closes as not planned) issues that advance no OKR.
 - **product-manager** — turns CPO-greenlit issues into specs with success metrics and asks clarifying
-  questions when needed. Does not judge mission fit or close issues — the CPO owns that.
+  questions when needed. Also guards the functional requirements in `docs/requirements/`: it names
+  the ones each change must honor, authors any new or amended requirement text for the developer to
+  commit, and **halts for a human** when an issue would break one. Does not judge mission fit or
+  close issues — the CPO owns that.
 - **developer** — implements `dev_ready` issues, verifies them (backend boots / pytest where present /
   frontend lint+build), opens PRs.
 - **qa-reviewer** — reviews open PRs against code quality + spec acceptance criteria and re-runs the
@@ -55,6 +58,7 @@ Ensure the labels the agents rely on exist. Idempotent — silently no-op if the
 gh label create "dev_ready" --color "0E8A16" --description "PM spec written; ready for the developer agent" 2>/dev/null || true
 gh label create "awaiting-answer" --color "FBCA04" --description "Waiting on a human answer in the issue thread" 2>/dev/null || true
 gh label create "wont-fix" --color "E11D21" --description "CPO declined: does not advance a product OKR" 2>/dev/null || true
+gh label create "requirements-conflict" --color "B60205" --description "Would break a requirement in docs/requirements/ — needs a human decision" 2>/dev/null || true
 ```
 
 ## Step 3 — Gather candidates
@@ -84,9 +88,10 @@ match wins:
 | **BLOCKED** | Latest agent comment is a `<!-- *-agent:error -->` marker with no newer non-bot human comment | skip — **needs a human** (surface prominently) |
 | **DEV-CLAIMED** | A `<!-- dev-agent:claim -->` comment < 60 min old with no `dev-agent:done` or PR after it | skip — another run is implementing |
 | **DEV** | Has `dev_ready` label | → developer |
-| **CPO (new)** | No `<!-- cpo-agent:* -->` marker AND no `<!-- pm-agent:spec -->` or `<!-- pm-agent:question -->` marker | → cpo |
-| **PM (new)** | Has a `<!-- cpo-agent:greenlit -->` comment but no `<!-- pm-agent:spec -->` or `<!-- pm-agent:question -->` marker | → product-manager |
-| **PM (re-eval)** | Latest PM comment is `<!-- pm-agent:question -->` AND there is a non-bot human comment OR `updatedAt` newer than that PM comment | → product-manager |
+| **REQ-CONFLICT** | Latest PM comment is `<!-- pm-agent:requirements-conflict -->` with no newer non-bot human comment | skip — **needs a human decision on a requirement** (surface prominently) |
+| **CPO (new)** | No `<!-- cpo-agent:* -->` marker AND no `<!-- pm-agent:* -->` marker | → cpo |
+| **PM (new)** | Has a `<!-- cpo-agent:greenlit -->` comment but no `<!-- pm-agent:* -->` marker | → product-manager |
+| **PM (re-eval)** | Latest PM comment is `<!-- pm-agent:question -->` or `<!-- pm-agent:requirements-conflict -->` AND there is a non-bot human comment OR `updatedAt` newer than that PM comment | → product-manager |
 | **WAITING** | Has `awaiting-answer` label and no new human activity since the PM question | skip with note |
 | **DEV-RETURN** | Latest dev comment is `<!-- dev-agent:question -->` (no `dev_ready`) | → product-manager (dev is asking a question, PM should respond/route) |
 
@@ -94,6 +99,12 @@ The **DONE** check comes first so a CPO-declined (`wont-fix`, closed) issue is n
 brand-new issue with no agent markers goes to the **cpo** gate; only once the CPO posts
 `<!-- cpo-agent:greenlit -->` does it become eligible for **PM (new)**. The CPO is the *only* agent
 that judges mission fit and worth.
+
+**REQ-CONFLICT** sits above the PM buckets on purpose: an issue whose delivery would break a
+requirement in `docs/requirements/` is parked until a human rules on it in the thread, and no sweep
+re-posts the conflict in the meantime. Once a human replies, it becomes **PM (re-eval)** and the PM
+writes the spec — including the requirement amendment. Surface these alongside **BLOCKED** in the
+triage summary; they are the two buckets a human has to clear.
 
 For each **open PR**, classify:
 
@@ -120,6 +131,7 @@ Issues:
   #19  "Add Spotify social sharing"      → CPO (new)    (cpo — strategic gate)
   #21  "Tempo-match adds pitch artifact" → PM (re-eval) (product-manager — human answered question)
   #25  "Bulk re-index button"            → WAITING      (skip — no human reply yet)
+  #27  "Autoplay next from search"       → REQ-CONFLICT (skip — needs a human: conflicts with RAD-01)
 
 Pull requests:
   #34  "fix: lyric search ranking"       → QA           (qa-reviewer)
@@ -288,7 +300,8 @@ If release-manager runs successfully, include its result line in the final repor
 - The orchestrator never edits code, posts GitHub comments, or modifies labels itself (except the
   one-time label creation in Step 2). Everything else is the subagents' job.
 - Agent comment markers (`<!-- cpo-agent:greenlit -->`, `<!-- cpo-agent:declined -->`,
-  `<!-- pm-agent:spec -->`, `<!-- pm-agent:question -->`, `<!-- dev-agent:claim -->`,
+  `<!-- pm-agent:spec -->`, `<!-- pm-agent:question -->`,
+  `<!-- pm-agent:requirements-conflict -->`, `<!-- dev-agent:claim -->`,
   `<!-- dev-agent:plan -->`,
   `<!-- dev-agent:question -->`, `<!-- dev-agent:done -->`, `<!-- qa-agent:approved -->`,
   `<!-- qa-agent:review -->`, `<!-- qa-agent:bounce -->`, `<!-- release-agent:shipped -->`,

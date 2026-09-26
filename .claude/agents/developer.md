@@ -32,6 +32,7 @@ Read in parallel:
 - `.agents/TESTING.md`
 - `.agents/ARCHITECTURE.md`
 - `.agents/MEMORY.md`
+- `docs/requirements/README.md` — the product contract, and how requirement changes land
 
 Use TodoWrite to track your steps for the rest of the run.
 
@@ -43,6 +44,13 @@ gh issue view "$ISSUE_NUMBER" --json number,title,body,labels,comments
 
 Find the most recent `<!-- pm-agent:spec -->` comment — that's your source of truth for scope. If
 there is no PM spec comment, stop: `Issue #N has dev_ready label but no PM spec — refusing to proceed.`
+
+**Read the spec's `**Requirements.**` section carefully** — it is part of the scope, not commentary:
+- **Honors:** requirement IDs your change must not break. Open each one in `docs/requirements/` and
+  keep it true. Breaking a listed requirement fails the review even if every acceptance criterion
+  passes.
+- **Impact:** a new or amended requirement the PM has written out in full. That text is **yours to
+  commit**, in this PR, alongside the code (see Step 6).
 
 Also check if a previous `<!-- dev-agent:question -->` was answered by a human (human comments after
 your last question). If so, integrate the answer into your plan.
@@ -158,6 +166,17 @@ Follow `.agents/CODING.md` exactly. Key reminders:
 - Preserve the radio invariants (`mksafe()` sources, `/app/audio_library`→`/audio_library` path
   rewrite) if you touch streaming.
 - No new patterns unless CODING.md says it's OK. No comments unless the WHY is non-obvious.
+
+**Commit the requirement change with the code.** If the spec's **Impact** is anything but `None`,
+edit the named `docs/requirements/*.md` file in this same PR:
+- Paste the PM's requirement text **verbatim** — don't reword it, and don't invent requirements the
+  spec didn't author.
+- A **new** requirement is appended to the named `##` subsection with the ID the PM assigned. Never
+  renumber or reuse an existing ID.
+- An **amended** requirement replaces the old text in place, keeping its ID.
+- If you closed a ⚠️ *Known gap* note, delete the note in the same commit.
+- If implementing revealed that the PM's requirement text is now wrong or impossible, **don't
+  quietly rewrite it** — that's a `<!-- dev-agent:question -->` back to the PM (Step 3B).
 
 Implement only what the PM spec's acceptance criteria require. If scope grows, post an updated plan.
 

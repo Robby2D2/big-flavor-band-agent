@@ -118,6 +118,27 @@ sweeps, not local ones. Every pipeline agent follows these rules:
 
 ---
 
+### Functional requirements (the product contract)
+
+`docs/requirements/` is the written record of **what this app does and what must always be true** —
+one file per major feature area (search, radio, agent/DJ, catalog, production, sessions, accounts,
+platform), each requirement carrying a permanent ID like `SRCH-04`. Read
+[`docs/requirements/README.md`](docs/requirements/README.md) before changing user-facing behavior.
+
+- **Requirements are invariants, not backlog.** Breaking one is a regression, whatever else the
+  change achieves. Cite them by ID.
+- **The PM authors, the developer commits, QA checks, a human merges.** A PR that changes a promise
+  in `docs/requirements/` updates the requirement in that same PR — code and contract land together.
+- **A change that would break a requirement stops for a human.** The product-manager agent posts
+  `<!-- pm-agent:requirements-conflict -->`, labels the issue `requirements-conflict`, and nothing
+  becomes `dev_ready` until a human rules on it in the thread. No agent overrules a requirement on
+  its own reasoning.
+
+Requirements answer *"what must always be true?"*; `.agents/OKRS.md` answers *"what are we trying to
+move?"*. Keep them apart.
+
+---
+
 ### Development
 
 Always refer to `.agents/CODING.md` for coding standards and conventions.

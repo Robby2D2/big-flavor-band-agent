@@ -695,6 +695,29 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 
 ---
 
+## Functional requirements (`docs/requirements/`)
+
+The product contract: one Markdown file per major feature area (search, radio, agent/DJ, catalog,
+production, sessions, accounts, platform), each holding **MUST** statements with permanent IDs
+(`SRCH-04`, `RAD-02`). It exists so a person or an agent can learn what the app promises without
+reading the code, and so a change cannot quietly remove a behavior users depend on.
+
+- **Requirements vs OKRs.** `docs/requirements/` = invariants that must always hold.
+  `.agents/OKRS.md` = targets the CPO triages against. Different questions, different files.
+- **IDs are permanent** — never reused or renumbered, so an old issue citing `SRCH-04` still means
+  the same promise. Retired requirements stay in place, struck through.
+- **Known gaps are recorded inline** (⚠️) rather than deleted, so an unmet promise stays visible as
+  a debt instead of disappearing. Two today: `PLAT-01` (hosted Anthropic path) and `PLAT-03`
+  (unguarded search/agent routes).
+- **The write path.** The PM agent authors requirement text inside its spec comment (it stays
+  read-only — it ingests untrusted issue text); the developer commits it in the same PR as the
+  code; QA checks the text matches and that no cited requirement broke; a human merge approves it.
+- **The conflict gate.** An issue that would make a MUST false halts at the PM with
+  `<!-- pm-agent:requirements-conflict -->` and the `requirements-conflict` label. The `/fix-issue`
+  orchestrator's **REQ-CONFLICT** bucket parks it until a human replies in the thread.
+
+---
+
 ## Significant Decisions Log
 
 | Date | Decision | Rationale |
@@ -731,3 +754,4 @@ refined in `00a73fa`. Details in `docs/DOCKER_DEPLOYMENT.md` / `docs/PRODUCTION_
 | 2026-09 | Pitch and clicks are measured by the per-tool `analyze()`s, and the monophony gate moved into shared constants `apply()` also reads (issue #89) | A fix nothing can detect is a fix only an expert finds. Both detections already existed inside `apply()`; what was missing was running them without the write. The gate had to be shared because `apply()`'s 0.5 voiced-confidence threshold rejected every real vocal stem — a recommended card whose Hear it silently fell back to a zero-semitone whole-file shift would have been worse than no card. Clicks needed a genuinely new *statistic* (absolute outlier, not a percentile of every file) for the same reason: the apply-side rule cannot distinguish a clean file from a clicky one. That fixes *detection* only — `sensitivity` is still a percentile of the whole file, so even the recommended value (usually its `0.005` floor, = the top 0.1% of jumps) repairs far more than the events counted — measured, 41 clicks vs 78,597 samples touched. Making the repair as targeted as the measurement means `apply()` taking sample positions instead of a threshold: a deliberate follow-up, out of scope here. |
 | 2026-09 | "Hear it" drives the stem console's single transport instead of a per-card `<audio>` element (issue #89) | Deciding whether to keep a fix means hearing it against the rest of the song — soloing the drums against the de-hissed vocal, toggling it on and off in the mix. A player per card could do none of that, and put as many playheads on the page as there were cards. The transport already rendered per-row fix chains on demand, so this was a rewiring rather than new machinery. |
 | 2026-09 | Frontend linting migrated to a flat `eslint.config.mjs` and driven by the eslint CLI, not `next lint` | Next 16 removed the `next lint` command, so `npm run lint` had been reading "lint" as a directory and failing repo-wide — every frontend PR shipped with the gate declared broken. `eslint-config-next` 16 already ships flat-config arrays, so the migration was a config file plus a script change. Turning it back on found 11 real errors (full-page-reload `<a>` links, dead vars, two setState-in-effect bugs in `AudioPlayer`); they were fixed rather than rule-disabled, so the repo sits at zero problems and any lint output now means the change in front of you. `no-explicit-any` is off rather than `warn`: ~100 `any`s exist today, two thirds of them in the `app/api/` BFF routes that forward whatever JSON the backend returns, and the lint script runs `--max-warnings=0`, so a warning would be a failure. Typing them properly is its own piece of work; until then `.agents/CODING.md` asks for a real type where one fits and review enforces it. |
+| 2026-09 | Functional requirements live in `docs/requirements/`, written by the PM and committed by the developer | The app's promises were implicit, so nothing stopped a change from silently removing behavior users depend on — and OKRs are the wrong home for them (targets, not invariants). Permanent IDs make a promise citable from an issue years later. The PM stays read-only because it ingests untrusted issue text, so requirement edits ride into `main` inside the code's own PR and the human merge *is* the approval — rather than an agent writing the contract it is also judged against. A change that would break a requirement halts for a human instead of being traded away, since the failure mode being prevented is exactly an agent reasoning its way to "this one's fine". |
