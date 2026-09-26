@@ -77,6 +77,14 @@ audio_library/*.flac
 # Auto-clean output dir (runtime-generated, host-side writable mount)
 audio_library/produced/
 
+# Recording-session material: uploaded Reaper zips and the raw multitrack audio
+# unpacked from them. Multi-GB per session, and raw takes are deleted after
+# import anyway.
+# Anchored to the repo root, like the /lib/ rule above: an unanchored
+# `sessions/` also swallows frontend/app/produce/sessions/ and the BFF routes.
+/audio_library/sessions/
+/sessions/
+
 # Database
 sql/init/*.sql.bak
 postgres_data/

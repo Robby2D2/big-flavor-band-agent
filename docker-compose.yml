@@ -96,6 +96,11 @@ services:
       # Writable output dir for auto-clean, nested under the read-only catalog
       # mount above so cleaned files can be written without exposing originals.
       - ./audio_library/produced:/app/audio_library/produced
+      # Writable staging for uploaded recording sessions (Reaper multitrack
+      # zips). Nested under the read-only catalog mount for the same reason as
+      # produced/ above. Holds raw WavPack tracks, which are deleted once a
+      # session's takes are imported.
+      - ./audio_library/sessions:/app/audio_library/sessions
       # Mount source code for hot reloading (restart instead of rebuild)
       - ./src:/app/src:ro
       - ./database:/app/database:ro

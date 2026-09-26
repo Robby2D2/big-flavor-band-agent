@@ -54,11 +54,17 @@ src/
     analysis.py               # shared DSP analysis (key/beat/pitch/hum/LUFS + per-tool loaders)
     region.py                 # region scoping (resolve_region/apply_to_region/blend_strength)
     tools/                    # ONE FILE PER TOOL (trim_silence.py, reduce_noise.py, apply_eq.py, …)
+    rpp_parser.py             # Reaper .RPP projects — tracks, items, recording passes
+    wavpack_io.py             # ffmpeg seam for WavPack session audio (probe/envelope/slice)
+    session_detect.py         # loudness envelopes -> candidate regions
+    session_transcribe.py     # vocal-only mix of a region -> timed transcript lines
+    session_attempts.py       # transcript + stops -> the band's attempts at songs
+    session_render.py         # slice a take out of every track (its stems) + the mix
 database/
   database.py                 # DatabaseManager (asyncpg) — the single DB access point
   apply_schema.py             # schema bootstrap
   sql/init/*.sql              # initial schema (songs, details, audio embeddings)
-  sql/migrations/*.sql        # versioned migrations (song_id→int, users table)
+  sql/migrations/*.sql        # versioned migrations (song_id→int, users, recording sessions)
 frontend/
   app/                         # Next.js app-router pages + /api route handlers (BFF)
   components/                  # React components (AudioPlayer, SongList, SearchBar, …)
@@ -501,6 +507,115 @@ the UI could only suggest turning fixes off.
 
 Small previews — one fix, or one stem's chain — still use the synchronous
 `POST /api/produce/accept-fixes`, which finishes well inside the proxy's patience.
+
+---
+
+## Recording-session import (2026-09-25, in progress)
+
+The band records whole rehearsals in Reaper and the songs have to be found inside the result. Only
+the scanning half exists so far — four modules under `src/production/` plus `scripts/scan_session.py`,
+with no API or UI yet:
+
+- `rpp_parser.py` — the Reaper project file: tracks, items, and `RECPASS` (which press of record
+  produced each item). A project accumulates *many* sessions, so it references passes whose media is
+  in a different folder and not in the uploaded zip; items with absent sources are skipped, not
+  errors.
+- `wavpack_io.py` — **the only module that knows session audio is WavPack.** Reaper records `.wv`,
+  libsndfile has no WavPack decoder, so `soundfile`/`librosa` and every audio tool here are blind to
+  it. ffmpeg (already in the image) decodes it: probe, loudness envelope, and segment extraction.
+  Everything downstream consumes the FLAC/WAV this writes, so no other code changes.
+- `session_detect.py` — loudness envelopes to candidate takes. Each track is judged against its own
+  20th-percentile resting level (a live room means every mic hears every instrument), and music
+  requires a rhythm track or three tracks at once, which is what stops one person talking into one
+  mic from reading as a song.
+- `session_render.py` — slices a take out of every track. **Those slices are the stems** — the band
+  recorded them apart, so nothing needs separating — named into Demucs-compatible buckets with
+  suffixes (`vocals`, `vocals-2`) since two singers each have a mic, and `display_name` keeping the
+  band's own track name. Kept as FLAC: 24-bit lossless at about half of WAV, and `soundfile` reads it.
+
+Timeline alignment is by `POSITION` on a shared grid, never by assuming files start together — a
+guitar item measured +145s after its pass-mates in the sample session.
+
+- `session_transcribe.py` — renders the **vocal tracks only** over a region (the band has a mic per
+  singer, so mixing them puts whoever sang in front of Whisper without the instruments, and without
+  the duplicate lines two separately-transcribed mics would give from bleed) and transcribes it
+  through `LyricsExtractor`, with `min_confidence` at 0 because mumbled chatter is signal here.
+- `session_attempts.py` — a region to the band's attempts at songs.
+
+### What decides a take boundary (2026-09-25)
+
+`detect_takes` finds *regions* where somebody was playing; a region is not a song. Each rule below
+replaced one that measurement disproved:
+
+- **Loudness alone cannot split a region.** On the real pass it merged two attempts at one song
+  separated only by talking the band noodled through, and promoted 2m43s of pure chatter to a take.
+- **Rhythm cannot either.** A tempogram was measured as a refiner and scored the *talking* higher
+  (0.69-0.76) than the song, because noodling is rhythmic. Acoustic refinement is out.
+- **So the transcript decides which stretches are songs**, which reorders the pipeline: transcribe
+  the coarse regions, settle the boundaries, then render once.
+- **But talking is not a boundary.** Splitting on chatter cut "Gardening at Night" in half, because
+  someone shouted "here comes a big solo" over the guitar solo. And a restart often has no
+  discussion at all, so waiting for talking would miss it.
+- **The band *stopping* is the boundary** — they cannot start a song again without having stopped it.
+  So spans are cut at sustained silences and a span counts as an attempt only if somebody sang over
+  it. The stop must be sustained (`MIN_STOP_SECONDS` = 2.0s): measured, note gaps inside that solo
+  reached 1.0s while the gap between two attempts at one song was 5.7s.
+
+**The model is only asked to label lines.** Asked for attempt spans directly, the local 14B split one
+attempt in two and returned a stretch of chatter as an attempt while its own reasoning called it
+chatter. Every span decision is therefore arithmetic in Python, and an unreadable reply leaves the
+region whole for a human rather than raising.
+
+Labelling runs over the pass as one stream, batched at `LABEL_BATCH` = 20 lines. Both extremes were
+measured and both are worse: the whole pass at once (86 lines) degraded badly, flipping obvious
+chatter to singing, while one short region alone gave the model nothing to compare against — "it's
+all good it's all good" reads like a hook when it stands by itself. `smooth_labels` then repairs the
+model's characteristic error, a single line flipped inside a long lyric run (`MIN_CHATTER_RUN` = 2),
+per region so it cannot reach across a boundary between lines that are minutes apart.
+
+**Labelling is the weakest link and is knowingly imperfect.** On 18 mixed lines the local 14B scored
+16/18, but across the real pass it still calls a 2m43s stretch of "hello hello tv listeners" singing,
+so that region is offered as two attempts instead of none. This is a quality dial, not a blocker: the
+import flow ends in human review precisely because detection is fallible, and a wrong attempt costs a
+click to discard. Whether a stronger model fixes it is **unmeasured** — `AnthropicProvider` cannot
+currently make any call (see below) and the configured key is invalid.
+
+### The surface (2026-09-26)
+
+`src/api/routers/sessions.py` + `src/api/session_jobs.py` + migration 18, all editor-gated.
+
+- **Upload is chunked** (`lib/sessionUpload.ts` on the client): nginx caps a body at 100 MB with a
+  60s read timeout and a session is gigabytes, so the browser slices the file and `PUT`s each piece
+  with its `offset`. A retry rewrites the same range rather than appending, which is the difference
+  between a resumable upload and a corrupted zip. Measured at 2.03 GB in 14s over loopback.
+- **The scan is a background job whose narration is durable.** `recording_sessions` carries `stage`
+  and `progress` beside `status`, unlike `stem_jobs`' in-memory state, because a scan runs for tens
+  of minutes and a page reloaded mid-run has to pick the story back up.
+- **Nothing reaches the catalog.** Takes are staged in `session_takes`/`session_take_stems` and a
+  producer discards what isn't a song (a flag, never a delete). Import into `songs`/`song_versions`
+  is a later step; matching a take to a catalog song is deliberately not built yet.
+- **Unpacking flattens every member to its basename.** Reaper references media by basename, a Google
+  Drive export nests it under a folder, and flattening is also what makes zip-slip impossible — no
+  member keeps a path to escape with.
+- Raw WavPack is **deleted once the takes are rendered**: it is the bulk of the disk and nothing
+  reads it again. The sample session left 925 MB of takes from a 2 GB upload.
+- Waveforms and playback reuse the stem console's pattern exactly — a cached envelope
+  (`{"peaks": ...}`, version-guarded by `waveform_peaks.usable_cached_peaks`, now shared with the
+  produce routes) and a compressed preview, so `fetchPeaks` reads a session take as it reads a stem.
+
+Staging lives under the writable `./audio_library/sessions` mount (the catalog mount is `:ro`).
+
+### `AnthropicProvider` cannot make a call (found 2026-09-25, not yet fixed)
+
+`anthropic` 1.7.0 removed `temperature` from `messages.create`, and
+`AnthropicProvider.generate_response`/`generate_stream` always pass it — it is their own default
+(`temperature: float = 1.0`), so *every* call raises
+`TypeError: AsyncMessages.create() got an unexpected keyword argument 'temperature'`. With
+`LLM_PROVIDER=anthropic` the agent, DJ and search-explain paths therefore all fail, which is exactly
+what KR2.3 ("swappable by config with no change in user-facing behavior") forbids. Ollama is the
+default so this has stayed hidden. The `ANTHROPIC_API_KEY` in the dev `.env` is also rejected (401),
+so the hosted path is doubly unavailable. Untouched here deliberately: it is shared plumbing on the
+agent's hot path and deserves its own change, not a drive-by edit inside a feature slice.
 
 ---
 

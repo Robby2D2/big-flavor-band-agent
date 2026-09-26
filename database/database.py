@@ -1057,6 +1057,295 @@ class DatabaseManager:
             )
         return dict(row) if row else None
 
+    # Recording-session operations (migration 18)
+    async def create_recording_session(
+        self, name: str, source_filename: Optional[str], recorded_on: Optional[Any]
+    ) -> Dict[str, Any]:
+        """Insert a session in the 'uploading' state. Returns the inserted row."""
+        query = """
+            INSERT INTO recording_sessions (name, source_filename, recorded_on, status)
+            VALUES ($1, $2, $3, 'uploading')
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, name, source_filename, _parse_recorded_on(recorded_on)
+            )
+        return dict(row)
+
+    async def list_recording_sessions(self) -> List[Dict[str, Any]]:
+        """Every session, newest first, with its take count."""
+        query = """
+            SELECT s.*, COUNT(t.id) FILTER (WHERE NOT t.excluded) AS take_count
+            FROM recording_sessions s
+            LEFT JOIN session_takes t ON t.session_id = s.id
+            GROUP BY s.id
+            ORDER BY s.created_at DESC
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return [dict(row) for row in rows]
+
+    async def get_recording_session(self, session_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single session by id, or None."""
+        query = "SELECT * FROM recording_sessions WHERE id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, session_id)
+        return dict(row) if row else None
+
+    async def set_recording_session_status(
+        self,
+        session_id: int,
+        status: str,
+        stage: Optional[str] = None,
+        progress: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update a session's job lifecycle.
+
+        ``stage``/``progress`` are COALESCEd so a caller reporting only a status
+        change does not wipe the narration the page is showing.
+        """
+        query = """
+            UPDATE recording_sessions
+            SET status = $2,
+                stage = COALESCE($3, stage),
+                progress = COALESCE($4, progress),
+                error = $5
+            WHERE id = $1
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, session_id, status, stage, progress, error)
+        return dict(row) if row else None
+
+    async def set_recording_session_scan(
+        self,
+        session_id: int,
+        raw_dir: Optional[str],
+        rec_passes: Optional[List[int]],
+        sample_rate: Optional[int],
+        duration_seconds: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        """Record what the unpack and parse found."""
+        query = """
+            UPDATE recording_sessions
+            SET raw_dir = $2, rec_passes = $3, sample_rate = $4, duration_seconds = $5
+            WHERE id = $1
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, session_id, raw_dir, rec_passes, sample_rate, duration_seconds
+            )
+        return dict(row) if row else None
+
+    async def clear_recording_session_raw_dir(self, session_id: int) -> None:
+        """Forget the raw material's location, once it has been purged."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE recording_sessions SET raw_dir = NULL WHERE id = $1", session_id
+            )
+
+    async def delete_recording_session(
+        self, session_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Delete a session; its tracks, takes and stems cascade."""
+        query = "DELETE FROM recording_sessions WHERE id = $1 RETURNING *"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, session_id)
+        return dict(row) if row else None
+
+    async def add_session_track(
+        self,
+        session_id: int,
+        name: str,
+        source_name: str,
+        role: str,
+        rec_pass: Optional[int],
+        position_seconds: float,
+        peak_db: Optional[float],
+        is_dead: bool,
+    ) -> Dict[str, Any]:
+        """Record one channel of the recording."""
+        query = """
+            INSERT INTO session_tracks (
+                session_id, name, source_name, role, rec_pass,
+                position_seconds, peak_db, is_dead
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                session_id,
+                name,
+                source_name,
+                role,
+                rec_pass,
+                position_seconds,
+                peak_db,
+                is_dead,
+            )
+        return dict(row)
+
+    async def list_session_tracks(self, session_id: int) -> List[Dict[str, Any]]:
+        """Every channel of a session, in timeline then name order."""
+        query = """
+            SELECT * FROM session_tracks
+            WHERE session_id = $1
+            ORDER BY rec_pass, position_seconds, name
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, session_id)
+        return [dict(row) for row in rows]
+
+    async def add_session_take(
+        self,
+        session_id: int,
+        rec_pass: Optional[int],
+        start_seconds: float,
+        end_seconds: float,
+        transcript: Optional[str],
+        mix_path: Optional[str],
+    ) -> Dict[str, Any]:
+        """Record one detected attempt at a song."""
+        query = """
+            INSERT INTO session_takes (
+                session_id, rec_pass, start_seconds, end_seconds, transcript, mix_path
+            ) VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                session_id,
+                rec_pass,
+                start_seconds,
+                end_seconds,
+                transcript,
+                mix_path,
+            )
+        return dict(row)
+
+    async def list_session_takes(self, session_id: int) -> List[Dict[str, Any]]:
+        """Every take of a session, in timeline order, each with its stems."""
+        takes_query = """
+            SELECT * FROM session_takes WHERE session_id = $1 ORDER BY start_seconds
+        """
+        stems_query = """
+            SELECT s.* FROM session_take_stems s
+            JOIN session_takes t ON t.id = s.take_id
+            WHERE t.session_id = $1
+            ORDER BY s.take_id, s.name
+        """
+        async with self.pool.acquire() as conn:
+            take_rows = await conn.fetch(takes_query, session_id)
+            stem_rows = await conn.fetch(stems_query, session_id)
+
+        stems_by_take: Dict[int, List[Dict[str, Any]]] = {}
+        for row in stem_rows:
+            stems_by_take.setdefault(row['take_id'], []).append(dict(row))
+
+        takes = []
+        for row in take_rows:
+            take = dict(row)
+            take['stems'] = stems_by_take.get(take['id'], [])
+            takes.append(take)
+        return takes
+
+    async def set_session_take_mix_path(
+        self, take_id: int, mix_path: str
+    ) -> Optional[Dict[str, Any]]:
+        """Point a take at its rendered mix, once the render has written it."""
+        query = "UPDATE session_takes SET mix_path = $2 WHERE id = $1 RETURNING *"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, take_id, mix_path)
+        return dict(row) if row else None
+
+    async def get_session_take(self, take_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single take by id, or None."""
+        query = "SELECT * FROM session_takes WHERE id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, take_id)
+        return dict(row) if row else None
+
+    async def set_session_take_excluded(
+        self, take_id: int, excluded: bool
+    ) -> Optional[Dict[str, Any]]:
+        """Set a take aside, or bring it back. Never deletes its audio."""
+        query = "UPDATE session_takes SET excluded = $2 WHERE id = $1 RETURNING *"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, take_id, excluded)
+        return dict(row) if row else None
+
+    async def set_session_take_waveform_peaks(
+        self, take_id: int, peaks: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Cache a take mix's waveform drawing envelope (see waveform_peaks)."""
+        query = """
+            UPDATE session_takes SET waveform_peaks = $2 WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, take_id, json.dumps(peaks) if peaks is not None else None
+            )
+        return dict(row) if row else None
+
+    async def add_session_take_stem(
+        self,
+        take_id: int,
+        track_id: Optional[int],
+        name: str,
+        display_name: Optional[str],
+        path: str,
+        peak_db: Optional[float],
+    ) -> Dict[str, Any]:
+        """Record one track's audio for one take.
+
+        Upserts on ``(take_id, name)`` and clears the cached envelope when the
+        path changes, for the same reason ``add_stem`` does: a redetected take
+        writes new audio to the same name, and a stale envelope would draw the
+        wrong shape.
+        """
+        query = """
+            INSERT INTO session_take_stems (
+                take_id, track_id, name, display_name, path, peak_db
+            ) VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (take_id, name) DO UPDATE SET
+                path = EXCLUDED.path,
+                display_name = EXCLUDED.display_name,
+                peak_db = EXCLUDED.peak_db,
+                waveform_peaks = NULL
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, take_id, track_id, name, display_name, path, peak_db
+            )
+        return dict(row)
+
+    async def get_session_take_stem(self, stem_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single take stem by id, or None."""
+        query = "SELECT * FROM session_take_stems WHERE id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, stem_id)
+        return dict(row) if row else None
+
+    async def set_session_take_stem_waveform_peaks(
+        self, stem_id: int, peaks: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Cache a take stem's waveform drawing envelope (see waveform_peaks)."""
+        query = """
+            UPDATE session_take_stems SET waveform_peaks = $2
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, stem_id, json.dumps(peaks) if peaks is not None else None
+            )
+        return dict(row) if row else None
+
     # Audio analysis operations
     async def insert_audio_analysis(self, analysis: Dict[str, Any]) -> int:
         """Insert or update audio analysis."""

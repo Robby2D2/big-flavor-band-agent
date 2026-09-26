@@ -15,8 +15,9 @@ tallest waveform on screen.
 Pure/CPU-bound (a streaming read of a whole file), so callers run it off the
 FastAPI event loop via a threadpool. Read-only: nothing here writes audio.
 """
+import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import soundfile as sf
@@ -108,3 +109,19 @@ def _quantise(values: np.ndarray) -> list:
     finite = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     scaled = np.round(finite * PEAKS_SCALE)
     return np.clip(scaled, -PEAKS_SCALE, PEAKS_SCALE).astype(np.int16).tolist()
+
+
+def usable_cached_peaks(raw: Any) -> Optional[Dict[str, Any]]:
+    """Return a cached waveform envelope only if it's the current format.
+
+    Anything written by an older ``PEAKS_FORMAT_VERSION`` is treated as absent
+    and recomputed, which is what lets the payload shape change without a
+    backfill over every stem, version and take in the catalog.
+    """
+    if isinstance(raw, str):  # asyncpg returns JSONB as text
+        raw = json.loads(raw)
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("version") != PEAKS_FORMAT_VERSION:
+        return None
+    return raw

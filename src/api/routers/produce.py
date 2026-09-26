@@ -332,20 +332,8 @@ def _measure_audio(file_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _usable_cached_peaks(raw: Any) -> Optional[Dict[str, Any]]:
-    """Return a cached waveform envelope only if it's the current format.
-
-    Anything written by an older ``PEAKS_FORMAT_VERSION`` is treated as absent
-    and recomputed, which is what lets the payload shape change without a
-    backfill over every stem and version in the catalog.
-    """
-    if isinstance(raw, str):  # asyncpg returns JSONB as text
-        raw = json.loads(raw)
-    if not isinstance(raw, dict):
-        return None
-    if raw.get("version") != waveform_peaks.PEAKS_FORMAT_VERSION:
-        return None
-    return raw
+# Shared with the session routes; see waveform_peaks for the version rule.
+_usable_cached_peaks = waveform_peaks.usable_cached_peaks
 
 
 async def _compute_peaks_or_503(audio_path: Path, label: str) -> Dict[str, Any]:

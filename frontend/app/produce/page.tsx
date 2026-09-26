@@ -278,6 +278,24 @@ export default function ProducePage() {
       <Header title="Produce" subtitle="Analyze and auto-clean catalog audio" />
 
       <main className="container mx-auto px-4 py-8">
+        {/* Recording sessions live beside the catalog: a session is raw
+            multitrack the songs still have to be found in, not a catalog song
+            to clean. */}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-panel p-4 shadow-lg">
+          <div>
+            <h2 className="font-medium text-text">Recording sessions</h2>
+            <p className="text-sm text-text/60">
+              Upload a Reaper rehearsal and the songs inside it are found for you.
+            </p>
+          </div>
+          <Link
+            href="/produce/sessions"
+            className="rounded-lg bg-signal px-4 py-2 text-sm font-medium text-canvas"
+          >
+            Open sessions
+          </Link>
+        </div>
+
         {/* Selection toolbar */}
         <div className="bg-panel rounded-lg shadow-lg p-4 mb-4 flex flex-wrap items-end gap-4">
           <div>
