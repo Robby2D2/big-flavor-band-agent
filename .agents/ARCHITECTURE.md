@@ -694,6 +694,20 @@ Liquidsoap was restarted**. Not merely silence — a dead mount that did not sel
   filename carries no song id, so `song_id_from_filename()` returns `None` and the page would show
   *nothing playing* over audible audio (RAD-05). `check_next` keeps only top-level
   `{song_id}_*.mp3`.
+- **A filename shape is not a catalog row, so naming cannot end at the filter.** The stream picks its
+  fallback music off the filesystem and the two inventories disagree: **74 of the 1,415** top-level
+  `{song_id}_*.mp3` files have no `songs` row (every `songs` row does have a file), so ~1 fallback
+  track in 19 resolved to an id the catalog could not name and the page said *nothing playing* over
+  audible music again — the same RAD-05 break by a different route, found in QA. `resolve_on_air_song`
+  now names those from the stream's own metadata (`_song_from_stream`: ID3 `title`, else the filename
+  with the id prefix stripped), with the length coming from `stream_duration` as it already does for
+  catalog songs with no duration. **Naming is the backend's job, not the playlist filter's** — that
+  keeps all 1,415 playable files on the air, which shrinking the pool to the catalog would not: the
+  pool is the stream's own directory scan, and making it depend on the database would put RAD-02 back
+  at the mercy of a backend or Postgres outage.
+- **The 74 orphan files are a data defect in their own right** (the catalog does not describe
+  everything the app can play) and are reported separately rather than designed around — the naming
+  path above is what RAD-05 needs regardless of how many orphans exist.
 - **Also found, still open:** `reload_mode="watch"` on the queue playlist never fires on a Docker
   Desktop/Windows bind mount (inotify events do not cross it) — 5 reloads in a day, all at container
   start, against hundreds of playlist writes. Queue changes reach the air on Linux, but not on this

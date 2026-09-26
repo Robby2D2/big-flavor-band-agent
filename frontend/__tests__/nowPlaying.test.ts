@@ -40,6 +40,24 @@ describe('describeNowPlaying', () => {
     expect(result.song?.title).toBe('So Tired');
   });
 
+  it('names fallback music the catalog has no row for, with the length from the stream', () => {
+    // The backend names those tracks from the stream's own metadata (issue #104), so
+    // they arrive with a real title and no catalog duration. The page must read that
+    // as fallback music playing, never as 'silent' over audible audio (RAD-05).
+    const result = describeNowPlaying({
+      current_song: { id: 890, title: 'KWE -- Lull Me Away -- take 1', duration: null },
+      stream_known: true,
+      current_song_source: 'fallback',
+      stream_duration: 195,
+      position: 39,
+    });
+
+    expect(result.kind).toBe('fallback');
+    expect(result.song?.title).toBe('KWE -- Lull Me Away -- take 1');
+    expect(result.duration).toBe(195);
+    expect(result.progress).toBeCloseTo(0.2);
+  });
+
   it('reports unknown when the stream could not be asked, and names no song', () => {
     const result = describeNowPlaying({
       current_song: song,

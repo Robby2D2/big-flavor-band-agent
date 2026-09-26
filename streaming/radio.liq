@@ -11,8 +11,9 @@ settings.log.stdout := true
 settings.frame.audio.samplerate := 44100
 settings.frame.audio.channels := 2
 
-# Dynamic playlist from backend
-# Reloads every 5 seconds to pick up queue changes
+# Dynamic playlist from backend, reloaded when the backend rewrites it.
+# reload=5 is inert here: reload_mode="watch" reloads on a file change, not on a
+# timer, so the number is not a 5-second poll -- do not read it as one.
 # Use "randomize" mode with a single item to ensure source stays ready
 radio_queue = playlist(
   mode="randomize",
@@ -28,6 +29,9 @@ radio_queue = playlist(
 # Measured on the live stack, it queued produced/.../previews/guitar.opus: a lone
 # guitar stem is not what the station is for, and its filename carries no song id, so
 # the radio page could not name what a listener was hearing (RAD-05).
+# The shape is all this can check: 74 of these files have no catalog row, and naming
+# those is the backend's job (_song_from_stream in src/api/radio_service.py), not a
+# reason to keep playable songs off the air.
 def is_catalog_song(r) =
   string.match(pattern="^/audio_library/[0-9]+_[^/]*[.]mp3$", request.uri(r))
 end

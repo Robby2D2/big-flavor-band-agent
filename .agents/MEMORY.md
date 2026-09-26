@@ -4,6 +4,11 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
+> ⚠️ **Over the prune threshold (noted 2026-09-26):** this file is ~740 lines against the ~200 that
+> `AGENTS.md` asks for. The radio entries are the obvious first move, into
+> `.agents/memory/radio_streaming.md`. Left for a housekeeping change rather than done inside a feature
+> PR, where it would bury the diff.
+>
 > Pruned 2026-09-19: the session-cookie signing entry moved to
 > [memory/auth_access.md](memory/auth_access.md), joining the editor-invites entry it was the
 > companion to.
@@ -73,6 +78,22 @@ human to restart a container. RAD-02, RAD-03 and RAD-10 were all unmet.
   hundreds of backend writes. Queue changes reach the air on Linux via inotify but not on this dev
   stack, so local queue verification needs a forced `radio.m3u.reload` over telnet (port 1234, reachable
   from the nginx container). Nothing to do with the fallback chain; reported, not fixed.
+
+- **QA caught the half of RAD-05 the filter cannot cover, and it is the generalizable lesson here:**
+  a filename's *shape* is not proof of a catalog row. The stream's fallback pool is a directory scan,
+  the catalog is a table, and they disagree — **74 of the 1,415** top-level `{song_id}_*.mp3` files have
+  no `songs` row (no row lacks a file), so about every 19th fallback track resolved to an id
+  `_load_catalog_song()` returned `None` for, and the page said *nothing playing* over audible music
+  exactly as the stems would have. Fixed where naming lives, not by shrinking the pool:
+  `resolve_on_air_song()` falls back to `_song_from_stream()` (ID3 `title`, else the filename with the
+  id prefix stripped) and the length comes from `stream_duration`, as it already did for catalog songs
+  with no duration. **Shrinking the pool to ids in the database was the other option and is worse** —
+  it would drop 74 playable songs and make the stream's last line of defence depend on Postgres and the
+  backend being up, i.e. re-risk the very requirement (RAD-02) this issue restored. The 74 orphan files
+  are a catalog-data defect of their own and are reported separately, not designed around. Reproduced
+  live both ways by pointing the fallback source's `audio_library.uri` at an orphan-only playlist over
+  telnet — 1/1415 odds are not a test plan, and the first PR's RAD-05 check passed only by landing on a
+  song that happened to resolve.
 
 `tests/test_radio_air_chain.py` (7 cases) pins the chain's shape — confirmed red against the old
 config before keeping it — because what regressed was a shape, and the cross-checked filter regex
