@@ -32,8 +32,9 @@ audio actually on the air as the stream advances.
 **RAD-06** — A user MUST be able to **add a song to the queue** from search results and from the
 radio page.
 
-**RAD-07** — A user MUST be able to **skip** the current song, **remove** a queued song, and
-**play/pause**.
+**RAD-07** — An **editor** or **admin** MUST be able to **skip** the current song, **remove any
+queued song**, and **play/pause**. A **listener** MUST be able to remove a queued song they added
+themselves (**ACCT-05**), and adding to the queue stays open to any signed-in user (**RAD-06**).
 
 **RAD-08** — A queue action MUST be reflected in the live stream within a few seconds (OKR
 **KR3.2**), and in the on-screen queue immediately.
@@ -43,6 +44,10 @@ silently appear to succeed.
 
 **RAD-10** — Skipping the last queued song MUST leave the stream playing (see **RAD-02**), not stop
 it.
+
+**RAD-13** — The queue MUST remember which user added each song, and that attribution MUST survive a
+backend restart with the rest of the radio state (**RAD-04**). A queued song with no recorded adder
+MUST be treated as nobody's own: only an **editor** or **admin** may remove it.
 
 ---
 

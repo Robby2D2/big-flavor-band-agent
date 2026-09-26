@@ -34,6 +34,7 @@ from typing import Optional, Dict, Any, Tuple
 import httpx
 
 from src.api.dependencies import get_agent, get_db, get_radio_store
+from src.auth import Caller, role_at_least
 
 logger = logging.getLogger("backend-api")
 
@@ -169,6 +170,64 @@ def _find_audio_file(song_id: int) -> Optional[Path]:
         return published
     audio_files = list(AUDIO_LIBRARY_DIR.glob(f"{song_id}_*.mp3"))
     return audio_files[0] if audio_files else None
+
+
+# --- Queue attribution ----------------------------------------------------
+#
+# A listener may remove a queued song they added themselves, but nobody else's
+# (ACCT-05, ACCT-15). That needs the queue to remember who added each entry, so a
+# queue entry carries ADDED_BY. It needs no migration and no new table: the queue
+# lives inside the radio_state JSONB the store already round-trips, so the
+# attribution survives a backend restart with the rest of the state (RAD-04,
+# RAD-13).
+#
+# Entries with no recorded adder are normal, not a defect: everything queued before
+# this existed, everything the background top-up adds, and everything the DJ queues
+# (the agent path carries no verified identity). RAD-13 makes them nobody's own, so
+# only an editor or admin may remove them.
+
+ADDED_BY = "added_by"
+
+
+def attribute_queue_entry(song: Dict[str, Any], user_id: Optional[str]) -> Dict[str, Any]:
+    """Stamp a song about to be queued with who added it. Mutates and returns it."""
+    if user_id:
+        song[ADDED_BY] = user_id
+    return song
+
+
+def may_remove_from_queue(song: Dict[str, Any], caller: Caller) -> bool:
+    """Whether ``caller`` is allowed to remove this queued song.
+
+    Editors and admins may remove anything. Everyone else may remove only what they
+    added themselves, which means both sides of the comparison have to be known: an
+    unidentified caller or an unattributed song is a refusal, not a match (ACCT-04,
+    RAD-13).
+    """
+    if role_at_least(caller.role, "editor"):
+        return True
+
+    adder = song.get(ADDED_BY)
+    return bool(adder) and bool(caller.user_id) and adder == caller.user_id
+
+
+def queue_entry_for_display(
+    song: Optional[Dict[str, Any]], caller: Caller
+) -> Optional[Dict[str, Any]]:
+    """A queue entry as the page may see it: whether *this* caller added it, never who did.
+
+    The adder's account id stays server-side. The page needs only to know whether the
+    remove control is this user's to offer; broadcasting every listener's account id
+    to every other listener is not part of that. The flag is for drawing the control
+    — the removal itself is authorized against the stored adder (ACCT-03, ACCT-04).
+    """
+    if song is None:
+        return None
+
+    entry = {key: value for key, value in song.items() if key != ADDED_BY}
+    adder = song.get(ADDED_BY)
+    entry["added_by_me"] = bool(adder) and bool(caller.user_id) and adder == caller.user_id
+    return entry
 
 
 # --- What is on the air ---------------------------------------------------

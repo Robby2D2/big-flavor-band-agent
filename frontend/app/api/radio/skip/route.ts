@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, UserRole } from '@/lib/server-auth';
-import { backendAuthHeaders } from '@/lib/backend';
+import { backendAuthHeaders, backendErrorMessage } from '@/lib/backend';
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       return NextResponse.json(
-        { error: body?.detail || `Backend API error: ${response.statusText}` },
+        { error: backendErrorMessage(body) || `Backend API error: ${response.statusText}` },
         { status: response.status }
       );
     }

@@ -24,8 +24,8 @@ a pass.
 
 ## Roles
 
-**ACCT-05** — **Listener** MUST be able to search, play songs, listen to the radio, and act on the
-queue.
+**ACCT-05** — **Listener** MUST be able to search, play songs, listen to the radio, add songs to the
+queue, and remove a queued song **they added themselves**.
 
 **ACCT-06** — **Editor** MUST additionally be able to reach the edit, produce, and recording-session
 surfaces.
@@ -37,6 +37,11 @@ invites.
 
 **ACCT-09** — A user who reaches a surface their role may not use MUST be told plainly, not shown a
 broken or empty page.
+
+**ACCT-15** — Skipping the current song, pausing or resuming the stream, and removing a queued song
+the user did not add themselves MUST be restricted to **editor** and **admin**, MUST NOT be offered
+to a listener, and MUST be refused where the action is carried out rather than only hidden in the
+interface.
 
 ---
 

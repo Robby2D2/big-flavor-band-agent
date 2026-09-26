@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, UserRole } from '@/lib/server-auth';
-import { backendAuthHeaders } from '@/lib/backend';
+import { backendAuthHeaders, backendErrorMessage } from '@/lib/backend';
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,8 +12,14 @@ export async function POST(request: NextRequest) {
       headers: backendAuthHeaders('editor'),
     });
 
+    // Forward the backend's status and wording: a transport action that failed has to
+    // be able to say why on the page (RAD-09).
     if (!response.ok) {
-      throw new Error(`Backend API error: ${response.statusText}`);
+      const errorBody = await response.json().catch(() => null);
+      return NextResponse.json(
+        { error: backendErrorMessage(errorBody) || `Backend API error: ${response.statusText}` },
+        { status: response.status }
+      );
     }
 
     const data = await response.json();
