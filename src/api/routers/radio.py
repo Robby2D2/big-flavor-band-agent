@@ -1,13 +1,13 @@
 """Radio control + streaming routes.
 
 Thin wrappers over the process-external radio state (RadioStateStore, issue #2)
-and the playback helpers in ``src/api/radio_service.py``. The playback clock and
-queue top-up are owned by the background loop (issue #5), so GET /api/radio/state
-and the /stream endpoints are side-effect-free reads. Control routes (skip,
-remove, play, pause) require the editor role (issue #1). Raw exceptions propagate
-to the centralized error handlers (issue #9).
+and the playback helpers in ``src/api/radio_service.py``. What is playing is
+reconciled against the stream by the background loop (issue #101), and the queue
+top-up is owned by it too (issue #5), so GET /api/radio/state and the /stream
+endpoints are side-effect-free reads. Control routes (skip, remove, play, pause)
+require the editor role (issue #1). Raw exceptions propagate to the centralized
+error handlers (issue #9).
 """
-import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -24,10 +24,8 @@ from src.api.dependencies import (
     get_agent,
 )
 from src.api.radio_service import (
-    register_listener,
-    update_radio_position,
-    advance_to_next_song,
     auto_populate_queue,
+    skip_on_air,
     write_playlist_file,
     _find_audio_file,
 )
@@ -50,20 +48,18 @@ async def get_radio_state(
     if not listener_id:
         listener_id = str(uuid.uuid4())
 
-    # Register this listener (may start playback for the first listener).
-    # The playback clock and queue top-up are owned by radio_background_loop(),
-    # so this read does NOT advance the song, mutate playback position, or
-    # invoke the agent/search — it only registers presence.
-    mutated = await register_listener(store, listener_id, state)
+    # Presence only. What is playing is reconciled against the stream by
+    # radio_background_loop(), and the queue top-up is owned by it too, so this
+    # read does NOT advance the song, mutate playback position, or invoke the
+    # agent/search. A listener arriving used to start playback; the stream decides
+    # now (issue #101).
+    await store.register_listener(listener_id)
 
     # NOTE: playback is intentionally NOT paused when the listener count
     # drops to zero — the radio is a continuous broadcast driven by
     # radio_background_loop() (issue #5). active_listeners is reported for
     # observability only.
     active_listeners = await store.count_active_listeners()
-
-    if mutated:
-        await store.save_state(state)
 
     return {
         "current_song": state["current_song"],
@@ -72,7 +68,15 @@ async def get_radio_state(
         "position": state["position"],
         "queue_length": len(state["queue"]),
         "listener_id": listener_id,  # Return listener ID for future requests
-        "active_listeners": active_listeners
+        "active_listeners": active_listeners,
+        # Whether the stream could be asked what it is playing, and whether what it
+        # is playing came from the queue or from the fallback source (issue #101).
+        # A page that cannot trust current_song has to be able to say so.
+        "stream_known": state.get("stream_known", False),
+        "current_song_source": state.get("current_song_source"),
+        # The length the stream reports for the track on air, for songs the catalog
+        # has no duration for (CAT-02).
+        "stream_duration": state.get("stream_duration"),
     }
 
 
@@ -99,11 +103,10 @@ async def add_to_queue(
             state["queue"].append(song)
             added_count += 1
 
-    # If nothing is playing, start playing
-    if not state["current_song"] and len(state["queue"]) > 0:
-        advance_to_next_song(state)
-    elif added_count > 0:
-        # Update playlist file even if we didn't start playback
+    # The playlist is what the stream plays from, so a queue change reaches the air
+    # by being written (RAD-08). Which song is then playing comes back from the
+    # stream on the next tick, not from a guess made here.
+    if added_count > 0:
         write_playlist_file(state)
 
     await store.save_state(state)
@@ -120,18 +123,30 @@ async def skip_song(
     store: RadioStateStore = Depends(get_radio_store),
     _role: str = Depends(require_role("editor")),
 ):
-    """Skip to next song (editor/admin only)"""
-    state = await store.load_state()
+    """Skip the track on the stream (editor/admin only).
 
-    advance_to_next_song(state)
+    Skips the audio itself rather than relabelling our own state (issue #101): a
+    relabel left the listener hearing the song they had just skipped. The stream
+    keeps playing afterwards -- the fallback source takes over when the queue is
+    empty (RAD-10). If the stream cannot be reached the skip failed, and says so
+    rather than appearing to succeed (RAD-09).
+    """
+    if not await skip_on_air():
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reach the stream to skip the current song",
+        )
+
+    state = await store.load_state()
 
     # Auto-populate if needed
     await auto_populate_queue(state)
+    write_playlist_file(state)
 
     await store.save_state(state)
 
     return {
-        "current_song": state["current_song"],
+        "skipped": True,
         "queue_length": len(state["queue"])
     }
 
@@ -166,14 +181,14 @@ async def play_radio(
     store: RadioStateStore = Depends(get_radio_store),
     _role: str = Depends(require_role("editor")),
 ):
-    """Start/resume radio playback (editor/admin only)"""
+    """Start/resume radio playback (editor/admin only).
+
+    The stream is always broadcasting; this clears the paused flag so the page
+    reads LIVE again. What is playing still comes from the stream.
+    """
     state = await store.load_state()
 
-    if not state["current_song"] and len(state["queue"]) > 0:
-        advance_to_next_song(state)
-    else:
-        state["is_playing"] = True
-        state["last_update"] = time.time()
+    state["is_playing"] = True
 
     await store.save_state(state)
 
@@ -185,15 +200,29 @@ async def pause_radio(
     store: RadioStateStore = Depends(get_radio_store),
     _role: str = Depends(require_role("editor")),
 ):
-    """Pause radio playback (editor/admin only)"""
+    """Pause radio playback (editor/admin only)."""
     state = await store.load_state()
 
-    update_radio_position(state)
     state["is_playing"] = False
 
     await store.save_state(state)
 
     return {"is_playing": state["is_playing"]}
+
+
+# Nominal segment length for the stream playlists when nothing knows the real one.
+# A song is not required to carry a duration (CAT-02), and `.get("duration", 180)`
+# does not cover that: the key is present with a null value.
+DEFAULT_PLAYLIST_DURATION = 180
+
+
+def _playlist_duration(song: dict) -> int:
+    duration = song.get("duration")
+    try:
+        seconds = int(duration)
+    except (TypeError, ValueError):
+        return DEFAULT_PLAYLIST_DURATION
+    return seconds if seconds > 0 else DEFAULT_PLAYLIST_DURATION
 
 
 # Radio Stream endpoint (HLS playlist)
@@ -221,7 +250,7 @@ async def radio_stream(request: Request, store: RadioStateStore = Depends(get_ra
 
     # Add current song if playing
     if state["current_song"]:
-        duration = state["current_song"].get("duration", 180)
+        duration = _playlist_duration(state["current_song"])
         title = state["current_song"].get("title", "Unknown")
         song_id = state["current_song"].get("id")
 
@@ -230,7 +259,7 @@ async def radio_stream(request: Request, store: RadioStateStore = Depends(get_ra
 
     # Add upcoming songs from queue
     for song in state["queue"][:10]:  # Next 10 songs
-        duration = song.get("duration", 180)
+        duration = _playlist_duration(song)
         title = song.get("title", "Unknown")
         song_id = song.get("id")
 
@@ -270,7 +299,7 @@ async def radio_stream_m3u(request: Request, store: RadioStateStore = Depends(ge
 
     # Add current song if playing
     if state["current_song"]:
-        duration = int(state["current_song"].get("duration", 180))
+        duration = _playlist_duration(state["current_song"])
         title = state["current_song"].get("title", "Unknown")
         song_id = state["current_song"].get("id")
 
@@ -279,7 +308,7 @@ async def radio_stream_m3u(request: Request, store: RadioStateStore = Depends(ge
 
     # Add upcoming songs from queue
     for song in state["queue"][:10]:
-        duration = int(song.get("duration", 180))
+        duration = _playlist_duration(song)
         title = song.get("title", "Unknown")
         song_id = song.get("id")
 

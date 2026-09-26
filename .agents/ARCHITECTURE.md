@@ -633,6 +633,47 @@ invariants the code depends on (regressions here silently break the stream):
 - Playlist paths are rewritten `/app/audio_library/…` → `/audio_library/…` to match Liquidsoap's
   mount (`write_playlist_file()` in `backend_api.py`).
 
+### The stream says what is playing (2026-09-26, issue #101)
+
+There were **two clocks**. `update_radio_position()` added wall-clock time to a position every tick
+and rolled over when it passed the catalog `duration`; Liquidsoap played the `.m3u` on its own
+schedule and never reported back. They drifted apart — measured on the live stack, the page named
+*Fake Plastic Trees* while Icecast was broadcasting *So Tired*. The backend's clock is **deleted**
+(with `advance_to_next_song()` and `ensure_playback_started()`); the queue stays ours, what is
+playing does not:
+
+- **Liquidsoap serves it over harbor** on container-internal port 8080: `GET /on-air` returns
+  `{filename, title, source, elapsed, remaining}` from a `source.on_track` handler, and `POST /skip`
+  calls `source.skip`. The backend **pulls** rather than being pushed to, so a backend restart needs
+  no replay and no stored staleness window — the next tick simply asks again (RAD-04, PLAT-12).
+- **Identity is the filename**, not the Icecast title: `/status-json.xsl` carries only ID3 text that
+  cannot be mapped back to a catalog id. `song_id_from_filename()` reads the `{song_id}_*.mp3` name
+  and falls back to reversing the published-version overrides (issue #30).
+- **Whether a track came from the queue is the stream's own answer**, not queue membership: the
+  playlist holds the current song as well as the queue and `mode="randomize"` can replay it, so each
+  source tags its tracks (`metadata.map` → `bigflavor_source`). Guessing from "is it still in our
+  queue?" labelled a replayed queue song as fallback music.
+- **Position is `elapsed`, overwritten every tick**, so error cannot accumulate; `elapsed + remaining`
+  supplies a length for songs the catalog has no duration for (`stream_duration`), kept beside the
+  song rather than written into it. Nothing compares a position against a duration any more, which is
+  what used to pin a no-duration song on screen forever (CAT-02).
+- **A song the stream has started leaves the queue**, so "up next" cannot list something already
+  played, and the `.m3u` shrinks as the audio plays rather than on our own count.
+- **An unreachable stream is `stream_known: false`**, warned **once** on the transition (a line a
+  second would bury the failure it is reporting, PLAT-10), and `describeNowPlaying`
+  (`frontend/lib/nowPlaying.ts`) turns that into "can't reach the stream" rather than a song that may
+  already be wrong (PLAT-07). It fails closed: a payload that does not say the stream was reached is
+  treated as unknown.
+- **Skip moves the audio**, and 503s when the stream cannot be reached instead of relabelling state
+  the listener can still hear (RAD-09).
+
+⚠️ **Found while verifying, not fixed here:** `fallback_music` is unreachable. `mksafe(radio_queue)`
+is always ready, so `fallback([radio_queue, fallback_music, blank()])` always selects the first — the
+logs show every track coming from `radio_m3u`, and an empty `.m3u` yields `mksafe`'s `safe_blank`,
+i.e. silence, not catalog music. That contradicts **RAD-02** and predates this change; the display
+side handles fallback audio correctly if it ever plays (it is named from the catalog and labelled
+`fallback`).
+
 See `AGENTS.md` → "Radio Streaming Architecture" for the operational details.
 
 ---
@@ -754,4 +795,5 @@ reading the code, and so a change cannot quietly remove a behavior users depend 
 | 2026-09 | Pitch and clicks are measured by the per-tool `analyze()`s, and the monophony gate moved into shared constants `apply()` also reads (issue #89) | A fix nothing can detect is a fix only an expert finds. Both detections already existed inside `apply()`; what was missing was running them without the write. The gate had to be shared because `apply()`'s 0.5 voiced-confidence threshold rejected every real vocal stem — a recommended card whose Hear it silently fell back to a zero-semitone whole-file shift would have been worse than no card. Clicks needed a genuinely new *statistic* (absolute outlier, not a percentile of every file) for the same reason: the apply-side rule cannot distinguish a clean file from a clicky one. That fixes *detection* only — `sensitivity` is still a percentile of the whole file, so even the recommended value (usually its `0.005` floor, = the top 0.1% of jumps) repairs far more than the events counted — measured, 41 clicks vs 78,597 samples touched. Making the repair as targeted as the measurement means `apply()` taking sample positions instead of a threshold: a deliberate follow-up, out of scope here. |
 | 2026-09 | "Hear it" drives the stem console's single transport instead of a per-card `<audio>` element (issue #89) | Deciding whether to keep a fix means hearing it against the rest of the song — soloing the drums against the de-hissed vocal, toggling it on and off in the mix. A player per card could do none of that, and put as many playheads on the page as there were cards. The transport already rendered per-row fix chains on demand, so this was a rewiring rather than new machinery. |
 | 2026-09 | Frontend linting migrated to a flat `eslint.config.mjs` and driven by the eslint CLI, not `next lint` | Next 16 removed the `next lint` command, so `npm run lint` had been reading "lint" as a directory and failing repo-wide — every frontend PR shipped with the gate declared broken. `eslint-config-next` 16 already ships flat-config arrays, so the migration was a config file plus a script change. Turning it back on found 11 real errors (full-page-reload `<a>` links, dead vars, two setState-in-effect bugs in `AudioPlayer`); they were fixed rather than rule-disabled, so the repo sits at zero problems and any lint output now means the change in front of you. `no-explicit-any` is off rather than `warn`: ~100 `any`s exist today, two thirds of them in the `app/api/` BFF routes that forward whatever JSON the backend returns, and the lint script runs `--max-warnings=0`, so a warning would be a failure. Typing them properly is its own piece of work; until then `.agents/CODING.md` asks for a real type where one fits and review enforces it. |
+| 2026-09 | The stream is asked what it is playing; the backend's playback clock is deleted (issue #101) | Two clocks with no feedback cannot agree: the backend counted wall-clock time against a catalog duration while Liquidsoap played the playlist on its own schedule, so the page named one song while listeners heard another, and a song with no duration pinned the display forever. Liquidsoap already knew the answer and had no way to say it, so it serves `/on-air` over harbor and the loop reconciles against that. Pulled rather than pushed, because a pull makes a backend restart a non-event — the next tick asks again, with no replay and no staleness window to store. The filename is the identity (an ID3 title cannot be mapped back to a catalog id) and each source tags its own tracks, because the playlist can replay the current song and queue membership therefore cannot tell a queued song from fallback music. Position is overwritten from the stream every tick rather than corrected, so drift is structurally impossible rather than merely smaller. |
 | 2026-09 | Functional requirements live in `docs/requirements/`, written by the PM and committed by the developer | The app's promises were implicit, so nothing stopped a change from silently removing behavior users depend on — and OKRs are the wrong home for them (targets, not invariants). Permanent IDs make a promise citable from an issue years later. The PM stays read-only because it ingests untrusted issue text, so requirement edits ride into `main` inside the code's own PR and the human merge *is* the approval — rather than an agent writing the contract it is also judged against. A change that would break a requirement halts for a human instead of being traded away, since the failure mode being prevented is exactly an agent reasoning its way to "this one's fine". |

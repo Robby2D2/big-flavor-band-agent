@@ -46,14 +46,17 @@ from src.api.radio_service import (  # noqa: F401
     AUDIO_LIBRARY_DIR,
     RADIO_TICK_INTERVAL,
     RADIO_TOPUP_EVERY_TICKS,
+    LIQUIDSOAP_HARBOR_URL,
     _build_and_write_playlist,
     _find_audio_file,
     write_playlist_file,
-    update_radio_position,
-    advance_to_next_song,
     auto_populate_queue,
-    ensure_playback_started,
-    register_listener,
+    fetch_on_air,
+    mark_stream_unknown,
+    reconcile_with_stream,
+    resolve_on_air_song,
+    skip_on_air,
+    song_id_from_filename,
 )
 from src.api.dependencies import (  # noqa: F401
     get_agent,
@@ -95,6 +98,13 @@ def configure_logging() -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)
+
+    # httpx logs a line per request at INFO. The radio loop asks the stream what it
+    # is playing every second (issue #101), so leaving it on would write ~86k lines
+    # a day and bury the failures the log exists to surface (PLAT-10). Warnings and
+    # errors still come through, and LOG_LEVEL=DEBUG restores the detail.
+    if level > logging.DEBUG:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 configure_logging()

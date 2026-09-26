@@ -21,8 +21,9 @@ pressing play.
 **RAD-04** — Radio state — the current song, the queue, play/pause, and position — MUST survive a
 backend restart without a human intervening to recover it (OKR **KR3.3**).
 
-**RAD-05** — The radio page MUST show what is playing now and what is queued next, and MUST keep
-that display current as the stream advances.
+**RAD-05** — The radio page MUST show what is playing now — including when the stream is playing
+fallback catalog music — and what is queued next, and MUST keep that display in agreement with the
+audio actually on the air as the stream advances.
 
 ---
 

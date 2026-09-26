@@ -26,6 +26,56 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-26 — Now Playing is derived from the stream; the backend's clock is gone (issue #101)
+The radio page named its song from a timer that had no connection to the audio. `update_radio_position()`
+added wall-clock time to a position and rolled over when it passed the catalog `duration`; Liquidsoap
+played `radio.m3u` on its own schedule and never reported back. **Confirmed live before writing any
+code:** Icecast was broadcasting *So Tired* while the head of the playlist was *Fake Plastic Trees*.
+
+- **Liquidsoap already knew and had no way to say it.** `source.on_track` remembers the metadata of
+  each track that starts, and `harbor.http.register.simple` serves it as
+  `{filename, title, source, elapsed, remaining}` on container-internal port 8080, with `POST /skip`
+  calling `source.skip`. All five functions verified against `savonet/liquidsoap:v2.2.4` and the whole
+  script `liquidsoap --check`ed before every rebuild — which must be the **no-cache** rebuild, a plain
+  restart never picks `radio.liq` up.
+- **Pulled, not pushed.** The loop asks each tick, so a backend restart needs no replay and no stored
+  staleness window — verified by stopping Liquidsoap for 12s (state went `stream_known: false`, one
+  WARN, no repeats) and starting it again (state re-agreed with the air on its own, RAD-04/PLAT-12).
+- **The filename is the identity.** Icecast's `/status-json.xsl` only carries an ID3 title, which
+  cannot be mapped back to a catalog id. `{song_id}_*.mp3` can, with the published-version overrides
+  (issue #30) as the reverse lookup for produced files.
+- **Queue membership cannot tell you where a track came from.** The playlist contains the *current
+  song* as well as the queue and `mode="randomize"` can replay it, so a first attempt labelled a
+  replayed queue song as "fallback music" — caught on the live stack, not in a test. Each Liquidsoap
+  source now tags its own tracks (`metadata.map` → `bigflavor_source`) and the label is the stream's
+  answer. Worth generalizing: when the question is "which of my sources did this come from", ask the
+  thing that chose.
+- **Position is overwritten from `elapsed` every tick**, so drift is structurally impossible rather
+  than merely smaller; `elapsed + remaining` gives a length for songs the catalog has no duration for
+  (CAT-02), stored beside the song rather than written into it. Nothing compares position against
+  duration any more, which is exactly what used to pin a no-duration song on screen forever.
+- **A song the stream has started leaves the queue**, so "up next" can't list something already
+  played, and the `.m3u` shrinks with the audio rather than with our own count.
+- **Silencing `httpx` at INFO was part of the fix, not tidying.** Asking once a second meant one log
+  line a second — ~86k a day burying the failures the log exists to surface (PLAT-10). `LOG_LEVEL=DEBUG`
+  brings them back.
+
+**`fallback_music` turns out to be unreachable, and that is a pre-existing RAD-02 gap left alone.**
+The issue's premise #4 said fallback music plays when the queue drains. It does not: `mksafe(radio_queue)`
+is *always* ready, so `fallback([radio_queue, fallback_music, blank()])` always selects the first, and
+the logs show every track coming from `radio_m3u`. An empty `.m3u` therefore yields `mksafe`'s
+`safe_blank` — silence. Untouched deliberately (the spec puts the fallback source out of scope and
+`mksafe` is a documented invariant); the display half handles fallback audio correctly if it ever
+plays. Reported on the PR for its own issue.
+
+Verified live: state and stream agreed on song, source label and position (<1s apart) across track
+changes; an API skip moved the audio and the page followed in ~4s; Icecast stayed connected
+throughout. 38 pytest on the touched files, 206 vitest (+8), lint at zero warnings, build clean. The
+two `/api/audio/stream` Range tests in `test_api_routers.py` fail on `main` too — pre-existing, not
+touched.
+
+---
+
 ### 2026-09-26 — `docs/requirements/`: the product contract the PM now guards
 The app's promises were only ever implicit — spread across OKRs, architecture notes, and whatever a
 past spec happened to say — so nothing stopped a change from quietly removing a behavior users

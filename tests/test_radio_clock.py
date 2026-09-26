@@ -1,15 +1,19 @@
-"""Unit tests for the radio playback clock and queue top-up logic.
+"""Unit tests for the radio queue top-up driven by the background loop.
 
-These cover issue #5: the playback clock and queue top-up must run as standalone
-work (driven by radio_background_loop) and must NOT be side-effects of reading
+These cover issue #5: the queue top-up must run as standalone work (driven by
+radio_background_loop) and must NOT be a side-effect of reading
 GET /api/radio/state, nor gated on whether any listener is connected. No live
-database or LLM is used here -- the queue top-up's agent is replaced with a fake,
-and the playlist writer is stubbed out.
+database or LLM is used here -- the top-up's agent is replaced with a fake, and the
+playlist writer is stubbed out.
 
-Radio state is now process-external (issue #2): the clock/top-up helpers operate
-on a plain state dict passed in by the caller (the background loop loads it from
-and saves it back to the RadioStateStore), so these tests pass a local state dict
-rather than mutating a module global.
+Radio state is process-external (issue #2): the helpers operate on a plain state
+dict passed in by the caller (the background loop loads it from and saves it back
+to the RadioStateStore), so these tests pass a local state dict rather than
+mutating a module global.
+
+The playback *clock* these tests used to cover is gone (issue #101). What is
+playing is now reconciled against the stream itself, and those cases live in
+tests/test_radio_on_air.py.
 """
 import time
 
@@ -21,10 +25,10 @@ from src.api import radio_service
 
 @pytest.fixture(autouse=True)
 def stub_playlist_writer(monkeypatch):
-    """No real playlist writes; advance_to_next_song calls write_playlist_file(state).
+    """No real playlist writes.
 
-    The clock/top-up helpers live in src.api.radio_service and call each other by
-    that module's names, so patches must target radio_service (not the backend_api
+    The queue helpers live in src.api.radio_service and call each other by that
+    module's names, so patches must target radio_service (not the backend_api
     re-export) to intercept the internal calls.
     """
     monkeypatch.setattr(radio_service, "write_playlist_file", lambda *a, **k: None)
@@ -47,50 +51,6 @@ def _state(**overrides):
     return state
 
 
-def test_update_position_advances_clock_while_playing():
-    state = _state(current_song=_song(1, duration=180), is_playing=True,
-                   position=0, last_update=time.time() - 5)  # 5 seconds elapsed
-
-    backend_api.update_radio_position(state)
-
-    assert state["position"] >= 5
-    assert state["current_song"]["id"] == 1  # not finished, no rollover
-
-
-def test_update_position_rolls_over_to_next_song_when_finished():
-    state = _state(current_song=_song(1, duration=10), queue=[_song(2), _song(3)],
-                   is_playing=True, position=0, last_update=time.time() - 20)
-
-    backend_api.update_radio_position(state)
-
-    assert state["current_song"]["id"] == 2
-    assert state["position"] == 0
-    assert state["is_playing"] is True
-    assert [s["id"] for s in state["queue"]] == [3]
-
-
-def test_update_position_does_nothing_while_paused():
-    state = _state(current_song=_song(1, duration=10), is_playing=False,
-                   position=0, last_update=time.time() - 20)
-
-    backend_api.update_radio_position(state)
-
-    assert state["position"] == 0
-    assert state["current_song"]["id"] == 1  # paused clock never rolls over
-
-
-def test_clock_advances_regardless_of_listeners():
-    """The playback clock is owned by the background loop and must advance with no
-    listeners connected (issue #5) -- update_radio_position takes no listener input."""
-    state = _state(current_song=_song(1, duration=180), is_playing=True,
-                   position=0, last_update=time.time() - 7)
-
-    backend_api.update_radio_position(state)
-
-    assert state["position"] >= 7
-    assert state["is_playing"] is True  # not paused just because nobody is listening
-
-
 @pytest.mark.asyncio
 async def test_auto_populate_fills_queue_when_low(monkeypatch):
     class FakeAgent:
@@ -106,44 +66,6 @@ async def test_auto_populate_fills_queue_when_low(monkeypatch):
     await backend_api.auto_populate_queue(state)
 
     assert [s["id"] for s in state["queue"]] == [10, 11, 12]
-
-
-def test_ensure_playback_started_promotes_next_song_when_idle():
-    """Continuous broadcast (issue #79): a filled queue with nothing playing must
-    auto-start so radio_state mirrors the live stream instead of sitting empty."""
-    state = _state(current_song=None, queue=[_song(1), _song(2)], is_playing=False)
-
-    started = backend_api.ensure_playback_started(state)
-
-    assert started is True
-    assert state["current_song"]["id"] == 1
-    assert state["is_playing"] is True
-    assert [s["id"] for s in state["queue"]] == [2]
-
-
-def test_ensure_playback_started_does_not_resume_explicit_pause():
-    """An explicit editor pause keeps current_song set with is_playing False; the
-    auto-start must not resume it (guard is current_song is None)."""
-    state = _state(current_song=_song(1, duration=180), queue=[_song(2)],
-                   is_playing=False, position=42)
-
-    started = backend_api.ensure_playback_started(state)
-
-    assert started is False
-    assert state["is_playing"] is False
-    assert state["current_song"]["id"] == 1
-    assert state["position"] == 42  # untouched
-
-
-def test_ensure_playback_started_noop_when_queue_empty():
-    """Nothing to play and nothing queued -> stay idle (genuine empty state)."""
-    state = _state(current_song=None, queue=[], is_playing=False)
-
-    started = backend_api.ensure_playback_started(state)
-
-    assert started is False
-    assert state["current_song"] is None
-    assert state["is_playing"] is False
 
 
 @pytest.mark.asyncio
@@ -162,3 +84,22 @@ async def test_auto_populate_skips_when_queue_full(monkeypatch):
 
     assert called is False
     assert len(state["queue"]) == 6
+
+
+@pytest.mark.asyncio
+async def test_top_up_runs_regardless_of_listeners(monkeypatch):
+    """The top-up is owned by the background loop (issue #5) and takes no listener
+    input, so a queue with nobody tuned in still refills."""
+    class FakeAgent:
+        async def search_songs(self, message, limit=10):
+            return {"response": "ok", "songs": [_song(20)]}
+
+    async def fake_get_agent():
+        return FakeAgent()
+
+    monkeypatch.setattr(radio_service, "get_agent", fake_get_agent)
+
+    state = _state(queue=[], is_playing=True)
+    await backend_api.auto_populate_queue(state)
+
+    assert [s["id"] for s in state["queue"]] == [20]
