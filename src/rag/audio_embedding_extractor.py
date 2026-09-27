@@ -29,6 +29,20 @@ def as_scalar(value: Any) -> float:
     return float(np.atleast_1d(value)[0])
 
 
+def as_embedding(model_output: Any) -> Any:
+    """Read CLAP's audio features out of whatever ``get_audio_features`` returns.
+
+    transformers 5 returns a ``BaseModelOutputWithPooling`` whose ``pooler_output``
+    is the 512-dimensional projected embedding; earlier versions returned that
+    tensor directly. Both shapes are live here -- the backend image is on
+    transformers 5 and the host venv the tests run in is on 4 -- and reading only
+    one of them is the same defect as the ``audios=``/``audio=`` rename below: the
+    call raises, the caller logs and returns None, and a NULL embedding is
+    indistinguishable from a song that simply has none (issue #111).
+    """
+    return getattr(model_output, "pooler_output", model_output)
+
+
 try:
     import torch
     from transformers import AutoProcessor, ClapModel
@@ -181,13 +195,15 @@ class AudioEmbeddingExtractor:
             # Load audio at CLAP's expected sample rate
             audio, _ = librosa.load(audio_path, sr=sr, duration=10)  # First 10 seconds
             
-            # Process audio
-            inputs = self.clap_processor(audios=audio, sampling_rate=sr, return_tensors="pt")
+            # Process audio. The kwarg is `audio`: transformers renamed it from
+            # `audios` and now raises on the old name, which is why this method
+            # returned None for every song from 2025-11-09 to 2026-09-27.
+            inputs = self.clap_processor(audio=audio, sampling_rate=sr, return_tensors="pt")
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             
             # Get embedding
             with torch.no_grad():
-                audio_embed = self.clap_model.get_audio_features(**inputs)
+                audio_embed = as_embedding(self.clap_model.get_audio_features(**inputs))
             
             # Convert to numpy
             embedding = audio_embed.cpu().numpy()[0]

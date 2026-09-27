@@ -112,7 +112,19 @@ class SongRAGSystem:
         try:
             # Extract features
             features = self.embedding_extractor.extract_all_features(audio_path)
-            
+
+            # A row with no CLAP half is a partial audio index (CAT-12). Storing it
+            # anyway is how issue #111 hid for ten months: index_audio_batch read
+            # this return value and reported {'total': 74, 'success': 74,
+            # 'failed_files': []} with no CLAP embedding in the batch at all.
+            # extract_clap_embedding has already logged why it is missing.
+            if features['clap_embedding'] is None:
+                logger.error(
+                    f"Not indexing song {song_id} ({Path(audio_path).name}): no CLAP "
+                    f"embedding was produced, so its audio index would be partial"
+                )
+                return False
+
             # Store in database
             query = """
                 INSERT INTO audio_embeddings (

@@ -36,6 +36,10 @@ edit is not complete (OKR **KR5.3**).
 **CAT-07** — Deleting or replacing a song's audio MUST NOT leave orphaned embeddings that can still
 be returned by search.
 
+**CAT-11** — Audio-similarity search MUST compare every song on the same kind of audio
+representation. A song's position in an audio-similarity result MUST NOT depend on when it was
+indexed.
+
 ---
 
 ## Ingest
@@ -49,3 +53,7 @@ songs that look complete.
 
 **CAT-10** — Ingest MUST NOT overwrite a human edit with scraped data without that being the
 explicit intent of the run.
+
+**CAT-12** — An indexing run MUST NOT report a song as successfully indexed when part of its
+searchable representation could not be produced; the missing part MUST be reported as a failure for
+that song.
