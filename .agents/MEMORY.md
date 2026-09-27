@@ -37,6 +37,44 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-27 — 74 playable songs were not in the catalog, and indexing had silently stopped (issue #107)
+`audio_library/` held 1,415 top-level `{song_id}_*.mp3` files against 1,341 `songs` rows. The 74
+without a row were playable but undiscoverable: search, the DJ, lyrics and embeddings all start from
+the catalog, so the radio's own directory scan was the only way they could reach a listener (**CAT-01**
+— a song that cannot be surfaced by any search mode is a defect). Found while fixing #104, which only
+made them audible.
+
+**Cause, from the cached scrapes rather than a guess.** `scraper/scraped_songs_20251106_173012.json`
+still describes 60 of the 74; the 2025-11-10 scrape the catalog was loaded from describes **none** of
+them. They were dropped between the two scrapes and their files stayed behind. So the back-fill
+(`scripts/backfill_orphan_songs.py`) prefers that older scrape — keyed by slug, numeric id inside
+`audio_url` — then the file's own ID3 title via ffprobe (14 songs), then the filename (0 needed).
+
+**The real find was that indexing was dead.** The first back-fill run filled *nothing*: 74 failures,
+all "no usable features". `librosa.beat.beat_track` returns tempo as a 1-element array and numpy 2.5
+refuses `float()` on one; a blanket `except` around the whole feature block turned that into an empty
+dict. **Every song indexed since the librosa 1.0 / numpy 2.5 upgrade had lost its tempo, key and
+duration** — invisible because the 1,341 rows indexed before it still had theirs. `as_scalar()` fixes
+it; the lesson is the blanket `except`, which made a type error indistinguishable from "this song has
+no tempo".
+
+**Delivered:** 74 rows inserted; duration + tempo now 1,415/1,415; metadata embeddings 1,415/1,415, so
+the songs are findable (spot-checked: 2343, 2538 rank first for their titles, 890 first for its own);
+audio embeddings 1,415/1,415.
+
+**Left undone, deliberately:** those 74 still have no lyrics (Whisper hours) and therefore no genre,
+which `derive_genre` infers *from* lyrics — so they rank on title alone; 1063 "So Tired" sits 19th
+among ~18 same-titled songs. Also found: **`clap_embedding` is NULL for all 1,415 rows going back to
+2025-11-09** — CLAP has never worked here (`clap_processor(audios=…)` is the kwarg transformers
+renamed), so every `combined_embedding` is the librosa fallback. Left alone on purpose: fixing the
+kwarg now would give 74 songs CLAP vectors while 1,341 keep fallback ones, which is a worse state than
+uniformly-degraded (**CAT-05**). It needs its own issue and a full re-index.
+
+**Also:** `scraper/` is now mounted read-only into the backend container beside `scripts/`, because the
+back-fill reuses the scraper's own `insert_song_with_details` and reads those cached scrapes.
+
+---
+
 ### 2026-09-26 — An empty radio queue served silence, then a dead Icecast mount (issue #104)
 `mksafe()` was wrapped around **each child** of the air `fallback`, so the queue source was always
 ready and `fallback_music` could never be selected — dead code since 2025-11. Measured the real

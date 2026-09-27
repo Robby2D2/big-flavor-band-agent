@@ -14,6 +14,21 @@ import json
 
 logger = logging.getLogger("audio-embedding")
 
+
+def as_scalar(value: Any) -> float:
+    """Read a librosa result as a plain float, whether it is scalar or a 1-element array.
+
+    `librosa.beat.beat_track` returns its tempo as an array, and numpy 2 raises
+    "only 0-dimensional arrays can be converted to Python scalars" on `float()`
+    of one. Since the image moved to librosa 1.0 / numpy 2.5 that exception was
+    caught by the blanket `except` below and logged as "no usable features", so
+    every song indexed after the upgrade silently lost its tempo, key and
+    duration -- which is why the 74 songs back-filled for issue #107 first came
+    back with nothing.
+    """
+    return float(np.atleast_1d(value)[0])
+
+
 try:
     import torch
     from transformers import AutoProcessor, ClapModel
@@ -109,9 +124,9 @@ class AudioEmbeddingExtractor:
             tonnetz = librosa.feature.tonnetz(y=y, sr=sr)
             
             return {
-                'tempo': float(tempo),
+                'tempo': as_scalar(tempo),
                 'estimated_key': estimated_key,
-                'duration': float(full_duration),  # Use full duration, not just the 30s sample
+                'duration': as_scalar(full_duration),  # Use full duration, not just the 30s sample
                 
                 # MFCCs - compact representation of spectral envelope
                 'mfcc_mean': mfcc_mean,
