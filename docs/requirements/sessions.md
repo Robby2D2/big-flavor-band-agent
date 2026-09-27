@@ -51,3 +51,7 @@ takes are staged, not published.
 
 **SESS-11** — The band's own track names MUST be preserved through detection and rendering, so a
 producer recognizes their own session.
+
+**SESS-12** — A name generated for a detected take MUST be no more than six words, and MUST be drawn
+from what that take actually contains rather than invented. A take with no words of its own MUST be
+labelled as having none, not given a made-up title.

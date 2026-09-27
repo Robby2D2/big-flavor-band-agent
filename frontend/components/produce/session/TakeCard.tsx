@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import WaveformView from '@/components/produce/WaveformView';
 import { Peaks, fetchPeaks } from '@/components/produce/audioEngine';
 import { stemColor } from '@/components/produce/audio/stemColors';
+import { takeName } from '@/lib/takeName';
 
 export interface SessionStem {
   id: number;
@@ -87,6 +88,7 @@ export default function TakeCard({ take, index, onToggleExcluded }: TakeCardProp
   };
 
   const played = take.stems.filter((stem) => stem.name !== 'full mix');
+  const name = takeName(take.transcript);
 
   return (
     <li
@@ -101,8 +103,9 @@ export default function TakeCard({ take, index, onToggleExcluded }: TakeCardProp
           className="flex flex-1 items-baseline gap-3 text-left"
         >
           <span className="font-mono text-xs text-text/40">{index}</span>
-          <span className="font-medium">
-            {take.transcript ? firstLine(take.transcript) : 'Instrumental'}
+          <span className={`font-medium ${name.wordless ? 'text-text/60 italic' : ''}`}>
+            {name.text}
+            {name.shortened && <span className="text-text/40">…</span>}
           </span>
           <span className="font-mono text-xs text-text/50">
             {clock(take.duration_seconds)}
@@ -191,10 +194,4 @@ export default function TakeCard({ take, index, onToggleExcluded }: TakeCardProp
       )}
     </li>
   );
-}
-
-/** A take's headline: enough of the words to recognise the song. */
-function firstLine(transcript: string): string {
-  const trimmed = transcript.trim();
-  return trimmed.length > 70 ? `${trimmed.slice(0, 70)}…` : trimmed;
 }
