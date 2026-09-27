@@ -227,6 +227,35 @@ provides the vector similarity; SQL search functions live in `database/sql/` and
 > **Design split (KISS/SRP):** READ/search = RAG library (in-process, fast). WRITE/production =
 > MCP server (`src/production/big_flavor_mcp.py`, isolated process). The agent orchestrates both.
 
+### A playable file is not a catalog song (2026-09-27, issue #107)
+
+**The `songs` row is what makes a song exist to this app.** Search, the DJ, lyrics and embeddings all
+start from the catalog, so a file in `audio_library/` with no row is playable but undiscoverable — the
+radio's own directory scan was the only way it could ever reach a listener. 74 files were in exactly
+that state: the 2025-11-10 scrape the catalog was loaded from dropped them while their audio stayed
+behind. `scripts/backfill_orphan_songs.py` closes the gap and is the tool to re-run when files arrive
+without an ingest pass; it recovers metadata from `scraper/scraped_songs_20251106_173012.json` (the
+only scrape that still describes them, keyed by slug with the numeric id inside `audio_url`), then
+falls back to the file's ID3 title and finally the filename.
+
+Two things follow that are easy to get wrong:
+
+- **`scraper/` is mounted into the backend container** (read-only, beside `scripts/`) because that
+  back-fill reuses the scraper's own `insert_song_with_details` path and reads those cached scrapes.
+- **A `{song_id}_*.mp3` filename is not proof of a row, and a row is not proof of a file.** Both
+  directions have bitten: `resolve_on_air_song` has to name un-cataloged tracks from stream metadata
+  (issue #104) so the radio page does not claim silence over audible audio.
+
+### Indexing broke silently on a dependency upgrade (2026-09-27, issue #107)
+
+`librosa.beat.beat_track` returns its tempo as a 1-element array, and under the image's numpy 2.5
+`float()` on one raises. `extract_librosa_features` caught that with a blanket `except`, logged "no
+usable features", and returned `{}` — so **every song indexed after the librosa 1.0 / numpy 2.5
+upgrade got no tempo, key or duration at all**, while the rows indexed before it kept theirs and made
+the catalog look healthy. `as_scalar()` now reads either shape. The lesson is the failure mode, not
+the one-liner: a blanket `except` around a whole feature-extraction block turns a type error into
+missing data, and missing data here is indistinguishable from "this song has no tempo".
+
 ---
 
 ## Production MCP Server
