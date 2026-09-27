@@ -256,6 +256,53 @@ the catalog look healthy. `as_scalar()` now reads either shape. The lesson is th
 the one-liner: a blanket `except` around a whole feature-extraction block turns a type error into
 missing data, and missing data here is indistinguishable from "this song has no tempo".
 
+### Audio similarity is CLAP again, and the whole catalog is one space (2026-09-27, issue #111)
+
+The audio index described above as "CLAP + librosa features" was **librosa only, for ten months** —
+`clap_embedding` was NULL for all 1,415 rows, back to the day indexing first ran. Three separate
+things had to be true for that to hide, and each is the reusable part:
+
+- **`clap_processor(audios=…)`.** transformers renamed the kwarg to `audio` and raises on the old
+  one. `extract_clap_embedding` caught it and returned `None`.
+- **`get_audio_features()` no longer returns a tensor.** Under transformers 5 it returns a
+  `BaseModelOutputWithPooling`, and the 512-dim projected embedding is its `pooler_output`; the
+  kwarg fix alone still died on `'BaseModelOutputWithPooling' object has no attribute 'cpu'`.
+  `as_embedding()` reads either shape, because the image is on transformers 5 and the venv the tests
+  run in is on 4. **A "one-word fix" to a dependency-drift bug is worth distrusting** — the same
+  rename usually moved more than one thing.
+- **`index_audio_file` stored the row anyway and returned `True`**, so `index_audio_batch` reported
+  `{'total': 74, 'success': 74, 'failed_files': []}` with zero CLAP embeddings in it. This is the
+  #107 lesson one level up: there the blanket `except` turned an error into missing data; here the
+  *caller* turned missing data into a reported success. **CAT-12** now forbids it and the guard lives
+  at that single seam, so the scrapers, the batch indexer and produce's version approval all inherit
+  it.
+
+**The dimension was the trap.** `create_combined_embedding` concatenates 37 librosa dims with CLAP's
+512 = **549**, and `init/03` declared the column that way, but migration `04` re-created the table at
+`vector(512)` while moving `song_id` to an integer. Nobody noticed for ten months because CLAP never
+produced a vector to store — so the kwarg fix on its own would have made *every* insert fail on a
+dimension mismatch. Migration `19` restores 549.
+
+**Mixed representations are prevented structurally, not by discipline.** A librosa-fallback vector is
+512 wide and a CLAP one 549, so they physically cannot share the column — which matters because
+cosine distance between two embedding spaces is meaningless, and that is what **CAT-11** now forbids.
+During the rebuild a not-yet-indexed row is `NULL`, and the search functions' `>=` threshold drops
+NULL silently, so audio similarity compared a growing *subset* of the catalog with every comparison
+CLAP-vs-CLAP, rather than erroring or ranking across two spaces. The alternative — a staging column
+with an atomic cutover — keeps coverage whole but leaves `index_audio_file` not knowing which column
+is live, breaking the incremental path (**CAT-08**) for the same window.
+
+`scripts/reindex_audio_embeddings.py` is the one-off single-pass rebuild (resumable by construction:
+a row holding both halves is done, so an interrupted run is simply re-run). It **updates rows and
+never inserts them**, because `audio_embeddings` is unique on `audio_path` and 1,341 rows still held a
+host-written Windows relative path that cannot open in the container — upserting on a freshly resolved
+path would have created a second row per song and returned each one twice (**CAT-04**, **CAT-07**).
+It normalises each row's path to the container form the #107 rows already used.
+
+**What the fallback actually was:** a 512-wide vector whose last 475 dims are zeros, so the whole
+catalog sat in a 37-dimensional cone — every pair scored 0.994-1.000 similar. "Find me more like
+this" was ranking noise in the fourth decimal place.
+
 ---
 
 ## Production MCP Server

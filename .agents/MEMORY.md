@@ -37,6 +37,46 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-27 — Audio similarity had never used CLAP, and the "one-word fix" was three (issue #111)
+`clap_embedding` was NULL for all 1,415 rows back to 2025-11-09, so every `combined_embedding` was the
+librosa fallback and "find me more like this" ranked on recording texture. Reported in #107, fixed
+here. **Measured on the live stack before writing anything, and the issue's premise was too small** —
+full detail in [ARCHITECTURE.md](ARCHITECTURE.md); the three findings are:
+
+- `clap_processor(audios=)` → `audio=` is only the first break. transformers 5's
+  `get_audio_features()` returns a `BaseModelOutputWithPooling`, not a tensor, so the kwarg fix alone
+  died on `'BaseModelOutputWithPooling' object has no attribute 'cpu'`. The embedding is its
+  `pooler_output`. **Distrust a one-word fix to dependency drift** — a rename rarely moves one thing.
+- **A working CLAP vector did not fit the column.** The combined representation is 37 librosa dims +
+  512 CLAP = **549**; `init/03` said so and migration `04` re-created the table at `vector(512)`,
+  unnoticed for ten months because CLAP never produced a vector to store. Shipping only the kwarg fix
+  would have failed *every* insert. Migration `19` restores 549, guarded on `atttypmod` so a re-run
+  cannot wipe the rebuilt vectors.
+- **The report was the third bug and the reason this lasted.** `index_audio_file` stored a CLAP-less
+  row and returned `True`, so a batch said `{'total': 74, 'success': 74, 'failed_files': []}` with zero
+  CLAP embeddings in it — #107's lesson one level up: there a blanket `except` turned an error into
+  missing data, here the *caller* turned missing data into a success. New **CAT-12** forbids it, and
+  the guard sits at the one seam so the scrapers, batch indexer and produce approval all inherit it.
+
+**Mixed embedding spaces are now prevented structurally, not by discipline** (new **CAT-11**): a
+fallback vector is 512 wide and a CLAP one 549, so they cannot share the column, and a not-yet-rebuilt
+row is NULL, which the search functions' `>=` threshold drops. The rebuild therefore compared a
+growing *subset*, every comparison CLAP-vs-CLAP — never an error, never two spaces. The rejected
+alternative (staging column + atomic cutover) keeps coverage whole but leaves `index_audio_file` not
+knowing which column is live, breaking the incremental path (**CAT-08**) for the same window.
+
+`scripts/reindex_audio_embeddings.py` **updates rows and never inserts them**: `audio_embeddings` is
+unique on `audio_path` and 1,341 rows still held a host-written Windows relative path that cannot open
+in the container, so upserting on a freshly resolved path would have created a second row per song and
+returned each twice (**CAT-04**/**CAT-07**). Resumable by construction (a row with both halves is
+done), and it refuses to run where CLAP is unavailable.
+
+**How bad the fallback was:** 475 of its 512 dims are zeros, so the whole catalog sat in a
+37-dimensional cone and every pair scored **0.994-1.000** similar. Ranking was noise in the fourth
+decimal.
+
+---
+
 ### 2026-09-27 — 74 playable songs were not in the catalog, and indexing had silently stopped (issue #107)
 `audio_library/` held 1,415 top-level `{song_id}_*.mp3` files against 1,341 `songs` rows. The 74
 without a row were playable but undiscoverable: search, the DJ, lyrics and embeddings all start from
