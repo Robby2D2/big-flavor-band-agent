@@ -6,6 +6,123 @@ is out). Newest at top.
 
 ---
 
+*The `v0.19.0` → `v0.17.0` entries below moved here from [MEMORY.md](../MEMORY.md) in the 2026-09-27 prune.*
+
+### 2026-09-26 — Released v0.19.0 (minor bump — radio truth-telling, session import, the requirements record)
+Tagged `main` at `eeeb686` as **v0.19.0**. Minor rather than patch: the range is not only fixes —
+Reaper rehearsal-session scanning/import arrived as `feat:` with **migration 18**, and
+`docs/requirements/` landed as the product contract. 10 releasable commits (the v0.18.0 memory chore
+filtered out). PRs #99/#100 (issues #96/#97) finally landed here after being approved-but-unmerged at
+v0.18.0, joining #103 (#101) and #105 (#102). Four issues notified. Sanity gate ran in full: backend
+restarted to `Startup complete: backend ready to serve requests` with no errors, frontend build clean.
+
+**Writing the deploy summary turned up two ways the deploy script quietly under-delivers**, both now
+called out in the Release notes and on the issues:
+- **`deploy-production.sh` runs a plain `docker-compose build`, which cannot pick up `radio.liq`** —
+  BuildKit caches that `COPY` layer (the `AGENTS.md` no-cache rebuild exists for exactly this). This is
+  the first release where it bites: the harbor listener *is* the #101 fix, so a normal deploy ships the
+  old config, the endpoint never exists, and Now Playing fails **silently** rather than loudly.
+- **The script prints "Set up the database with migrations" and contains no migration step.** Worse,
+  `recording_sessions` is *not* startup-ensured the way `song_versions` / `song_stems` /
+  `song_lyric_timings` are, so migration 18 is genuinely manual or `/produce/sessions` 500s. Worth
+  remembering: "ensured at startup" covers only three tables, not the schema.
+
+Two settings ride along with the checkout rather than needing `.env` edits (`LIQUIDSOAP_HARBOR_URL`,
+the writable `./audio_library/sessions` mount), and `X-User-Id` needs **no** new secret — but it is
+only believed when `BACKEND_API_SECRET` verifies, so a mismatched secret in prod turns "remove the
+song I added" into a blanket rejection.
+
+**Two caveats stated plainly in the notes rather than smoothed over.** Neither radio change has been
+seen in a browser by a human — both rest on unit tests plus live API/stream probes, with QA's
+recommended editor-and-listener click-through on `/radio` still outstanding. And issue #104 is open:
+`fallback_music` is unreachable, so an empty queue serves silence and **RAD-02 remains unmet**. The
+notes say it in one line worth keeping: this release makes the radio *honest* about what is playing, it
+does not yet make it *reliable* about always playing something.
+
+---
+
+### 2026-09-22 — Released v0.18.0 (kept stems + standalone Separate stems)
+Tagged `main` as **v0.18.0** — a minor, not a patch, because PR #95 adds capability that did not
+exist before: a save keeps the per-stem audio it just rendered as the new version's stem set, and
+**Separate stems** became its own button beside Start analysis. Migration 17 (`song_stem_sets.origin`)
+ships with it; **migrations 16 and 17 are already applied to the live database**, so a deployer does
+not need to run them. Sanity gate passed (backend booted clean, frontend `npm run build` succeeded).
+PR #95 closed no issues, so no issue notifications went out. Production is still on v0.17.3 — this
+one is tagged and **waiting on a human deploy**, unlike the previous two releases. PRs #99 and #100
+are QA-approved but unmerged and are not in this release.
+
+---
+
+### 2026-09-21 — Released v0.17.3 (patch bump — the version-scoped stems fix, tagging code already live)
+Tagged `main` at `1da724e` as **v0.17.3**. Patch rather than minor: the range is PR #94 alone (plus
+its merge) — the produce console showed the song's *newest* stems instead of the selected version's,
+so a cleaned mix was being reviewed, and measured, against the original's stems. It is a correctness
+fix on shipped behaviour with no new capability: no `feat:` commit, no `enhancement` label, and the
+PR closes no issue (issue-less fix), so **no issues were notified**.
+
+Sanity gate ran in full: `bigflavor-backend` restarted to `Startup complete: backend ready to serve
+requests` with no errors, and `npm run build` compiled the frontend clean.
+
+**The tag trailed the deploy again** — `1da724e` was built, deployed and verified in production
+before this run, so the Release body says "already deployed" rather than "ready to deploy". Second
+time in three releases (see v0.17.1); the tag history is a record of what was released, not of when
+it went live.
+
+PR #95 (keep the stems a save rendered; separating as its own button) was approved but **not merged**
+at tag time, so it is not in v0.17.3 — same shape as v0.17.0/#90, and it lands in the next release.
+
+---
+
+### 2026-09-21 — Released v0.17.2 (patch bump — the pitch gate scope fix, plus a release-loop fix)
+Tagged `main` at `68febac` as **v0.17.2**. Patch rather than minor: the range is PR #92 (issue #91 —
+one shared monophony measurement across analyze/apply, and a fix-that-fell-short now reported on a
+fresh save, not just a cached one) and PR #93 (agent config only). Every commit is `fix:`-prefixed,
+#91 carries no `enhancement` label, and neither PR opens new capability — both close gaps in work
+already shipped. Issue #91 notified.
+
+Sanity gate ran in full: `bigflavor-backend` restarted to `Application startup complete` with no
+errors in the log, and `npm run build` compiled the frontend clean.
+
+**First release cut with Step 2's release-chore filter in place** (PR #93, merged minutes before this
+run). The raw range held 6 commits; the v0.17.1 memory chore was excluded, giving 5 releasable — so
+the count reflected real work rather than the previous release's own paperwork. Unlike v0.17.1, this
+tag *precedes* the deploy: a human deploys immediately after, so the "ready to deploy" wording on
+#91 is accurate as posted.
+
+---
+
+### 2026-09-21 — Released v0.17.1 (patch bump — the pitch/click work v0.17.0 just missed)
+Tagged `main` at `1fc1382` as **v0.17.1**. Patch rather than minor: the whole range is PR #90
+(issue #89) plus the v0.17.0 memory commit and its merge, and every commit in it is `fix:`-prefixed
+with no `enhancement` label — it finishes work already scoped, rather than opening new capability.
+It is the tail of v0.17.0: that release was cut while #90 was approved-but-unmerged, and this one
+picks it up. Issue #89 notified.
+
+Sanity gate ran in full: `bigflavor-backend` restarted to `Application startup complete` and healthy,
+`npm run build` compiled clean.
+
+**The tag trailed the deploy this time.** A human had already deployed and verified `1fc1382` in
+production before the release ran, so v0.17.1 names what was live rather than queuing it. Harmless,
+but worth knowing when reading the tag history: a tag date here is not necessarily a deploy date.
+
+---
+
+### 2026-09-20 — Released v0.17.0 (minor bump — 58 commits, first release since v0.16.2)
+Tagged `main` at `2412341` as **v0.17.0**. Minor rather than patch: the range carries real new
+capability, not just fixes — timed lyrics with follow-along highlighting, editor invite links (and
+the auth holes closed building them), the full mix + real transport in the stem console, the
+per-tool audio registry with its `analyze`/`apply` contract, per-step tunable cleaning, search
+ranked on what a song *is* (with "why did this match" explanations), and the fix picker offering
+every DSP tool rather than only the four with detectors. Issues #82 and #86 notified.
+
+Sanity gate ran fully this time: `bigflavor-backend` restarted to `Application startup complete`
+and healthy, and `npm run build` compiled the frontend clean. Note that PR #90 (pitch/click
+detection, issue #89) was approved but **not merged** at tag time, so it is *not* in v0.17.0 — it
+lands in the next release.
+
+---
+
+
 ### 2026-07-31 — Release `v0.16.2` (release-manager)
 Cut **`v0.16.2`** from `main` (HEAD `b8894a1`), a **patch** bump from `v0.16.1` — the 3-commit range
 has no new feature: it's a docs-only change (`ddb2f82`, convert ASCII architecture diagrams to

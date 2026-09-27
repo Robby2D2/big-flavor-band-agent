@@ -5,6 +5,324 @@ These are the entries that built the `/produce` per-tool API and the stem consol
 
 ---
 
+*The seven 2026-09-16 → 2026-09-21 entries below moved here from [MEMORY.md](../MEMORY.md) in the 2026-09-27 prune.*
+
+### 2026-09-21 — A save keeps the stems it just rendered, and separating is its own button
+Follow-on from the version-scoping fix: once stems belong to a version, saving fixes produced a
+version with *no* stems, so the producer was told to run Demucs on a mix that had just been
+assembled from stems — stacking a second generation of separation artifacts on the first.
+
+The parts were already on disk. `_render_mix` writes per-stem audio under
+`produced/<song>/accept_fixes/<ms>/` and keeps it; **15 GB across 33 runs**, only 8 of which became
+versions, and nothing cleans them up. So the storage was already being spent and simply not used.
+
+- **`remix_inputs` was the missing link.** It is the complete part list for the mix, and the empty-
+  chain case makes it so: `_chain_apply_tools` returns its *source path untouched, writing nothing*
+  when a stem has no fixes. So fixed stems point at new files and untouched ones at their existing
+  stem file — authoritative either way. `_render_mix` now returns it, and `_finalize_save` registers
+  it as a stem set against the new version.
+- **Every part is copied**, untouched ones included. They arrive pointing at the *previous* set's
+  file, and two sets sharing one path is a trap — re-separating or cleaning the older set would
+  hollow out the newer one. Costs ~59 MB per stem; a dangling row costs the producer their stems.
+- **The render cache had to remember the parts too** (`cached_stems`), exactly as it already
+  remembers notices: a save that reuses a warm render never ran the DSP, so without it the stems
+  would sit on disk unknown to the request saving them.
+- **Migration 17 adds `origin`**: NULL/'separated' for Demucs, `'fixes'`, or `'fixes_premaster'`
+  when master-scoped fixes ran after the remix — those stems sum to the pre-master mix, not the
+  saved file, and saying so beats letting a producer wonder why the parts don't add up.
+- **Keeping is best-effort and cannot fail a save.** Found the hard way: `save_candidate_version`
+  returns `{"version_id": …}`, not `{"id": …}`, and my `version["id"]` raised *outside* the helper's
+  try — turning a good save into a 500 and leaving an orphan version row. The call is guarded now.
+
+**Separate stems** moved out of the console and next to Start analysis, renamed, and is now its own
+action (`separateStems`, with its own `separating` flag) rather than always dragging a measuring
+pass behind it. A version with no stems can be separated and simply looked at.
+
+**Worth knowing for later:** `song_stem_sets.source_version_id` is **ON DELETE SET NULL**, so
+deleting a version orphans its kept stems — invisible under version scoping, and ~350 MB a time.
+That interaction is now live and unhandled.
+
+---
+
+### 2026-09-21 — Stems belonged to the song; they belong to a version (song 1144)
+Reported from production: a popping sound audible in song 1144's *cleaned* mix could not be found
+in any stem. It wasn't a hearing problem — the stems were the **original's**.
+
+Song 1144 had two versions (75 original, 76 cleaned) and exactly one stem set, `source_version_id`
+= 75. `latestComplete()` picked the song's newest complete set and **never looked at
+`source_version_id`**, even though the field was fetched and sat on the row. Meanwhile the full-mix
+console row is built from `/api/produce/versions/{sourceVersionId}/…`, so it *did* follow the
+selection. That split is the whole symptom: the artifact was in the mix row and in none of the stems
+below it, because they were a different recording.
+
+- **Worse than a display bug.** `waitForStemSet(forceNew=false)` used the same function, so Start
+  analysis on the cleaned version *reused the original's stems* and filed the measurements against
+  the version selected. Every per-stem fix accepted was computed from audio nobody was listening to.
+- The root cause was written down in prose and believed: a comment read *"Stems are not cleared:
+  they belong to the song, not to a version."* That is the defect, stated as intent. Stems now clear
+  and refetch on a version change like fixes do.
+- **Four call sites** inherited it (mount preload, tag poll, Start analysis reuse, rename fallback),
+  plus the separation wait loop and its already-running guard, which watched the song's newest set
+  rather than this version's.
+- **The cost is honest and real:** selecting a version nothing has been separated from now means a
+  Demucs run. The alternative is measuring another version's audio, so there isn't a cheaper correct
+  option. The empty state says *why* the stems vanished (`stemsOnAnotherVersion`), because otherwise
+  switching version just empties the console and reads as a fault.
+- **Migration 16** backfills legacy `source_version_id IS NULL` sets (added before the column) to the
+  song's `original` version — provably the file those runs used, since a null request resolves to the
+  catalog original. Only where exactly one original exists; anything ambiguous stays null and is
+  re-separated rather than guessed. Applied: 4 rows on song 1650, re-run is `UPDATE 0`.
+
+Also fixed here: `__tests__/ResultSidebar.test.tsx` had two mocks left behind by PR #92's prop
+retyping. `next build` does not typecheck test files, so `npm run build` was green while
+`tsc --noEmit` was red on main — worth remembering that the build gate alone does not cover tests.
+
+The three new hook tests were confirmed **red against the old selector** before being kept, and
+`--max-warnings=0` again caught two stale dependency arrays (the tag poll would have merged tags
+from the wrong version's set after a switch).
+
+---
+
+### 2026-09-21 — The pitch gate was two scopes wearing one constant (issue #91)
+#89 moved the monophony thresholds into shared constants so the tool "cannot recommend a correction
+it would then decline to make". It still could. `analyze()` measured the loudest 20 s window at
+22.05 kHz; `apply()` re-derived the same two numbers over the **whole file at native rate**. Sharing
+the numbers is not sharing the measurement.
+
+**Measured before choosing anything** — 66 stems, 10 songs, every separated set in the catalog, via
+the shipping functions rather than a re-implementation:
+- **6 of the 15 recommended stems were refused by the render.** The producer accepted a card with
+  numbers on it, waited, and got their audio back unchanged.
+- The issue guessed it was `PITCH_MIN_VOICED_RATIO`. Half right: **3 of the 6 failed on
+  *confidence*** instead, and those three basses passed the file-wide ratio comfortably. Both
+  constants had the scope problem.
+- **Option 1 (a separately calibrated file-wide constant) is dead on the numbers.** The loosest pair
+  that removes all 6 contradictions is ratio 0.25 / confidence 0.07 — which admits **33 of 66
+  stems**, drums and near-silent stems included. That is the gate switched off, not calibrated. And
+  no offset could be calibrated away anyway: the per-stem gap between the two scopes ran **-0.43 to
+  +0.69**.
+- **Scope alone was not enough either.** Gating on apply()'s own native-rate f0, windowed, still left
+  two bass stems refused — pyin's confidence moves with sample rate on low sources (0.14 at 44.1 kHz
+  vs 0.29 at 22.05 kHz). Rate is part of the measurement, not an implementation detail.
+
+So: **one shared measurement**, `measure_monophony()` + `passes_monophony_gate()`, called by both
+halves. Contradictions **6 → 0** across all 66 stems; per-note eligibility *rose* **12 → 22** rather
+than collapsing. Verified end-to-end by running the real analyze → apply path on the 6 former
+failures: all now correct per-note (284-684 notes each), and drums / a polyphonic guitar still
+refuse. Bonus: the gate runs *before* apply()'s full-length pyin, so a refusal went from ~12 s to
+~2-4 s.
+
+**The test asserts the property, not a number** — recommended ⇒ per-note-runnable — because the
+property is what kept breaking, and a threshold test would have passed through both versions of this
+bug. It carries a guard-the-guard case asserting its own fixture still reproduces the scope gap, so
+it cannot quietly stop covering anything. Checked it fails against the old code before keeping it.
+
+**A second, quieter half:** `_chain_apply_tools` read tool results only for `status`, so
+`fallback_reason` had **no route to the UI at all** — the silent-unchanged-audio outcome was
+unreportable by construction. Chains now return notices, stored with the *render* (Start analysis
+warm-renders nearly everything, so a reused render must be as honest as a fresh one). And
+`isPitchAnalyzable` read only `instruments[0]`, so a fiddle tagged second inside `other` was skipped
+though the comment claimed otherwise; it reads all tags now.
+
+**Where a notice is shown turned out to be the whole trick** (QA round 2). Reading notices off the
+response to "Accept all & save" works only for a cache hit: a fresh save is a background job, and
+`accept_jobs.start()` seeds the dict `"notices": []`, so the panel rendered empty — on exactly the
+case that raises notices, since hand-adding a `correct_pitch` card changes the fingerprint and
+therefore always misses the warm render. Moving the read to the status poll is necessary but not
+sufficient: the poll that completes a save selects the new version, which **clears the fix queue and
+unmounts the sidebar the notice was being rendered in**. So a save reports on the *page* (under the
+versions table, via a shared `FixNoticePanel`), and only a preview — which waits for its own render
+— reports in `ResultSidebar`. `useAcceptJob` holds the notices across the dismiss that same poll
+performs, and drops them when the next render starts. Worth remembering generally: in this console,
+a save deliberately throws away the queue that started it, so anything a save has to say has to
+outlive it.
+
+Backend boots, 38 pytest green on the touched files, 164 vitest (+9), lint at zero warnings, build
+clean. `tests/test_editing_tools.py` fails on `input()` — pre-existing, one of the ad-hoc scripts
+TESTING.md documents. Still not seen on screen: the produce console is behind an editor Google
+session, so the notice panel is covered by component tests and types rather than by eyes.
+
+---
+
+### 2026-09-19 — Pitch and clicks are measured now, and a fix is auditioned in the mix (issue #89)
+Two halves of the same idea: a fix you can only find by ear isn't leverage, and a fix you can only
+hear as an isolated clip can't be judged.
+
+**Detection.** `correct_pitch` and `remove_artifacts` had inherited the base `analyze()` stub, so
+nothing could ever recommend them. Both detections already ran inside `apply()`; what was missing
+was running them without the write. `detect_pitch_issues()` / `detect_clicks()` now live in
+`analysis.py` beside `detect_hum()`, shared by the two tools and by the whole-song recommender.
+
+- **The apply-side click rule could not be reused.** `apply()` cuts at
+  `percentile(100 - sensitivity * 20)` — at the declared 0.5 that is the top *10% of every file*, by
+  construction, so it can never say whether a file is clean. `analyze()` uses an absolute outlier
+  rule instead (a jump ≥8x the track's own 99th-percentile jump, grouped into events) and then maps
+  its measured flagged fraction back onto a `sensitivity`. On a real Demucs
+  `other` stem: 41 clicks, 9.9/min, sensitivity 0.005 — not 0.5. **But that fixes detection only,
+  and QA was right to press on the wording:** `sensitivity` is a percentile of the whole file
+  whatever you pass it, and the recommendation almost always lands on its floor
+  (`CLICK_MIN_SENSITIVITY = 0.005` → `percentile(99.9)`). Measured on that same stem: 10,927
+  samples over the threshold and **78,597** once apply()'s 1 ms kernel widens them — 0.7% of the
+  channel, to repair 41 events — plus an unconditional savgol pass over the whole channel. Read a recommended card as *the gentlest setting this param has*, not "repairs
+  what was measured". A genuinely targeted repair needs `apply()` to take sample **positions**
+  rather than a threshold; `apply()` is left alone and that is the follow-up.
+- **The monophony gate had to move, and that was the real find.** `apply()` refused any source
+  voicing under 0.5 mean pyin confidence. Measured across four songs, *every* real vocal stem sits
+  at 0.21-0.24 — pyin's `voiced_prob` comes out of Viterbi-decoded candidates and is nowhere near
+  1.0 even on a clean solo line. So per-note auto-tune had **never once run on a stem**; it silently
+  fell through to a whole-file shift every time. The constants moved to `analysis.py` (ratio 0.6,
+  confidence 0.18) and `apply()` reads them, so the tool cannot recommend what it would refuse.
+  Polyphonic stems that voice just as often (`other`, `guitar`) sit at 0.05-0.17, and the off-target
+  ratio is a second gate they also fail (0-5% against a vocal's 15-70%).
+- **Deviation is scored against the nearest semitone, not the nearest in-scale note.** "Flat" means
+  off its own pitch; scoring against the key counts every deliberate chromatic note as an error. The
+  key is still detected and shipped as the recommended `key` param. 35 cents is the line — at 25
+  cents all four test vocals tripped it, which is just normal expressive singing. **QA caught the
+  other half of this:** the recommended params left `chromatic` at its default `false`, so `apply()`
+  aimed at the in-scale tone while `analyze()` scored against the semitone — on a real vocal stem
+  that moved 43 of 46 notes, 6 of them notes the card had just counted as in tune. `chromatic: true`
+  now ships with the recommendation. Measure and repair have to aim at the same target; it is not
+  enough for each half to be defensible on its own.
+- **Cost, the risk the issue called out:** pyin over a whole stem would have been ruinous, so it runs
+  on the loudest 20s window at 22.05 kHz, and only on rows where a single line is plausible
+  (`isPitchAnalyzable`: the vocal stem, or a tagger-labelled single-line instrument — never the full
+  mix). Measured on a real 6-stem set: 17.9s → 25.5s of serial analyze CPU, 1.43x.
+- **`match_tempo` stays un-recommended on purpose** — there is no correct BPM for a song. It just
+  gets seeded: the analyze helpers now keep *every* outcome, not only recommended ones, so
+  `correct_beats`' `detected_bpm` (which it reports either way) pre-fills the one required param in
+  the registry and the card is runnable on arrival.
+
+**Auditioning.** Hear it drove a per-card `<audio>` element, so you heard the fix alone, through a
+player that knew nothing about the rest of the mix. It now drives the console's single transport —
+which already rendered per-row fix chains on demand, so this was rewiring, not new machinery. Hear
+it selects the row, turns the fix on and plays; ON/OFF while auditioning re-renders and resumes at
+the same playhead. Keyed on *which* fixes are enabled rather than their params, so the Adjust
+drawer's sliders can't kick off a render per keystroke. `previewSingleFix` deleted.
+
+14 new pytest cases, 20 new vitest (155 total green), lint/tsc/build clean, backend boots.
+Two of those pytest cases came out of the QA round: one pins the recommended params to the
+same snap target the deviation is measured against, the other pins the sensitivity floor and
+says in its name that the floor is what it is testing.
+
+---
+
+### 2026-09-18 — Every DSP tool is addable by hand, not just the four with detectors
+Asked why the picker offered only 4 options. Traced it: `PER_STEM_TOOLS`/`MASTER_TOOLS` were the
+*analysis* lists — tools with a real `analyze()` — and the manual picker had been built from them.
+Three genuinely useful tools were invisible as a result, and checking where they were reachable at
+all turned up nothing: **`correct_pitch`, `remove_artifacts` and `match_tempo` had no route through
+the produce UI whatsoever.** `correct_pitch` is mapped in `region_tools.py` but no component calls
+`/api/produce/region/*` (the BFF handlers have no caller); `correct_pitch`/`match_tempo` are
+`auto_clean` steps 4b/4c behind `do_pitch`/`do_tempo`, which no UI passes; `remove_artifacts` is in
+neither. Agent chat was the only way to run any of them.
+
+And the analyzer can never surface them: `analyze_and_recommend_processing` reports on
+trim/hum/noise/eq/compression/mastering only, and those three inherit the base `analyze()` stub that
+always says `recommended: false`. So the picker isn't a convenience for them — it's the only door.
+
+- **The picker now comes from the registry**, not a list: every non-hidden `applies_to_file` tool,
+  minus an `ADDABLE_SCOPE` table of exceptions justified by the audio (`trim_silence` changes
+  length; `apply_mastering`/`normalize_audio` are mix-bus jobs). 7 tools on a stem row, 10 on the
+  full mix, and a new backend tool shows up with no frontend change.
+- **`match_tempo` needed a guard, not just a listing.** `target_bpm` is `required=True` — the only
+  scoped param that is — and `coerce_args` *raises* rather than defaulting, so a card at defaults
+  would have failed the render instead of quietly doing nothing. `missingRequiredParams` reads the
+  `required` flag the descriptor already carried (no backend change), the card reads SET UP and says
+  what it needs, and `isRunnable` holds it out of every chain until it has a value.
+- **`correct_pitch` at its declared defaults is an exact no-op** (`semitones: 0`, `auto_tune: false`)
+  — the `remove_hum` problem again. A hand-added card starts with `auto_tune: true`, which is what
+  someone reaching for it wants.
+- **Adding it exposed a drawer bug:** a declared `string` param with no `choices` fell through to the
+  number input, so `correct_pitch`'s `key` ("C", "A minor") could not be typed into. The drawer has a
+  text branch now, marks required params, and an emptied number field means *unset* rather than 0.
+- On a stem, `match_tempo` stretches that stem alone; the card says so, since the set drifts apart
+  unless every stem gets the same target.
+
+**The lint gate earned itself back the same day:** `--max-warnings=0` caught `isRunnable` missing
+from two `useCallback` dep arrays — a stale-closure bug that would have built chains from an
+outdated completeness set. 8 new vitest cases (135 total green), lint/tsc/build clean.
+
+---
+
+### 2026-09-18 — The fix queue can now hold a fix the analysis never measured (issue #86)
+The review queue only ever showed what `analyze()` flagged, so a producer who could *hear* something
+below the detector's threshold had no route to it in that screen. The fix turned out to be entirely
+frontend: `/accept-fixes`, `/stems/{id}/preview-chain` and `_chain_apply_tools` take an arbitrary
+`{tool, params}` list with **no tool whitelist**, and `accept_jobs.fingerprint` hashes the whole
+payload — so a producer-chosen card reaches the DSP, renders, and invalidates a stale render
+without a line of backend change. Checked that before designing anything.
+
+- **`FixEntry.source: 'analysis' | 'manual'`** is the whole model change. Everything downstream reads
+  `tool` + `currentParams` and never asks where a card came from, which is why Hear it, Adjust,
+  ON/OFF and Accept & save all worked for free.
+- **Ids stay `stem:<id>:<tool>` / `master:<tool>`.** The issue flagged a possible collision; keeping
+  the existing scheme makes a duplicate structurally impossible instead of something to reconcile —
+  the picker just hides tools the row already has.
+- **Re-analysis merges rather than replaces.** Manual cards survive (clearing them would make the
+  producer's own judgement the one thing a re-measure throws away); where the new pass recommends a
+  tool they had added, the recommended card wins and inherits the params they had moved off the
+  suggested value. "Edited" is *derived* (`currentParams` vs `suggestedParams`) rather than tracked,
+  so there's no second copy of the params to keep in sync. A re-separation drops manual cards pinned
+  to stem ids that no longer exist.
+- **Starting params are the tool's declared defaults**, minus `file_path`/`output_path` and
+  `start_s`/`end_s`. Worth knowing: `apply_eq`'s defaults alone are close to a no-op (high-pass at
+  30 Hz, no `boost_freq`), which is exactly why the Adjust drawer is the place the amount gets set —
+  there are no measured numbers to pre-fill.
+- `ensureToolParams` now keeps the whole tool descriptor (`summary`, `applies_to_file`,
+  `hidden_from_editor`) rather than just params; `toolParamsByTool` is derived from it, so the
+  Advanced drawer's call sites didn't change.
+
+**QA follow-ups, same PR.** The picker now labels each option with `fixTitleFor(tool)` — the very
+title the card it creates will carry — instead of the tool's own `summary`, so "Even out the tone"
+doesn't produce a card called something else (the summary is the option's hover text).
+`manualFixCopy` calls the same helper. And `remove_hum` gets its own card copy: it is the one scoped
+tool whose declared defaults are a genuine no-op (`fundamental_hz` has no default, so apply re-runs
+the detection that already found nothing and copies the file), so the card says to pick 50 or 60 Hz
+under Adjust rather than leaving "Hear it" sounding broken.
+
+16 vitest cases across two specs (127 total green), `tsc --noEmit`, `npm run build` and — newly —
+`npm run lint` all clean.
+
+---
+
+### 2026-09-16 — "Save the version" was re-doing all the DSP, twice
+A 17-fix queue 504'd on save and the UI suggested turning fixes off. Asked why
+saving was slow at all — surely the processing was done? Checked: it was not.
+**Analyze measures and never renders** (its own docstring: "findings +
+recommended params, no processing"), so every fix was still unrendered when a
+button was pressed. `_chain_apply_tools` then runs each tool for real, writing a
+WAV per step, per stem, then remix, then master. Stems *are* reused — that part
+of the instinct was right.
+
+Worse: "Preview full mix first" rendered exactly that, and saving threw it away
+and rendered it again. And a version row is just a path — `add_song_version`
+stores `audio_path`, it never copies audio — so saving an already-rendered mix
+should be an insert.
+
+So the fix was not only "run it in the background":
+- **Start analysis now renders what it detected** (`warmRender`), because the
+  reason to analyse is to hear or keep the result. Preview and Save then land on
+  a finished file.
+- **A fingerprint over source version + every fix and its params** decides reuse.
+  It deliberately excludes `preview`, since preview and save produce identical
+  audio — that exclusion is what lets the analysis render satisfy a later save.
+  Measured: cold render 17.6s, same-fixes save 0.94s (`reused: true`), changed
+  params correctly re-rendered at 18.6s.
+- **`AcceptJobManager`** mirrors `stem_jobs.py`; status is in memory because the
+  result is durable. `useAcceptJob` polls **on mount**, so a reload mid-render
+  resumes, shows an in-progress row in the versions list, and reloads the list
+  when a save lands.
+
+**Verification gotcha worth keeping:** starting a render server-side while the
+page sits idle proves nothing — the page polls on mount and then only while
+running, so a render begun elsewhere after load is invisible by design. Start
+the render *first*, then navigate. Also, a render saturates the CPU enough that
+the dev server's own page load crawls; wait for `tbody tr` to exist rather than
+a fixed sleep.
+
+---
+
+
 ### 2026-08-02 — Stem console: full mix as a row, a real transport, and instrument tagging for stems Demucs can only call "other"
 Two related pieces of work on `/produce/[songId]` → Audio processing.
 
