@@ -629,7 +629,9 @@ back on each request, so state survives a backend restart and stays consistent a
 instances (issue #2). The backend still writes `streaming/playlist/radio.m3u` from that state;
 Liquidsoap reads the shared file and streams to Icecast, proxied by nginx at `/stream`. Two
 invariants the code depends on (regressions here silently break the stream):
-- Liquidsoap playlist sources must be wrapped in `mksafe()` or `fallback` chooses `blank()`.
+- The air chain is made safe **once, around the whole `fallback`** — `mksafe(fallback(...))`,
+  never `mksafe()` on the children. Without it `fallback` picks `blank()` at init; with it on a
+  child, that child is always ready and nothing after it can ever be selected (issue #104).
 - Playlist paths are rewritten `/app/audio_library/…` → `/audio_library/…` to match Liquidsoap's
   mount (`write_playlist_file()` in `backend_api.py`).
 
@@ -667,12 +669,50 @@ playing does not:
 - **Skip moves the audio**, and 503s when the stream cannot be reached instead of relabelling state
   the listener can still hear (RAD-09).
 
-⚠️ **Found while verifying, not fixed here:** `fallback_music` is unreachable. `mksafe(radio_queue)`
-is always ready, so `fallback([radio_queue, fallback_music, blank()])` always selects the first — the
-logs show every track coming from `radio_m3u`, and an empty `.m3u` yields `mksafe`'s `safe_blank`,
-i.e. silence, not catalog music. That contradicts **RAD-02** and predates this change; the display
-side handles fallback audio correctly if it ever plays (it is named from the catalog and labelled
-`fallback`).
+### Catalog music is reachable at last (2026-09-26, issue #104)
+
+`mksafe()` was applied to each child of the air `fallback`, and `mksafe()` makes a source **always
+ready**, so the queue source always won and `fallback_music` was dead code. What an empty queue
+actually produced, measured on the live stack: `[mksafe:3] Switch to safe_blank.`, then Icecast
+dropping the source on its socket timeout seven seconds later and `/stream` returning **404 until
+Liquidsoap was restarted**. Not merely silence — a dead mount that did not self-heal, so **RAD-02**,
+**RAD-03** and **RAD-10** were all unmet.
+
+- **The shape, not the operator, was the bug.** `mksafe` stays, once, around the result:
+  `radio = mksafe(fallback(track_sensitive=false, [radio_queue, fallback_music]))`. The children stay
+  fallible so they can yield, and the always-ready guarantee at the top still means the output cannot
+  fail. `blank()` left the list: `mksafe` is that blank, and a `blank()` child would be the same bug
+  under another name. `AGENTS.md` had asked for the wrapped-children shape for a year, so the doc was
+  part of the defect and was corrected with the code.
+- **`track_sensitive=false`**, or a song queued while catalog music plays waits out that track
+  (minutes) instead of taking the air in seconds (RAD-08). Measured: 2s from playlist reload to the
+  queued song on air, and 1s back to catalog music when the queue drained again.
+- **The catalog source needed a filter to be nameable.** `playlist("/audio_library")` scans
+  **recursively**, and the directory also holds `produced/` (Demucs stems, `.opus` previews) and
+  `sessions/` — 2,255 files against 1,415 catalog songs. It was observed queueing
+  `produced/…/previews/guitar.opus`. A lone guitar stem is not what the station is for, and its
+  filename carries no song id, so `song_id_from_filename()` returns `None` and the page would show
+  *nothing playing* over audible audio (RAD-05). `check_next` keeps only top-level
+  `{song_id}_*.mp3`.
+- **A filename shape is not a catalog row, so naming cannot end at the filter.** The stream picks its
+  fallback music off the filesystem and the two inventories disagree: **74 of the 1,415** top-level
+  `{song_id}_*.mp3` files have no `songs` row (every `songs` row does have a file), so ~1 fallback
+  track in 19 resolved to an id the catalog could not name and the page said *nothing playing* over
+  audible music again — the same RAD-05 break by a different route, found in QA. `resolve_on_air_song`
+  now names those from the stream's own metadata (`_song_from_stream`: ID3 `title`, else the filename
+  with the id prefix stripped), with the length coming from `stream_duration` as it already does for
+  catalog songs with no duration. **Naming is the backend's job, not the playlist filter's** — that
+  keeps all 1,415 playable files on the air, which shrinking the pool to the catalog would not: the
+  pool is the stream's own directory scan, and making it depend on the database would put RAD-02 back
+  at the mercy of a backend or Postgres outage.
+- **The 74 orphan files are a data defect in their own right** (the catalog does not describe
+  everything the app can play) and are reported separately rather than designed around — the naming
+  path above is what RAD-05 needs regardless of how many orphans exist.
+- **Also found, still open:** `reload_mode="watch"` on the queue playlist never fires on a Docker
+  Desktop/Windows bind mount (inotify events do not cross it) — 5 reloads in a day, all at container
+  start, against hundreds of playlist writes. Queue changes reach the air on Linux, but not on this
+  dev stack without a forced `radio.m3u.reload`. Independent of the fallback chain and not touched
+  here.
 
 See `AGENTS.md` → "Radio Streaming Architecture" for the operational details.
 
@@ -770,6 +810,7 @@ reading the code, and so a change cannot quietly remove a behavior users depend 
 | 2025-11 | Whisper large-v3 for lyric transcription (`09bb7ba`) | Higher transcription accuracy enabled reliable full-lyric + semantic lyric search. |
 | 2025-11 | Radio = Icecast + Liquidsoap, playlist via shared `.m3u` | Decouple continuous streaming from the request/response API; backend only writes queue state. |
 | 2025-11 | `mksafe()` wrapper on Liquidsoap sources | Without it `fallback` picks `blank()` even with valid playlists (sources look "not ready" at init). |
+| 2026-09 | `mksafe()` moved from the `fallback`'s children to its result (issue #104) | An always-ready child can never yield, so the catalog fallback was unreachable and a drained queue served silence — and then a dropped Icecast mount. Safety belongs at the top of the chain, once. |
 | 2025-12 | Auth0/Google OAuth with multiple callback URLs (`6718150`) | One OAuth app serves both dev and prod redirect URLs. |
 | 2026-09 | Session cookies are HMAC-signed with a dedicated `SESSION_SECRET` | An unsigned cookie is not a credential — it is a claim anyone can write. A separate secret from `BACKEND_API_SECRET` so the two blast radii stay separate, and the expiry lives inside the signed payload so a captured cookie cannot be replayed with a fresh `Max-Age`. |
 | 2026-09 | Editor invites are copyable links, not emails (migration `13`) | The stack has no SMTP and adding it means new secrets plus SPF/DKIM work for a handful of invites a year. A link the admin sends themselves needs no new infrastructure. Binding the invite to an email keeps a forwarded link worthless. |

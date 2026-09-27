@@ -322,6 +322,26 @@ async def _load_catalog_song(song_id: int) -> Optional[Dict[str, Any]]:
     }
 
 
+def _song_from_stream(song_id: int, on_air: Dict[str, Any]) -> Dict[str, Any]:
+    """The queue-shaped dict for on-air audio the catalog has no row for.
+
+    The stream picks its fallback music off the filesystem, not out of the catalog,
+    and the two do not agree: 74 of the 1,415 playable "{song_id}_*.mp3" files have
+    no ``songs`` row (issue #104). Reporting those as nothing playing would put the
+    radio page at "nothing is on the air" over audible music (RAD-05), so the track
+    is named from what the stream itself knows about the file. Duration is left to
+    the length the stream reports (``stream_duration``), which is the same source
+    the page already uses for catalog songs with no duration (CAT-02).
+    """
+    title = str(on_air.get("title") or "").strip()
+    if not title:
+        # No ID3 title: the filename is "{song_id}_Some_Title.mp3", which is a
+        # worse name than a tag but a much better one than silence.
+        stem = PurePosixPath(str(on_air.get("filename") or "")).stem
+        title = re.sub(rf"^{song_id}_", "", stem).replace("_", " ").strip()
+    return {"id": song_id, "title": title or f"Song {song_id}", "duration": None}
+
+
 async def resolve_on_air_song(
     on_air: Dict[str, Any],
     queue: list,
@@ -336,8 +356,9 @@ async def resolve_on_air_song(
 
     A song still in the queue is returned as its own queue entry, so the display
     keeps the fields the queue already carried. Anything else is looked up in the
-    catalog, so audible audio is never reported as nothing playing (RAD-02's
-    visible form) — including music the stream picked itself once the queue drained.
+    catalog, and named from the stream's own metadata when the catalog has no row
+    for it, so audible audio is never reported as nothing playing (RAD-02's visible
+    form) — including music the stream picked itself once the queue drained.
     """
     song_id = song_id_from_filename(on_air.get("filename"))
     if song_id is None:
@@ -352,7 +373,7 @@ async def resolve_on_air_song(
         # would be one query a second for an answer we already hold.
         return current_song, source
     song = await _load_catalog_song(song_id)
-    return (song, source) if song else (None, None)
+    return (song or _song_from_stream(song_id, on_air)), source
 
 
 def reconcile_with_stream(
@@ -386,8 +407,9 @@ def reconcile_with_stream(
         state["stream_duration"] = None
 
     if song is None:
-        # Audio we cannot name (a file outside the catalog). Say nothing rather
-        # than keep naming whatever was playing before.
+        # Audio whose file carries no song id at all (a session render, a produced
+        # file nobody published). Say nothing rather than keep naming whatever was
+        # playing before.
         state["current_song"] = None
         state["current_song_source"] = None
         return False

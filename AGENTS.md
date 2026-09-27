@@ -224,13 +224,19 @@ The radio uses Icecast + Liquidsoap for synchronized audio streaming:
 - **Shared volume**: `./streaming/playlist` is mounted into both backend and liquidsoap.
 
 **Two critical configuration facts (do not regress):**
-1. Liquidsoap playlist sources **must** be wrapped in `mksafe()`, or the `fallback` operator picks
-   `blank()` even with valid playlist files (sources look "not ready" during init):
+1. The air chain **must** be made safe **exactly once, around the whole `fallback`** — never around
+   its children:
    ```liquidsoap
-   radio_queue = mksafe(radio_queue)
-   fallback_music = mksafe(fallback_music)
-   radio = fallback([radio_queue, fallback_music, blank()])
+   radio = mksafe(fallback(track_sensitive=false, [radio_queue, fallback_music]))
    ```
+   Both halves of that matter. `mksafe()` is required because a source looks "not ready" during init
+   and an unprotected chain would fail; and it must go on the *result*, because `mksafe()` makes a
+   source **always ready**, so an `mksafe()`d child can never yield to the next one. Wrapping the
+   children individually (what this file told you to do until issue #104) made `fallback_music`
+   unreachable: an empty queue served `mksafe`'s own silence, Icecast dropped the source on its
+   socket timeout, and `/stream` 404'd until Liquidsoap was restarted — breaking **RAD-02**. There is
+   no `blank()` child either: `mksafe` *is* that blank, and a `blank()` in the list is a second
+   always-ready source with the same effect.
 2. Playlist paths must match Liquidsoap's mount points: the backend writes `/app/audio_library/…`
    and **converts** it to `/audio_library/…` for the Liquidsoap container — see
    `write_playlist_file()` in `backend_api.py`.
