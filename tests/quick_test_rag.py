@@ -140,37 +140,6 @@ async def quick_test(num_songs: int = 5):
     else:
         print("✗ No similar songs found")
     
-    # Test tempo search
-    print("\n" + "-"*70)
-    print("Step 3: Testing tempo search...")
-    print("-"*70)
-    
-    # Get tempo from first song
-    embedding = await rag.get_song_embedding(reference_song['song_id'])
-    
-    if embedding and embedding.get('librosa_features'):
-        import json
-        # librosa_features is stored as JSON string
-        features = json.loads(embedding['librosa_features']) if isinstance(embedding['librosa_features'], str) else embedding['librosa_features']
-        if 'tempo' in features:
-            tempo = features['tempo']
-            print(f"\nSearching for songs around {tempo:.1f} BPM...")
-            
-            tempo_results = await rag.search_by_tempo_and_audio(
-                target_tempo=tempo,
-                tempo_tolerance=20.0,
-                limit=5
-            )
-            
-            if tempo_results:
-                print(f"\n✓ Found {len(tempo_results)} songs:")
-                for i, result in enumerate(tempo_results, 1):
-                    print(f"  {i}. {result['title']}")
-                    if result.get('tempo_bpm'):
-                        print(f"     Tempo: {result['tempo_bpm']:.1f} BPM")
-                    if result.get('tempo_diff') is not None:
-                        print(f"     Difference: ±{result['tempo_diff']:.1f} BPM")
-    
     # Get stats
     print("\n" + "-"*70)
     print("Step 4: System statistics")

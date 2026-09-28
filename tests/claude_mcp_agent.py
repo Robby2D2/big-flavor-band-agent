@@ -130,28 +130,6 @@ class ClaudeMCPAgent:
                 }
             },
             {
-                "name": "search_by_tempo_and_similarity",
-                "description": "Find songs with specific tempo (BPM) and optionally similar sound characteristics.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "target_tempo": {
-                            "type": "number",
-                            "description": "Target tempo in BPM"
-                        },
-                        "tempo_tolerance": {
-                            "type": "number",
-                            "description": "BPM tolerance (default: 10.0)"
-                        },
-                        "limit": {
-                            "type": "number",
-                            "description": "Maximum number of results (default: 10)"
-                        }
-                    },
-                    "required": ["target_tempo"]
-                }
-            },
-            {
                 "name": "get_embedding_stats",
                 "description": "Get statistics about the RAG system - how many songs are indexed, average tempo, etc.",
                 "input_schema": {
@@ -212,13 +190,6 @@ class ClaudeMCPAgent:
                     tool_input["song_id"],
                     tool_input.get("limit", 10),
                     tool_input.get("similarity_threshold", 0.5)
-                )
-            elif tool_name == "search_by_tempo_and_similarity":
-                result = await self.mcp_server.search_by_tempo_and_similarity(
-                    tool_input["target_tempo"],
-                    tool_input.get("reference_audio_path"),
-                    tool_input.get("tempo_tolerance", 10.0),
-                    tool_input.get("limit", 10)
                 )
             elif tool_name == "get_embedding_stats":
                 result = await self.mcp_server.get_embedding_stats()
@@ -283,7 +254,6 @@ IMPORTANT: You have access to real tools that can search the actual Big Flavor B
 - get_song_library: Get all 1,300+ songs (use sparingly, it's a lot of data)
 - search_songs: Text-based search by exact title/genre
 - get_similar_songs: Find songs similar to a given song (USE THIS for recommendations!)
-- search_by_tempo_and_similarity: Find songs by BPM
 - get_embedding_stats: Check system statistics
 
 CRITICAL RULES FOR search_by_filters:

@@ -25,8 +25,8 @@ backend as a library (not a service) for speed. Backend search routes (`/api/sea
 - **Lyrics** are transcribed with **Whisper large-v3** (`lyrics_extractor.py`, indexed via
   `index_lyrics.py`); the model was upgraded to large-v3 for accuracy (`09bb7ba`), with GPU testing
   tooling added at the same time.
-- **Vector storage** is pgvector in PostgreSQL; SQL search functions live in `database/sql/` and
-  `database/update_search_functions.sql`.
+- **Vector storage** is pgvector in PostgreSQL; SQL search functions live in `database/sql/`
+  (`init/` + `migrations/`). `database/update_search_functions.sql` was retired in issue #114.
 
 ## Design rule
 

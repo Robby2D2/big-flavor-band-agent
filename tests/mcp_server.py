@@ -178,14 +178,6 @@ class BigFlavorMCPServer:
                         arguments.get("limit", 10),
                         arguments.get("similarity_threshold", 0.5)
                     )
-                elif name == "search_by_tempo_and_similarity":
-                    await self.initialize_rag()
-                    result = await self.search_by_tempo_and_similarity(
-                        arguments["target_tempo"],
-                        arguments.get("reference_audio_path"),
-                        arguments.get("tempo_tolerance", 10.0),
-                        arguments.get("limit", 10)
-                    )
                 elif name == "get_embedding_stats":
                     await self.initialize_rag()
                     result = await self.get_embedding_stats()
@@ -821,55 +813,6 @@ class BigFlavorMCPServer:
             }
         except Exception as e:
             logger.error(f"Error finding similar songs: {e}")
-            return {
-                "error": str(e),
-                "results": []
-            }
-    
-    async def search_by_tempo_and_similarity(
-        self,
-        target_tempo: float,
-        reference_audio_path: Optional[str] = None,
-        tempo_tolerance: float = 10.0,
-        limit: int = 10
-    ) -> dict:
-        """
-        Find songs with similar tempo and optionally similar sound.
-        
-        Args:
-            target_tempo: Target BPM
-            reference_audio_path: Optional audio file for sonic similarity
-            tempo_tolerance: BPM tolerance (±)
-            limit: Maximum number of results
-        
-        Returns:
-            Dictionary with matching songs
-        """
-        if not self.enable_rag or self.rag_system is None:
-            return {
-                "error": "RAG system not enabled or not initialized",
-                "results": []
-            }
-        
-        try:
-            logger.info(f"Tempo search: {target_tempo} BPM (±{tempo_tolerance})")
-            
-            results = await self.rag_system.search_by_tempo_and_audio(
-                target_tempo=target_tempo,
-                reference_audio_path=reference_audio_path,
-                tempo_tolerance=tempo_tolerance,
-                limit=limit
-            )
-            
-            return {
-                "target_tempo": target_tempo,
-                "tempo_tolerance": tempo_tolerance,
-                "reference_audio": reference_audio_path,
-                "total_results": len(results),
-                "results": results
-            }
-        except Exception as e:
-            logger.error(f"Error in tempo search: {e}")
             return {
                 "error": str(e),
                 "results": []
