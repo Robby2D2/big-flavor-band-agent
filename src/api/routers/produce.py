@@ -46,7 +46,7 @@ from src.production import (
     stem_separation,
     waveform_peaks,
 )
-from database import DatabaseManager
+from database import SESSION_SONG_ID_START, DatabaseManager
 
 logger = logging.getLogger("backend-api")
 
@@ -419,13 +419,16 @@ def _iso_date(value: Any) -> Optional[str]:
     return str(value)[:10]
 
 
-def _catalog_song_view(song: Dict[str, Any], cleaned_ids: set) -> Dict[str, Any]:
+def _catalog_song_view(
+    song: Dict[str, Any], cleaned_ids: set, published_ids: set
+) -> Dict[str, Any]:
     """Shape a catalog song row for the producer catalog table (issue #49).
 
     Surfaces the columns the table sorts/filters on plus a ``cleaned`` flag
     (whether the song has at least one non-original version). ``recorded_on`` is the
     bigflavorband.com recording date (issue #51), distinct from the system
-    ``created_at``.
+    ``created_at``. ``awaiting_default`` marks a session song listeners cannot
+    see yet because no version is its default (SESS-20).
     """
     return {
         "id": song["id"],
@@ -435,6 +438,9 @@ def _catalog_song_view(song: Dict[str, Any], cleaned_ids: set) -> Dict[str, Any]
         "duration_seconds": song.get("duration_seconds"),
         "recorded_on": _iso_date(song.get("recorded_on")),
         "cleaned": song["id"] in cleaned_ids,
+        "awaiting_default": (
+            song["id"] >= SESSION_SONG_ID_START and song["id"] not in published_ids
+        ),
     }
 
 
@@ -450,7 +456,12 @@ async def list_catalog_songs(
     """
     songs = await db.get_all_songs()
     cleaned_ids = await db.get_song_ids_with_cleaned_versions()
-    return {"songs": [_catalog_song_view(song, cleaned_ids) for song in songs]}
+    published_ids = set(await db.get_published_audio_paths())
+    return {
+        "songs": [
+            _catalog_song_view(song, cleaned_ids, published_ids) for song in songs
+        ]
+    }
 
 
 @router.get("/api/produce/songs/{song_id}")
@@ -464,7 +475,10 @@ async def get_catalog_song(
     if song is None:
         raise HTTPException(status_code=404, detail="Song not found")
     cleaned_ids = await db.get_song_ids_with_cleaned_versions()
-    return {"song": _catalog_song_view(song, cleaned_ids)}
+    published = await db.get_published_version(song_id)
+    return {
+        "song": _catalog_song_view(song, cleaned_ids, {song_id} if published else set())
+    }
 
 
 # ---- Lyrics: view / edit / re-extract ----
@@ -759,9 +773,14 @@ async def list_versions(
     db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ):
-    """List a song's versions, seeding the 'original' version on first access."""
-    source_path = await run_in_threadpool(_resolve_source_path, song_id)
-    await db.ensure_original_version(song_id, str(source_path))
+    """List a song's versions, seeding the 'original' version on first access.
+
+    A song made from a recording session has no catalog original — its takes
+    are its versions — so there is nothing to seed for it.
+    """
+    if song_id < SESSION_SONG_ID_START:
+        source_path = await run_in_threadpool(_resolve_source_path, song_id)
+        await db.ensure_original_version(song_id, str(source_path))
     versions = await db.list_song_versions(song_id)
     # _version_view stats each file; run it off the event loop.
     views = await run_in_threadpool(lambda: [_version_view(v) for v in versions])
@@ -1654,6 +1673,28 @@ async def _keep_rendered_stems(
 ) -> Optional[Dict[str, Any]]:
     """Keep the stems a save just rendered as that new version's stem set.
 
+    See ``_keep_stems``; this only names where the audio came from.
+    """
+    origin = "fixes_premaster" if had_master_fixes else "fixes"
+    return await _keep_stems(song_id, version_id, parts, origin, model, db)
+
+
+async def _keep_stems(
+    song_id: int,
+    version_id: int,
+    parts: List[Dict[str, str]],
+    origin: str,
+    model: Optional[str],
+    db: DatabaseManager,
+) -> Optional[Dict[str, Any]]:
+    """Register audio already split into parts as a version's stem set.
+
+    Two callers have per-stem audio for a version before anyone asks for a
+    separation: a fix-queue save (the stems it rendered) and a session group
+    being produced (the channels the band recorded apart). Each part is a
+    ``name`` and ``path``, plus an optional ``display_name`` — a session keeps
+    the band's own track names on its stems (SESS-11).
+
     The fix queue has already produced per-stem audio for this exact mix, so the
     new version's parts exist the moment it is saved. Registering them here is
     the difference between selecting the version you just made and reviewing it,
@@ -1690,7 +1731,10 @@ async def _keep_rendered_stems(
                 continue
             destination = target_dir / f"{part['name']}{source.suffix or '.wav'}"
             await run_in_threadpool(shutil.copyfile, str(source), str(destination))
-            rows.append(await db.add_stem(stem_set["id"], part["name"], str(destination)))
+            row = await db.add_stem(stem_set["id"], part["name"], str(destination))
+            if part.get("display_name"):
+                row = await db.set_stem_display_name(row["id"], part["display_name"]) or row
+            rows.append(row)
 
         if not rows:
             await db.set_stem_set_status(stem_set["id"], "failed", "no stem files to keep")
@@ -1699,7 +1743,6 @@ async def _keep_rendered_stems(
         # Origin first: between marking the set complete and recording where it
         # came from, a reader would see a finished set claiming to be a plain
         # separation.
-        origin = "fixes_premaster" if had_master_fixes else "fixes"
         await db.set_stem_set_origin(stem_set["id"], origin)
         await db.set_stem_set_status(stem_set["id"], "complete")
         # Instrument labels are cosmetic and the tagger takes ~18s over six
@@ -1708,15 +1751,15 @@ async def _keep_rendered_stems(
         # the 2026-08 decision that put tagging after the set is complete.
         _tag_in_background(rows, db)
         logger.info(
-            "Kept %d rendered stems as set %s for version %s",
-            len(rows), stem_set["id"], version_id,
+            "Kept %d %s stems as set %s for version %s",
+            len(rows), origin, stem_set["id"], version_id,
         )
         # Returned from what was just written rather than re-read: one less
         # round trip, and one less way for a set that *was* kept to come back
         # looking like it wasn't.
         return {**stem_set, "status": "complete", "origin": origin}
     except Exception:
-        logger.exception("Could not keep rendered stems for version %s", version_id)
+        logger.exception("Could not keep %s stems for version %s", origin, version_id)
         return None
 
 

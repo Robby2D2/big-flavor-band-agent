@@ -18,9 +18,10 @@ Two things shape the surface:
   because a take is minutes of multitrack and the browser only needs to draw it
   and play it.
 
-Nothing here writes to the catalog. Detection is fallible, so a take stays staged
-until a human confirms it; importing one into ``songs``/``song_versions`` is a
-later step with its own routes.
+Detection is fallible, so a take stays staged until a human says otherwise.
+Review is only about grouping takes into songs; the one route that writes to the
+catalog is ``POST .../groups/{id}/produce``, which a producer clicks to turn a
+group into a song (``session_import``).
 """
 import logging
 import re
@@ -36,6 +37,7 @@ from pydantic import BaseModel
 
 from database import DatabaseManager
 from src.api.dependencies import get_db
+from src.api import session_import
 from src.api.session_jobs import (
     group_session_takes,
     manager as session_manager,
@@ -66,19 +68,32 @@ class DriveImport(BaseModel):
 
 
 class TakeUpdate(BaseModel):
-    excluded: bool
+    """A producer's changes to one take.
+
+    Read through ``model_fields_set``, so ``group_id: null`` (stand on its own)
+    is distinguishable from not moving the take at all.
+    """
+
+    excluded: Optional[bool] = None
+    group_id: Optional[int] = None
+
+
+class GroupCreate(BaseModel):
+    """A new song made from takes the guess put elsewhere, or nowhere."""
+
+    take_ids: List[int]
 
 
 class GroupUpdate(BaseModel):
-    """A producer's corrections to a guessed group.
-
-    Both fields are read through ``model_fields_set``, so clearing one — a blank
-    name back to the guess, or un-choosing a keeper — is distinguishable from not
-    touching it.
-    """
+    """A producer's name for a group. Blank restores the guessed name."""
 
     name: Optional[str] = None
-    keeper_take_id: Optional[int] = None
+
+
+class GroupProduce(BaseModel):
+    """The name the page shows for the group, used when none was set by hand."""
+
+    title: Optional[str] = None
 
 
 @router.post("/api/produce/sessions")
@@ -298,29 +313,54 @@ async def update_take(
     db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ) -> Dict[str, Any]:
-    """Set a take aside, or bring it back. The audio is never deleted."""
-    if await db.get_session_take(take_id) is None:
-        raise HTTPException(status_code=404, detail="Take not found")
-    updated = await db.set_session_take_excluded(take_id, body.excluded)
-    return _take_payload(dict(updated or {}, stems=[]))
+    """Discard or restore a take, or move it to another song or none.
 
-
-@router.post("/api/produce/sessions/takes/{take_id}/separate")
-async def separate_take(
-    take_id: int,
-    db: DatabaseManager = Depends(get_db),
-    _role: str = Depends(require_role("editor")),
-) -> Dict[str, Any]:
-    """Pull a take out of the group it was guessed into, so it stands on its own.
-
-    Grouping is a guess (SESS-05); this is how a producer overrules one. The take
-    keeps everything else — its audio, its channels, its discard state.
+    Grouping is a guess (SESS-05); moving a take is how a producer overrules it
+    (SESS-18). The take keeps everything else — its audio, its channels, its
+    discard state — and the audio is never deleted.
     """
     take = await db.get_session_take(take_id)
     if take is None:
         raise HTTPException(status_code=404, detail="Take not found")
-    updated = await db.set_session_take_group_id(take_id, None)
-    return _take_payload(dict(updated or take, stems=[]))
+    fields = body.model_fields_set
+
+    if "group_id" in fields and body.group_id != take.get("group_id"):
+        await _check_movable(take, body.group_id, db)
+        take = await db.set_session_take_group_id(take_id, body.group_id) or take
+
+    if "excluded" in fields and body.excluded is not None:
+        take = await db.set_session_take_excluded(take_id, body.excluded) or take
+
+    return _take_payload(dict(take, stems=[]))
+
+
+@router.post("/api/produce/sessions/{session_id}/groups")
+async def create_group(
+    session_id: int,
+    body: GroupCreate,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Start a new song from the given takes (SESS-18).
+
+    This is how a take the guess left on its own becomes a song that can be
+    produced, and how a producer splits a group the guess merged.
+    """
+    if await db.get_recording_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not body.take_ids:
+        raise HTTPException(status_code=400, detail="A song needs at least one take")
+
+    takes = [await db.get_session_take(take_id) for take_id in body.take_ids]
+    for take in takes:
+        if take is None or take["session_id"] != session_id:
+            raise HTTPException(status_code=400, detail="Take is not in this session")
+        _check_not_produced(take)
+
+    group = await db.create_session_take_group(session_id)
+    for take in takes:
+        await db.set_session_take_group_id(take["id"], group["id"])
+    return _group_payload(group)
 
 
 @router.patch("/api/produce/sessions/groups/{group_id}")
@@ -330,26 +370,40 @@ async def update_group(
     db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
 ) -> Dict[str, Any]:
-    """Rename a group, or choose which of its takes is the keeper."""
+    """Name a group by hand, or clear the name back to the guess."""
     group = await db.get_session_take_group(group_id)
     if group is None:
         raise HTTPException(status_code=404, detail="Group not found")
-    fields = body.model_fields_set
-
-    if "name" in fields:
-        name = (body.name or "").strip()
-        group = await db.set_session_take_group_name(group_id, name or None)
-
-    if "keeper_take_id" in fields:
-        if body.keeper_take_id is not None:
-            take = await db.get_session_take(body.keeper_take_id)
-            if take is None or take.get("group_id") != group_id:
-                raise HTTPException(
-                    status_code=400, detail="That take is not in this group"
-                )
-        group = await db.set_session_take_group_keeper(group_id, body.keeper_take_id)
-
+    name = (body.name or "").strip()
+    group = await db.set_session_take_group_name(group_id, name or None)
     return _group_payload(group or {})
+
+
+@router.post("/api/produce/sessions/groups/{group_id}/produce")
+async def produce_group(
+    group_id: int,
+    body: GroupProduce,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Bring a group into the catalog as a song, and say where to produce it.
+
+    The explicit human import SESS-10 waits for (SESS-19). Safe to press again:
+    it returns the same song and adds only takes that joined the group since.
+    """
+    group = await db.get_session_take_group(group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    session = await db.get_recording_session(group["session_id"])
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session_manager.is_running(session["id"]) or session["status"] != "complete":
+        raise HTTPException(status_code=409, detail="This session is still scanning")
+
+    try:
+        return await session_import.produce_group(db, session, group, body.title)
+    except session_import.NothingToProduce as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/api/produce/sessions/{session_id}/regroup")
@@ -362,8 +416,9 @@ async def regroup_session(
 
     Grouping runs at the end of a scan, but it reads only transcripts, so a
     session scanned before it existed can be grouped without re-uploading
-    gigabytes of audio. It discards the names and keepers already set, which is
-    why nothing but an explicit request triggers it.
+    gigabytes of audio. It discards the names already set, which is why nothing
+    but an explicit request triggers it. A song already produced is left as it
+    is, takes and all — it is in the catalog now.
     """
     session = await db.get_recording_session(session_id)
     if session is None:
@@ -432,6 +487,27 @@ async def stem_preview(
 
 
 # --- helpers --------------------------------------------------------------
+
+def _check_not_produced(take: Dict[str, Any]) -> None:
+    """A take that became a catalog version stays with the song it went to."""
+    if take.get("song_version_id") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This take is already a version of a catalog song",
+        )
+
+
+async def _check_movable(
+    take: Dict[str, Any], group_id: Optional[int], db: DatabaseManager
+) -> None:
+    """A take may move to a song of its own session, or out on its own."""
+    _check_not_produced(take)
+    if group_id is None:
+        return
+    group = await db.get_session_take_group(group_id)
+    if group is None or group["session_id"] != take["session_id"]:
+        raise HTTPException(status_code=400, detail="That song is not in this session")
+
 
 def parse_session_filename(filename: str) -> tuple[str, Optional[str]]:
     """Read a session's name and date out of the uploaded file's name.
@@ -520,6 +596,7 @@ def _take_payload(row: Dict[str, Any]) -> Dict[str, Any]:
         "transcript": row.get("transcript"),
         "excluded": row.get("excluded", False),
         "has_audio": bool(row.get("mix_path")),
+        "song_version_id": row.get("song_version_id"),
         "stems": [
             {
                 "id": stem["id"],
@@ -536,7 +613,7 @@ def _group_payload(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": row.get("id"),
         "name": row.get("name"),
-        "keeper_take_id": row.get("keeper_take_id"),
+        "song_id": row.get("song_id"),
     }
 
 

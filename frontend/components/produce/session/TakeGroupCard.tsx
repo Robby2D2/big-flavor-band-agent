@@ -2,7 +2,11 @@
 
 import { useState } from 'react';
 
-import TakeCard, { SessionTake } from '@/components/produce/session/TakeCard';
+import TakeCard, {
+  MoveTarget,
+  SessionTake,
+  SongOption,
+} from '@/components/produce/session/TakeCard';
 import {
   PositionedTake,
   TakeGroupRecord,
@@ -12,27 +16,32 @@ import {
 interface TakeGroupCardProps {
   group: TakeGroupRecord;
   takes: PositionedTake<SessionTake>[];
+  songs: SongOption[];
+  /** A produce request for this group is in flight. */
+  producing: boolean;
   onRename: (group: TakeGroupRecord, name: string) => void;
-  onChooseKeeper: (group: TakeGroupRecord, take: SessionTake) => void;
-  onSeparate: (take: SessionTake) => void;
+  onProduce: (group: TakeGroupRecord, title: string) => void;
+  onMove: (take: SessionTake, target: MoveTarget) => void;
   onToggleExcluded: (take: SessionTake) => void;
 }
 
 /**
  * The several attempts the band made at one song, as one card.
  *
- * Two things it must keep saying out loud. The name and the grouping are a
- * **guess** drawn from the words, not a catalog match (SESS-05) — so the card
- * offers to be corrected rather than presenting itself as settled. And no keeper
- * is chosen until the producer chooses one (SESS-15), which is the only thing
- * that could ever make a take eligible to leave staging.
+ * The name and the grouping are a **guess** drawn from the words, not a catalog
+ * match (SESS-05) — so the card offers to be corrected rather than presenting
+ * itself as settled. Nothing leaves review until the producer presses Produce,
+ * which brings the takes into the catalog as one song's versions (SESS-19);
+ * which of them is the default is chosen on the produce page (SESS-15).
  */
 export default function TakeGroupCard({
   group,
   takes,
+  songs,
+  producing,
   onRename,
-  onChooseKeeper,
-  onSeparate,
+  onProduce,
+  onMove,
   onToggleExcluded,
 }: TakeGroupCardProps) {
   const name = groupName(group, takes);
@@ -50,11 +59,18 @@ export default function TakeGroupCard({
     if (next !== (group.name ?? '').trim()) onRename(group, next);
   };
 
-  const keeper = takes.find((member) => member.take.id === group.keeper_take_id);
+  const produced = group.song_id !== null;
+  const waiting = takes.filter(
+    (member) =>
+      member.take.song_version_id === null &&
+      !member.take.excluded &&
+      member.take.has_audio
+  ).length;
+  const canProduce = produced || waiting > 0;
 
   return (
     <li className="rounded border border-signal/30 bg-panel">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-raised p-4">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-raised p-4">
         {editing ? (
           <input
             autoFocus
@@ -66,13 +82,13 @@ export default function TakeGroupCard({
               if (event.key === 'Enter') commit();
               if (event.key === 'Escape') setEditing(false);
             }}
-            className="flex-1 rounded border border-raised bg-well px-2 py-1 text-sm"
+            className="min-w-0 flex-1 rounded border border-raised bg-well px-2 py-1 text-sm"
           />
         ) : (
           <button
             type="button"
             onClick={startEditing}
-            className="flex-1 text-left"
+            className="min-w-0 flex-1 text-left"
             title="Rename this song"
           >
             <span
@@ -94,6 +110,24 @@ export default function TakeGroupCard({
         <span className="text-sm text-text/60">
           {takes.length} {takes.length === 1 ? 'take' : 'takes'}
         </span>
+
+        <button
+          type="button"
+          onClick={() => onProduce(group, name.text)}
+          disabled={!canProduce || producing}
+          title={
+            canProduce
+              ? undefined
+              : 'Every take here is discarded or has no audio'
+          }
+          className="rounded bg-signal px-3 py-1.5 text-sm font-medium text-canvas hover:bg-signal/90 disabled:opacity-50"
+        >
+          {producing
+            ? 'Bringing in…'
+            : produced && waiting === 0
+              ? 'Open in producer →'
+              : 'Produce this song →'}
+        </button>
       </div>
 
       <ul className="divide-y divide-raised">
@@ -103,19 +137,24 @@ export default function TakeGroupCard({
             take={member.take}
             index={member.position}
             inGroup
-            isKeeper={member.take.id === group.keeper_take_id}
-            onChooseKeeper={(take) => onChooseKeeper(group, take)}
-            onSeparate={onSeparate}
+            songs={songs}
+            onMove={onMove}
             onToggleExcluded={onToggleExcluded}
           />
         ))}
       </ul>
 
       <p className="px-4 py-3 text-xs text-text/40">
-        {keeper
-          ? `Take ${keeper.position} is the keeper.`
-          : 'No keeper chosen. Nothing from this song reaches the catalog until you pick one.'}{' '}
-        These takes were grouped by the words they share, which is a guess — separate
+        {produced
+          ? waiting > 0
+            ? `In the catalog. ${waiting} ${
+                waiting === 1 ? 'take has' : 'takes have'
+              } joined since — producing again adds ${
+                waiting === 1 ? 'it' : 'them'
+              } as ${waiting === 1 ? 'a version' : 'versions'}.`
+            : 'In the catalog. Choose its default version in the producer.'
+          : 'Put every take of this song here, then produce it: each take becomes a version, and you choose the default on the next page.'}{' '}
+        These takes were grouped by the words they share, which is a guess — move
         any take that is a different song.
       </p>
     </li>

@@ -20,6 +20,21 @@ logger = logging.getLogger("database")
 # silently connecting with a known dev credential.
 _DEV_PASSWORD_DEFAULT = "bigflavor_dev_pass"
 
+#: Songs produced from a recording session get ids from here up (migration 24),
+#: clear of the bigflavorband.com ids the scraper writes.
+SESSION_SONG_ID_START = 1_000_000
+
+#: A song listeners may be offered, as a predicate over ``songs s``. A session
+#: song has no catalog file to fall back on, so until a producer chooses its
+#: default version there is nothing to play and it stays out of search and
+#: radio (SESS-20). Every other song keeps today's behaviour.
+LISTED_SONG_SQL = f"""(
+    s.id < {SESSION_SONG_ID_START}
+    OR EXISTS (
+        SELECT 1 FROM song_versions lv WHERE lv.song_id = s.id AND lv.is_published
+    )
+)"""
+
 
 def _is_dev_environment() -> bool:
     return os.getenv("APP_ENV", "production").strip().lower() in {"dev", "development"}
@@ -840,9 +855,13 @@ class DatabaseManager:
         A song is "already cleaned" when it has any ``song_versions`` row whose
         label is not 'original' (i.e. a produced/cleaned take exists). The batch
         runner (issue #29) uses this in one bulk read to skip already-cleaned
-        songs by default, instead of N+1 per-song lookups.
+        songs by default, instead of N+1 per-song lookups. A take brought in from
+        a recording session (label 'session') is raw audio, not a cleaned one.
         """
-        query = "SELECT DISTINCT song_id FROM song_versions WHERE label <> 'original'"
+        query = """
+            SELECT DISTINCT song_id FROM song_versions
+            WHERE label NOT IN ('original', 'session')
+        """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return {row["song_id"] for row in rows}
@@ -1293,7 +1312,7 @@ class DatabaseManager:
         return dict(row) if row else None
 
     async def create_session_take_group(self, session_id: int) -> Dict[str, Any]:
-        """Open a group of takes. It starts unnamed and with no keeper (SESS-15)."""
+        """Open a group of takes. It starts unnamed and not yet produced."""
         query = """
             INSERT INTO session_take_groups (session_id) VALUES ($1) RETURNING *
         """
@@ -1326,53 +1345,95 @@ class DatabaseManager:
             row = await conn.fetchrow(query, group_id, name)
         return dict(row) if row else None
 
-    async def set_session_take_group_keeper(
-        self, group_id: int, take_id: Optional[int]
-    ) -> Optional[Dict[str, Any]]:
-        """Choose the take to keep, or clear the choice."""
-        query = """
-            UPDATE session_take_groups SET keeper_take_id = $2
-            WHERE id = $1 RETURNING *
-        """
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, group_id, take_id)
-        return dict(row) if row else None
-
     async def set_session_take_group_id(
         self, take_id: int, group_id: Optional[int]
     ) -> Optional[Dict[str, Any]]:
         """Put a take in a group, or pull it out so it stands on its own.
 
-        Pulling it out also clears the group's keeper if it *was* the keeper — a
-        take that is no longer in the group cannot be the one kept from it.
+        A group the move leaves empty is deleted unless it was produced — an
+        empty, unproduced group is only a leftover guess, while a produced one
+        still names the catalog song its takes went to.
         """
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                if group_id is None:
-                    await conn.execute(
-                        """
-                        UPDATE session_take_groups SET keeper_take_id = NULL
-                        WHERE keeper_take_id = $1
-                        """,
-                        take_id,
-                    )
+                previous = await conn.fetchval(
+                    "SELECT group_id FROM session_takes WHERE id = $1", take_id
+                )
                 row = await conn.fetchrow(
                     "UPDATE session_takes SET group_id = $2 WHERE id = $1 RETURNING *",
                     take_id,
                     group_id,
                 )
+                if previous is not None and previous != group_id:
+                    await conn.execute(
+                        """
+                        DELETE FROM session_take_groups g
+                        WHERE g.id = $1 AND g.song_id IS NULL
+                          AND NOT EXISTS (
+                              SELECT 1 FROM session_takes t WHERE t.group_id = g.id
+                          )
+                        """,
+                        previous,
+                    )
         return dict(row) if row else None
 
     async def clear_session_take_groups(self, session_id: int) -> None:
-        """Drop a session's groups, releasing its takes.
+        """Drop a session's unproduced groups, releasing their takes.
 
         Deleting a group sets its takes' ``group_id`` to NULL, so no take is ever
-        lost with the guess that grouped it.
+        lost with the guess that grouped it. A produced group stays: it is the
+        link between its takes and the catalog song they became.
         """
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "DELETE FROM session_take_groups WHERE session_id = $1", session_id
+                "DELETE FROM session_take_groups WHERE session_id = $1 AND song_id IS NULL",
+                session_id,
             )
+
+    async def ensure_session_group_song(
+        self, group_id: int, title: str, recorded_on: Optional[Any]
+    ) -> int:
+        """The catalog song a group is produced into, made on first use.
+
+        Locks the group row so two clicks (or two producers) cannot each make a
+        song for it. The song takes an id from the session range (migration 24)
+        and has no ``audio_url``: its audio is its versions, and until one is
+        the default it is listed nowhere (``LISTED_SONG_SQL``).
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                song_id = await conn.fetchval(
+                    "SELECT song_id FROM session_take_groups WHERE id = $1 FOR UPDATE",
+                    group_id,
+                )
+                if song_id is not None:
+                    return song_id
+                song_id = await conn.fetchval(
+                    """
+                    INSERT INTO songs (id, title, recorded_on, recording_date)
+                    VALUES (nextval('session_song_id_seq'), $1, $2, $2)
+                    RETURNING id
+                    """,
+                    title,
+                    _parse_recorded_on(recorded_on),
+                )
+                await conn.execute(
+                    "UPDATE session_take_groups SET song_id = $2 WHERE id = $1",
+                    group_id,
+                    song_id,
+                )
+        return song_id
+
+    async def set_session_take_song_version(
+        self, take_id: int, version_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Record the song version a take became."""
+        query = """
+            UPDATE session_takes SET song_version_id = $2 WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, take_id, version_id)
+        return dict(row) if row else None
 
     async def set_session_take_waveform_peaks(
         self, take_id: int, peaks: Optional[Dict[str, Any]]
@@ -1536,7 +1597,7 @@ class DatabaseManager:
                 1 - (se.embedding <=> $1) as similarity
             FROM song_embeddings se
             JOIN songs s ON se.song_id = s.id
-            WHERE 1=1 {type_filter}
+            WHERE {LISTED_SONG_SQL} {type_filter}
             ORDER BY se.embedding <=> $1
             LIMIT $2
         """

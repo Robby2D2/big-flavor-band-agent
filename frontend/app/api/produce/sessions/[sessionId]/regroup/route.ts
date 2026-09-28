@@ -6,8 +6,8 @@ const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8000';
 
 // Guess the session's song groups again from what was transcribed. It reads no
 // audio, so a session scanned before grouping existed can be grouped without
-// re-uploading it — and it discards the names and keepers already set, which is
-// why only an explicit request triggers it.
+// re-uploading it — and it discards the names already set, which is why only an
+// explicit request triggers it. A song already produced is left alone.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }

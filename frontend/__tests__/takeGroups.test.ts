@@ -30,8 +30,8 @@ const take = (
 const group = (
   id: number,
   name: string | null = null,
-  keeper_take_id: number | null = null
-): TakeGroupRecord => ({ id, name, keeper_take_id });
+  song_id: number | null = null
+): TakeGroupRecord => ({ id, name, song_id });
 
 describe('reviewRows', () => {
   it('puts the takes of one song in a single row', () => {
