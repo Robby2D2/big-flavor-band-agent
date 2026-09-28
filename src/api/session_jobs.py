@@ -31,6 +31,7 @@ from src.llm.llm_provider import get_llm_provider
 from src.production import (
     session_attempts,
     session_detect,
+    session_grouping,
     session_render,
     session_transcribe,
     waveform_peaks,
@@ -134,6 +135,8 @@ class SessionJobManager:
                     await _stage(
                         db, session_id, STAGE_RENDERING, 70 + int(29 * done / total)
                     )
+
+            await group_session_takes(db, session_id)
 
             # The raw WavPack is the bulk of the disk and nothing downstream reads
             # it again: the takes carry their own audio.
@@ -356,6 +359,31 @@ async def _store_take(
     await _warm_peaks(
         db.set_session_take_waveform_peaks, take["id"], rendered.mix_path
     )
+
+
+async def group_session_takes(db: DatabaseManager, session_id: int) -> int:
+    """Guess which of a session's takes are attempts at the same song.
+
+    Runs on the transcripts already stored, so it needs no audio and can be
+    re-run on a session scanned before grouping existed. Any previous grouping is
+    dropped first — including a producer's names and keepers, which is why
+    re-running it is a deliberate action and never automatic.
+    """
+    await db.clear_session_take_groups(session_id)
+    takes = await db.list_session_takes(session_id)
+    groups = session_grouping.group_takes(takes)
+
+    for ids in groups:
+        group = await db.create_session_take_group(session_id)
+        for take_id in ids:
+            await db.set_session_take_group_id(take_id, group["id"])
+
+    in_groups, alone = session_grouping.split_counts(takes, groups)
+    logger.info(
+        "Session %s: %d takes -> %d groups (%d grouped, %d on their own)",
+        session_id, len(takes), len(groups), in_groups, alone,
+    )
+    return len(groups)
 
 
 async def _warm_peaks(setter, row_id: int, audio_path: str) -> None:

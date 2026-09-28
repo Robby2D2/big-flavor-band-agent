@@ -37,6 +37,39 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-27 — Session takes are grouped by song, and the grouping rule was built from the real session (issue #109)
+Review showed one card per detected take with no song identity, so the band's several attempts at one
+song read as strangers — and since a take's headline is six words of its own transcript (SESS-12), two
+attempts could even render the *identical* card. New **SESS-13/14/15**; migration 21
+(`session_take_groups` + `session_takes.group_id`); `src/production/session_grouping.py` decides it from
+transcripts alone (no catalog match, no LLM, no acoustic measurement). Full detail in
+[ARCHITECTURE.md](ARCHITECTURE.md); what the measurement taught:
+
+- **Every threshold came from running the rule against the live session before trusting it**, and two
+  of the three drafts died there. Containment beats Jaccard (a restart is 8 words against 60);
+  the real pair of "Swinging Party" attempts scores 0.93 while nothing unrelated passes 0.30.
+- **Complete-linkage was too strict and seed-linkage too loose.** Attempts that stopped at different
+  points share only the opening, so requiring every pair to match grouped nothing; matching against the
+  fullest take instead let the *transition* stretch — whose words contain both songs, so containment
+  loves it — seed a group and swallow two songs. The rule that survived is **a take matching two takes
+  that do not match each other is left alone**, which is order-independent and makes every group a
+  clique. Its ceiling is asserted in the tests, not hidden: a full attempt bridging two disjoint
+  partial ones has the same shape and also stands alone.
+- **The owner's own example could not be grouped by words at all.** Takes 8 and 9 are "So Tired", but
+  take 8 is 69s of the band starting it with *nothing sung* — 3 words of chatter. Only time places it:
+  the take immediately before a sung one, within 45s (measured: a 35.4s stop, against the 62s/89s gaps
+  of the chatter stretches that must not ride in behind it). **A transcript-based rule cannot see a
+  take that has no transcript**, and that was the headline case, not an edge case.
+- **What is stored is the human's corrections, not the guess.** Name, separated take and keeper persist;
+  the name *guess* is derived at display time by reusing `takeName()`, so SESS-12's cap cannot drift and
+  a stored name is only ever one a person typed. `keeper_take_id` has no default, so SESS-15 holds by
+  construction. `POST /sessions/{id}/regroup` re-guesses from transcripts only — which is how the
+  already-scanned session got grouped without re-uploading 2 GB, and why it is never automatic.
+- Verified against that session end to end: 9 takes → groups `[2,3]` and `[8,9]`, takes 1/4/5/6/7 on
+  their own, 9 takes still visible, no keeper, no names — exactly the owner's reading of the night.
+
+---
+
 ### 2026-09-27 — Audio similarity had never used CLAP, and the "one-word fix" was three (issue #111)
 `clap_embedding` was NULL for all 1,415 rows back to 2025-11-09, so every `combined_embedding` was the
 librosa fallback and "find me more like this" ranked on recording texture. Reported in #107, fixed

@@ -1279,6 +1279,88 @@ class DatabaseManager:
             row = await conn.fetchrow(query, take_id, excluded)
         return dict(row) if row else None
 
+    async def create_session_take_group(self, session_id: int) -> Dict[str, Any]:
+        """Open a group of takes. It starts unnamed and with no keeper (SESS-15)."""
+        query = """
+            INSERT INTO session_take_groups (session_id) VALUES ($1) RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, session_id)
+        return dict(row)
+
+    async def list_session_take_groups(self, session_id: int) -> List[Dict[str, Any]]:
+        """A session's groups, oldest first."""
+        query = """
+            SELECT * FROM session_take_groups WHERE session_id = $1 ORDER BY id
+        """
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, session_id)
+        return [dict(row) for row in rows]
+
+    async def get_session_take_group(self, group_id: int) -> Optional[Dict[str, Any]]:
+        """Return one group by id, or None."""
+        query = "SELECT * FROM session_take_groups WHERE id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, group_id)
+        return dict(row) if row else None
+
+    async def set_session_take_group_name(
+        self, group_id: int, name: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Name a group by hand. NULL restores the generated guess."""
+        query = "UPDATE session_take_groups SET name = $2 WHERE id = $1 RETURNING *"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, group_id, name)
+        return dict(row) if row else None
+
+    async def set_session_take_group_keeper(
+        self, group_id: int, take_id: Optional[int]
+    ) -> Optional[Dict[str, Any]]:
+        """Choose the take to keep, or clear the choice."""
+        query = """
+            UPDATE session_take_groups SET keeper_take_id = $2
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, group_id, take_id)
+        return dict(row) if row else None
+
+    async def set_session_take_group_id(
+        self, take_id: int, group_id: Optional[int]
+    ) -> Optional[Dict[str, Any]]:
+        """Put a take in a group, or pull it out so it stands on its own.
+
+        Pulling it out also clears the group's keeper if it *was* the keeper — a
+        take that is no longer in the group cannot be the one kept from it.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                if group_id is None:
+                    await conn.execute(
+                        """
+                        UPDATE session_take_groups SET keeper_take_id = NULL
+                        WHERE keeper_take_id = $1
+                        """,
+                        take_id,
+                    )
+                row = await conn.fetchrow(
+                    "UPDATE session_takes SET group_id = $2 WHERE id = $1 RETURNING *",
+                    take_id,
+                    group_id,
+                )
+        return dict(row) if row else None
+
+    async def clear_session_take_groups(self, session_id: int) -> None:
+        """Drop a session's groups, releasing its takes.
+
+        Deleting a group sets its takes' ``group_id`` to NULL, so no take is ever
+        lost with the guess that grouped it.
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM session_take_groups WHERE session_id = $1", session_id
+            )
+
     async def set_session_take_waveform_peaks(
         self, take_id: int, peaks: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:

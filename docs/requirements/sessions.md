@@ -55,3 +55,16 @@ producer recognizes their own session.
 **SESS-12** — A name generated for a detected take MUST be no more than six words, and MUST be drawn
 from what that take actually contains rather than invented. A take with no words of its own MUST be
 labelled as having none, not given a made-up title.
+
+**SESS-13** — Takes that are attempts at the same song MUST be presented as a single group, and each
+take inside a group MUST stay individually visible, auditionable, and distinguishable from its
+siblings.
+
+**SESS-14** — Every detected take MUST remain visible in review whether or not it was grouped. A take
+the product cannot confidently assign to a song MUST be shown on its own, never hidden, merged away,
+or dropped.
+*Why:* a grouping guess that loses a take loses recorded material.
+
+**SESS-15** — A group of takes MUST start with no keeper chosen, and the product MUST NOT choose one
+for the producer. Until a human chooses, nothing from that group is eligible to reach the catalog
+(**SESS-10**).

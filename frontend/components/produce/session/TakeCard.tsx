@@ -16,6 +16,8 @@ export interface SessionStem {
 
 export interface SessionTake {
   id: number;
+  /** The song group this take was guessed into, or null when it stands alone. */
+  group_id: number | null;
   rec_pass: number | null;
   start_seconds: number;
   end_seconds: number;
@@ -28,8 +30,17 @@ export interface SessionTake {
 
 interface TakeCardProps {
   take: SessionTake;
+  /** The take's 1-based position among all the session's takes — its handle. */
   index: number;
   onToggleExcluded: (take: SessionTake) => void;
+  /**
+   * Shown inside a song group, where the guessed name belongs to the group and a
+   * take has to be told apart from its siblings some other way (SESS-13).
+   */
+  inGroup?: boolean;
+  isKeeper?: boolean;
+  onChooseKeeper?: (take: SessionTake) => void;
+  onSeparate?: (take: SessionTake) => void;
 }
 
 const clock = (seconds: number): string => {
@@ -46,7 +57,15 @@ const clock = (seconds: number): string => {
  * session can hold a dozen takes and their envelopes are only needed once
  * somebody looks.
  */
-export default function TakeCard({ take, index, onToggleExcluded }: TakeCardProps) {
+export default function TakeCard({
+  take,
+  index,
+  onToggleExcluded,
+  inGroup = false,
+  isKeeper = false,
+  onChooseKeeper,
+  onSeparate,
+}: TakeCardProps) {
   const [open, setOpen] = useState(false);
   const [peaks, setPeaks] = useState<Peaks | null>(null);
   const [duration, setDuration] = useState(take.duration_seconds);
@@ -97,25 +116,70 @@ export default function TakeCard({ take, index, onToggleExcluded }: TakeCardProp
       }`}
     >
       <div className="flex flex-wrap items-center gap-3 p-4">
+        {onChooseKeeper && (
+          <label className="flex items-center gap-1.5 text-xs text-text/60">
+            <input
+              type="radio"
+              checked={isKeeper}
+              onChange={() => onChooseKeeper(take)}
+              className="accent-confirm"
+            />
+            Keep
+          </label>
+        )}
+
         <button
           type="button"
           onClick={toggleOpen}
-          className="flex flex-1 items-baseline gap-3 text-left"
+          className="flex flex-1 items-baseline gap-3 overflow-hidden text-left"
         >
-          <span className="font-mono text-xs text-text/40">{index}</span>
-          <span className={`font-medium ${name.wordless ? 'text-text/60 italic' : ''}`}>
-            {name.text}
-            {name.shortened && <span className="text-text/40">…</span>}
-          </span>
-          <span className="font-mono text-xs text-text/50">
-            {clock(take.duration_seconds)}
-          </span>
+          {inGroup ? (
+            // Every take in a group is the same song, so its words cannot tell it
+            // from its siblings — two attempts can produce the identical six-word
+            // headline. Position, length and start time always differ (SESS-13).
+            <>
+              <span className="font-medium">Take {index}</span>
+              <span className="font-mono text-xs text-text/50">
+                {clock(take.duration_seconds)}
+              </span>
+              <span
+                className={`truncate text-xs ${
+                  name.wordless ? 'italic text-text/40' : 'text-text/50'
+                }`}
+              >
+                {name.text}
+                {name.shortened && '…'}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="font-mono text-xs text-text/40">{index}</span>
+              <span className={`font-medium ${name.wordless ? 'text-text/60 italic' : ''}`}>
+                {name.text}
+                {name.shortened && <span className="text-text/40">…</span>}
+              </span>
+              <span className="font-mono text-xs text-text/50">
+                {clock(take.duration_seconds)}
+              </span>
+            </>
+          )}
         </button>
 
         <span className="font-mono text-xs text-text/40">
           at {clock(take.start_seconds)}
           {take.rec_pass !== null ? ` · pass ${take.rec_pass}` : ''}
         </span>
+
+        {onSeparate && (
+          <button
+            type="button"
+            onClick={() => onSeparate(take)}
+            className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised"
+            title="Not the same song — show this take on its own"
+          >
+            Separate
+          </button>
+        )}
 
         <button
           type="button"

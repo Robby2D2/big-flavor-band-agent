@@ -32,7 +32,11 @@ from pydantic import BaseModel
 
 from database import DatabaseManager
 from src.api.dependencies import get_db
-from src.api.session_jobs import manager as session_manager, session_dir
+from src.api.session_jobs import (
+    group_session_takes,
+    manager as session_manager,
+    session_dir,
+)
 from src.auth import require_role
 from src.production import audio_preview, waveform_peaks
 
@@ -54,6 +58,18 @@ class SessionCreate(BaseModel):
 
 class TakeUpdate(BaseModel):
     excluded: bool
+
+
+class GroupUpdate(BaseModel):
+    """A producer's corrections to a guessed group.
+
+    Both fields are read through ``model_fields_set``, so clearing one — a blank
+    name back to the guess, or un-choosing a keeper — is distinguishable from not
+    touching it.
+    """
+
+    name: Optional[str] = None
+    keeper_take_id: Optional[int] = None
 
 
 @router.post("/api/produce/sessions")
@@ -159,6 +175,9 @@ async def get_session(
     payload = _session_payload(session)
     payload["tracks"] = [_track_payload(row) for row in tracks]
     payload["takes"] = [_take_payload(row) for row in takes]
+    payload["groups"] = [
+        _group_payload(row) for row in await db.list_session_take_groups(session_id)
+    ]
     return payload
 
 
@@ -190,6 +209,76 @@ async def update_take(
         raise HTTPException(status_code=404, detail="Take not found")
     updated = await db.set_session_take_excluded(take_id, body.excluded)
     return _take_payload(dict(updated or {}, stems=[]))
+
+
+@router.post("/api/produce/sessions/takes/{take_id}/separate")
+async def separate_take(
+    take_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Pull a take out of the group it was guessed into, so it stands on its own.
+
+    Grouping is a guess (SESS-05); this is how a producer overrules one. The take
+    keeps everything else — its audio, its channels, its discard state.
+    """
+    take = await db.get_session_take(take_id)
+    if take is None:
+        raise HTTPException(status_code=404, detail="Take not found")
+    updated = await db.set_session_take_group_id(take_id, None)
+    return _take_payload(dict(updated or take, stems=[]))
+
+
+@router.patch("/api/produce/sessions/groups/{group_id}")
+async def update_group(
+    group_id: int,
+    body: GroupUpdate,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Rename a group, or choose which of its takes is the keeper."""
+    group = await db.get_session_take_group(group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    fields = body.model_fields_set
+
+    if "name" in fields:
+        name = (body.name or "").strip()
+        group = await db.set_session_take_group_name(group_id, name or None)
+
+    if "keeper_take_id" in fields:
+        if body.keeper_take_id is not None:
+            take = await db.get_session_take(body.keeper_take_id)
+            if take is None or take.get("group_id") != group_id:
+                raise HTTPException(
+                    status_code=400, detail="That take is not in this group"
+                )
+        group = await db.set_session_take_group_keeper(group_id, body.keeper_take_id)
+
+    return _group_payload(group or {})
+
+
+@router.post("/api/produce/sessions/{session_id}/regroup")
+async def regroup_session(
+    session_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Guess this session's song groups again from what was transcribed.
+
+    Grouping runs at the end of a scan, but it reads only transcripts, so a
+    session scanned before it existed can be grouped without re-uploading
+    gigabytes of audio. It discards the names and keepers already set, which is
+    why nothing but an explicit request triggers it.
+    """
+    session = await db.get_recording_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session_manager.is_running(session_id):
+        raise HTTPException(status_code=409, detail="This session is still scanning")
+
+    groups = await group_session_takes(db, session_id)
+    return {"session_id": session_id, "groups": groups}
 
 
 @router.get("/api/produce/sessions/takes/{take_id}/peaks")
@@ -304,6 +393,7 @@ def _take_payload(row: Dict[str, Any]) -> Dict[str, Any]:
     end = row.get("end_seconds") or 0.0
     return {
         "id": row["id"],
+        "group_id": row.get("group_id"),
         "rec_pass": row.get("rec_pass"),
         "start_seconds": start,
         "end_seconds": end,
@@ -320,6 +410,14 @@ def _take_payload(row: Dict[str, Any]) -> Dict[str, Any]:
             }
             for stem in row.get("stems", [])
         ],
+    }
+
+
+def _group_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "keeper_take_id": row.get("keeper_take_id"),
     }
 
 

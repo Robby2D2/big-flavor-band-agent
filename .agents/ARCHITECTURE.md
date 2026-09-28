@@ -59,6 +59,7 @@ src/
     session_detect.py         # loudness envelopes -> candidate regions
     session_transcribe.py     # vocal-only mix of a region -> timed transcript lines
     session_attempts.py       # transcript + stops -> the band's attempts at songs
+    session_grouping.py       # transcripts -> which takes are attempts at one song (SESS-13)
     session_render.py         # slice a take out of every track (its stems) + the mix
 database/
   database.py                 # DatabaseManager (asyncpg) — the single DB access point
@@ -80,6 +81,7 @@ frontend/
   lib/apiJson.ts               # Reads a JSON API body; turns a proxy's HTML error page into a sentence
   lib/concurrency.ts           # mapWithConcurrency — run a batch of API calls a few at a time
   lib/takeName.ts              # A session take's generated name: ≤6 words of its own transcript (SESS-12)
+  lib/takeGroups.ts            # Session review rows: takes + groups -> cards, and a group's guessed name
   __tests__/                   # vitest + jsdom + React Testing Library (`npm test`)
 streaming/
   radio.liq                   # Liquidsoap config
@@ -681,6 +683,45 @@ currently make any call (see below) and the configured key is invalid.
   produce routes) and a compressed preview, so `fetchPeaks` reads a session take as it reads a stem.
 
 Staging lives under the writable `./audio_library/sessions` mount (the catalog mount is `:ro`).
+
+### Takes are grouped by song, and a guess is only ever offered (2026-09-27, issue #109)
+
+A scan produced takes, not songs, so several attempts at one song read as strangers —
+`session_take_groups` + `session_takes.group_id` (migration 21) fix that, and
+`src/production/session_grouping.py` is the whole decision, made from **transcripts alone**: no
+catalog match (the owner asked for a guess, and matching a half-mumbled take against 1,300 titles
+would assert an identity the audio does not support), no model call, no acoustic measurement. What the
+thresholds cost to get right is the part worth keeping:
+
+- **Containment (`shared / min(words)`), not Jaccard.** A restart is a handful of words against a full
+  take's sixty; Jaccard scores that 0.13 and never groups the restarts the band makes most. Measured
+  on the band's own session, the two attempts at "Swinging Party" score **0.93** and no unrelated
+  pair reaches 0.30.
+- **A take matching two takes that do not match each other is left alone.** Containment *likes* a
+  stretch that transitions between songs best of all — its words contain everyone else's — so
+  without this rule it seeded a group and swallowed both songs (measured, not predicted). Its cost is
+  a known ceiling, asserted in the tests: a full attempt bridging two disjoint partial ones has the
+  same shape, so it too stands alone. The shy answer wins because a wrong group costs more than none.
+- **A start attempt has no words, so words can never place it.** The owner's headline case (takes 8
+  and 9) is 69 seconds of the band starting "So Tired" with nothing sung, a 35s stop, then the full
+  take — grouped only by being the take *immediately* before a sung one, within 45s. Attaching just
+  the one directly preceding take, and only when it has no words of its own, is what keeps a run of
+  chatter (the same session's takes 5, 6, 7 at 89s/62s/4.5s apart) from riding in behind it.
+
+**Grouping is storage because the corrections are.** A name a producer fixed, a take they separated
+out, and the keeper they chose all have to survive a reload — the *guess* itself is cheap to redo,
+which is why `POST /sessions/{id}/regroup` exists (it reads transcripts only, so a session scanned
+before grouping existed can be grouped without re-uploading gigabytes) and why re-running it is never
+automatic: it discards those corrections. `keeper_take_id` has no default, so **SESS-15** — a group
+starts with no keeper and nothing chooses one — holds by construction rather than by care.
+
+The name is *not* stored. `frontend/lib/takeGroups.ts` derives it at display time by running the
+existing `takeName()` over the group's fullest take, so **SESS-12**'s six-word cap and wordless label
+are inherited rather than reimplemented, and a stored name is only ever one a human typed. The same
+module flattens takes and groups into review rows, which is where the count invariant is testable:
+rows must flatten back to exactly the takes that went in (**SESS-14**). Inside a group a take is
+headed by its position, length and start time rather than its words — two attempts at one song can
+produce the identical six-word headline, which is exactly what **SESS-13** exists for.
 
 ### `AnthropicProvider` cannot make a call (found 2026-09-25, not yet fixed)
 
