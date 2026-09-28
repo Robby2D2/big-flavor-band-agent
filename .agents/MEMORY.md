@@ -37,7 +37,7 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
-### 2026-09-27 — Session takes are grouped by song, and the grouping rule was built from the real session (issue #109)
+### 2026-09-27 — Session takes are grouped by song, on a rule tuned against one nine-take session (issue #109)
 Review showed one card per detected take with no song identity, so the band's several attempts at one
 song read as strangers — and since a take's headline is six words of its own transcript (SESS-12), two
 attempts could even render the *identical* card. New **SESS-13/14/15**; migration 21
@@ -45,21 +45,44 @@ attempts could even render the *identical* card. New **SESS-13/14/15**; migratio
 transcripts alone (no catalog match, no LLM, no acoustic measurement). Full detail in
 [ARCHITECTURE.md](ARCHITECTURE.md); what the measurement taught:
 
-- **Every threshold came from running the rule against the live session before trusting it**, and two
-  of the three drafts died there. Containment beats Jaccard (a restart is 8 words against 60);
-  the real pair of "Swinging Party" attempts scores 0.93 while nothing unrelated passes 0.30.
+- **Only one of the four thresholds is actually measured, and QA caught the first write-up claiming
+  otherwise** (PR #115). Swept against the live session: `MIN_DISTINCTIVE_WORDS = 4` is the only knob
+  whose value decides the outcome, and its margin is **one word** — at 3 the result becomes
+  `[[2,3],[7,8]]` and the owner's headline case breaks, because take 8 has exactly 3 distinctive
+  words. `START_ATTEMPT_GAP_SECONDS = 45` rests on a single data point (a 35.4s stop; flips at 36s,
+  unchanged to 200s, **no upper bound measured**). `SAME_SONG_OVERLAP = 0.6` and `MIN_SHARED_WORDS = 3`
+  are each **inert** on this session — sweeping the ratio 0.1-0.93 or the word count 1-10 changes
+  nothing — and only jointly load-bearing: relax both and unrelated takes merge into `[[1,8,9]]`.
+  The original claim "no unrelated pair reaches 0.30" was **false**: pair 4-7 scores containment
+  **1.000** and is rejected by the shared-word count, which is the real reason that guard exists.
+  **A wrong `why` on a magic number is worse than no comment** — it makes the next person preserve a
+  margin that was never there. Sweep the constant before you write down what it does.
+- Containment beats Jaccard (a restart is 8 words against 60) and the real pair of "Swinging Party"
+  attempts scores **0.933** — that part held up. It is the *rejections* that were misattributed.
 - **Complete-linkage was too strict and seed-linkage too loose.** Attempts that stopped at different
   points share only the opening, so requiring every pair to match grouped nothing; matching against the
   fullest take instead let the *transition* stretch — whose words contain both songs, so containment
   loves it — seed a group and swallow two songs. The rule that survived is **a take matching two takes
   that do not match each other is left alone**, which is order-independent and makes every group a
   clique. Its ceiling is asserted in the tests, not hidden: a full attempt bridging two disjoint
-  partial ones has the same shape and also stands alone.
+  partial ones has the same shape and also stands alone. **This rule is validated by unit tests only** —
+  on the live session the partner sets are `{2: [3], 3: [2]}` and no take straddles, so the data that
+  killed the two drafts is the *draft* behaviour, not a case the shipped rule ever handles in anger.
+- **The straddler rule had to be enforced twice, and QA found the half that was missing.** Dropping a
+  straddler from the words pass is not enough: the time rule below gated on "has words" for both of
+  its two questions, so a straddler could still *seed* a group (`A / wordless / A+B / B` grouped the
+  silence with the straddler). The fix needs **two** sets, not a swapped one — the take being attached
+  *to* must be confidently placed, while the take being attached must be wordless. Swapping in the
+  confident set alone, the obvious one-liner, fixes one direction and opens the mirror bug: a 50-word
+  straddler then passes the "no words of its own" gate and gets attached as a start attempt. When one
+  set answers two questions, splitting it beats renaming it.
 - **The owner's own example could not be grouped by words at all.** Takes 8 and 9 are "So Tired", but
-  take 8 is 69s of the band starting it with *nothing sung* — 3 words of chatter. Only time places it:
-  the take immediately before a sung one, within 45s (measured: a 35.4s stop, against the 62s/89s gaps
-  of the chatter stretches that must not ride in behind it). **A transcript-based rule cannot see a
-  take that has no transcript**, and that was the headline case, not an edge case.
+  take 8 is 69s of the band starting it with *nothing sung* — 3 distinctive words. Only time places it:
+  the take immediately before a sung one, within 45s. **A transcript-based rule cannot see a take that
+  has no transcript**, and that was the headline case, not an edge case. The 62s/89s gaps the first
+  write-up cited as bounding that window **cannot bound it**: both are gaps between two *wordless*
+  takes, and the rule only ever looks at a gap whose later take is sung. Check that a counter-example
+  is reachable before quoting it as one.
 - **What is stored is the human's corrections, not the guess.** Name, separated take and keeper persist;
   the name *guess* is derived at display time by reusing `takeName()`, so SESS-12's cap cannot drift and
   a stored name is only ever one a person typed. `keeper_take_id` has no default, so SESS-15 holds by
@@ -67,6 +90,9 @@ transcripts alone (no catalog match, no LLM, no acoustic measurement). Full deta
   already-scanned session got grouped without re-uploading 2 GB, and why it is never automatic.
 - Verified against that session end to end: 9 takes → groups `[2,3]` and `[8,9]`, takes 1/4/5/6/7 on
   their own, 9 takes still visible, no keeper, no names — exactly the owner's reading of the night.
+  **But "verified" means one session with five comparable takes.** Treat the rule as tuned, not
+  validated; the band's next upload is its first real test, and `MIN_DISTINCTIVE_WORDS` is the number
+  to look at first when it guesses wrong.
 
 ---
 

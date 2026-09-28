@@ -98,6 +98,46 @@ def test_a_take_spanning_two_songs_is_left_on_its_own():
     assert 7 in ungrouped_ids(takes, groups)
 
 
+def test_a_straddling_take_cannot_seed_a_group_by_proximity():
+    """Rule 3 removes a straddler from the words pass; the time rule must agree.
+
+    A take matching two takes that disagree is evidence of two songs, so it may
+    not be grouped at all (SESS-14) — not by words, and not by being the take a
+    silent stretch happens to sit in front of. Pairing it with unrelated chatter
+    would show a producer a "same song" group built from two songs and a silence.
+    """
+    takes = [
+        take(1, SO_TIRED_FULL, 0, 100),
+        take(2, None, 200, 300),
+        take(3, f"{GARDENING} {SO_TIRED_FULL}", 310, 400),
+        take(4, GARDENING, 1000, 1100),
+    ]
+
+    groups = group_takes(takes)
+
+    assert groups == []
+    assert ungrouped_ids(takes, groups) == [1, 2, 3, 4]
+
+
+def test_a_straddling_take_is_not_mistaken_for_a_start_attempt():
+    """The mirror case: a straddler has words, so it is never the silent one.
+
+    Gating the time rule on "not confidently placed" instead of "has no words"
+    lets a full take that straddles two songs be attached to whatever follows it,
+    which is the same SESS-14 breach from the other side.
+    """
+    takes = [
+        take(1, SO_TIRED_RESTART, 0, 100),
+        take(2, f"{GARDENING} {SO_TIRED_FULL}", 200, 300),
+        take(3, GARDENING, 310, 400),
+    ]
+
+    groups = group_takes(takes)
+
+    assert groups == []
+    assert ungrouped_ids(takes, groups) == [1, 2, 3]
+
+
 def test_a_wordless_take_is_never_grouped():
     takes = [take(1, None), take(2, ""), take(3, SO_TIRED_FULL), take(4, SO_TIRED_FULL)]
 
@@ -204,13 +244,32 @@ def test_no_take_is_lost_or_duplicated():
     assert sorted(grouped + ungrouped_ids(takes, groups)) == [1, 2, 3, 4, 5]
 
 
-def test_grouping_does_not_depend_on_row_order():
+def test_the_words_pass_does_not_depend_on_row_order():
+    """Only the words pass is order-free — and only that is asserted here."""
     takes = [take(1, SO_TIRED_FULL), take(2, SO_TIRED_RESTART), take(3, GARDENING)]
 
     forward = group_takes(takes)
     backward = group_takes(list(reversed(takes)))
 
     assert [sorted(ids) for ids in forward] == [sorted(ids) for ids in backward]
+
+
+def test_the_start_attempt_rule_requires_rows_in_timeline_order():
+    """Rule 5 reads ``takes[index - 1]``, so the caller owes it timeline order.
+
+    Pinned rather than fixed: ``list_session_takes`` orders by ``start_seconds``,
+    and that ordering is the precondition rule 5 is built on, not an accident of
+    the query. If a future caller passes rows in some other order the start
+    attempt silently stops being found, so the dependency is asserted here where
+    it will be read.
+    """
+    timeline = [
+        take(8, "you're feeling it it's all coming together", 14743, 14812),
+        take(9, SO_TIRED_FULL, 14847, 15358),
+    ]
+
+    assert group_takes(timeline) == [[8, 9]]
+    assert group_takes(list(reversed(timeline))) == []
 
 
 def test_distinctive_words_drops_filler_and_short_words():

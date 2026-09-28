@@ -110,8 +110,8 @@ export function rowTakes<T extends GroupableTake>(rows: ReviewRow<T>[]): T[] {
 /**
  * What a group of takes is called.
  *
- * The guess comes from the take with the **most** words, because that is the
- * fullest attempt at the song and the least likely to be a false start that
+ * The guess comes from the take with the **longest** transcript, because that is
+ * the fullest attempt at the song and the least likely to be a false start that
  * stopped after a line. A producer's own name always wins, and a group whose
  * takes sang nothing is labelled as wordless rather than titled.
  */

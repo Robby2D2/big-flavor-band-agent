@@ -16,17 +16,17 @@ deliberately nothing else:
 * **No acoustic measurement.** Rhythm was already measured as a refiner for
   detection and scored *talking* above the song.
 
-Measured on the band's own "May the Farts Be With You" session (9 takes), which
-is where every threshold below comes from:
+The rules:
 
 1. **Containment, not Jaccard.** A restart is eight words against a full take's
    sixty; ``shared / min(words)`` sees that the short one is inside the long one,
    while Jaccard would score it 0.13 and never group the restarts the band makes
-   most. The session's two attempts at "Swinging Party" (takes 2 and 3) score
-   **0.93** this way, and no unrelated pair in the session reaches 0.30.
+   most.
 2. **A pair also needs enough shared words to mean anything.** Ratios lie at
    small sizes: a three-word stretch of chatter sharing two words scores 0.67
-   without being evidence of anything.
+   without being evidence of anything. This is also the *only* guard against a
+   containment of 1.0 that means nothing — a one-word take sits wholly inside any
+   take containing that word.
 3. **A take that matches two takes which do not match each other is left alone.**
    That is the shape of a stretch played while moving between songs: it contains
    both, so it matches attempts at either while those have nothing in common. It
@@ -36,14 +36,13 @@ is where every threshold below comes from:
 4. **What is left groups by transitive closure, and every group is a clique**,
    since rule 3 has already removed any take bridging two members that disagree.
 5. **A start attempt has no words yet, so words cannot place it.** The session's
-   take 8 is 69 seconds of the band starting "So Tired" with nothing sung, then a
-   35-second stop, then take 9 — the full attempt. The owner reads those two as
-   one song, and no amount of vocabulary will ever say so. So a take too
+   take 8 is 69 seconds of the band starting "So Tired" with almost nothing sung,
+   then a 35-second stop, then take 9 — the full attempt. The owner reads those
+   two as one song, and no amount of vocabulary will ever say so. So a take too
    wordless to judge is attached to the take that *immediately* follows it when
    that one has words and starts within ``START_ATTEMPT_GAP_SECONDS``. Only the
-   immediately preceding take, and only when it is itself wordless, so several
-   stretches of chatter cannot chain in (the same session's takes 5, 6 and 7 sit
-   89s, 62s and 4.5s apart and stay on their own) and a take with words of its
+   immediately preceding take, and only when it is itself too wordless to judge,
+   so several stretches of chatter cannot chain in, and a take with words of its
    own is never placed by proximity.
 
 Rule 3 is the ceiling on what any of this can know: a full attempt bridging two
@@ -51,6 +50,46 @@ partial ones looks exactly like a transition between two songs. The shy answer
 wins, because a wrong group costs a producer more than no group. Nothing here is
 presented as settled — the name is offered for correction and any take can be
 separated out by hand (SESS-05).
+
+**What the numbers are actually worth.** There is exactly one real session to tune
+against: the band's own "May the Farts Be With You" upload, **nine takes**, five of
+them with enough words to compare. That is a thin basis, so the honest accounting
+of which constant does the work — re-derived by sweeping each one against that
+session — is:
+
+* ``MIN_DISTINCTIVE_WORDS = 4`` is **the load-bearing knob, and its margin is one
+  word.** At 3 the result becomes ``[[2,3],[7,8]]`` instead of ``[[2,3],[8,9]]``
+  and the owner's own case breaks, because take 8 has exactly three distinctive
+  words ("feeling", "coming", "together") and at 3 it stops being a start attempt
+  and starts being a take with words. At 1 the group is lost entirely. Everything
+  above 4 is stable on this session, so the measured window is 4 and up with **no
+  upper bound tested** — one word of slack on the low side and nothing else.
+* ``START_ATTEMPT_GAP_SECONDS = 45.0`` rests on **a single data point**: the 35.4s
+  stop between takes 8 and 9. The output flips at 36s and is then unchanged all
+  the way to 200s, so the floor is measured and **the ceiling is not** — no gap in
+  this session ever proves 45s is too generous. (An earlier version of this file
+  cited 62s and 89s as counter-examples bounding it from above. They are not: both
+  are gaps between two *wordless* takes, and the rule only ever looks at a gap
+  whose later take is sung, so they are unreachable by construction.)
+* ``SAME_SONG_OVERLAP = 0.6`` and ``MIN_SHARED_WORDS = 3`` are **each inert on this
+  session and only jointly load-bearing.** Sweeping the ratio 0.1 to 0.93 changes
+  nothing (the real pair, takes 2 and 3, scores 0.933); sweeping the shared-word
+  count 1 to 10 changes nothing. Relax *both* at once and unrelated takes start
+  merging (``[[1,8,9]]``), so neither is decoration — but every rejection this
+  session actually makes is one the other guard would also have made, so neither
+  value is measured. They are kept at defensible-looking numbers, not proven ones.
+* **Rule 3 is not exercised by the real data at all.** On this session the partner
+  sets are ``{2: [3], 3: [2]}`` and ``_straddles`` is ``False`` for all five sung
+  takes. Rule 3, and the claim that it keeps every group a clique, are asserted by
+  the unit tests in ``tests/test_session_grouping.py`` and by nothing else. Take 7
+  is often described as the transitional take; it is not — it has one distinctive
+  word and never enters the comparison.
+* The session does contain a containment of **1.000** between unrelated takes
+  (4 and 7), which is why rule 2 exists and why no containment threshold can be
+  trusted on its own.
+
+So: treat this as tuned on one session, not validated. The next upload is the
+first real test, and ``MIN_DISTINCTIVE_WORDS`` is the number to look at first.
 """
 from __future__ import annotations
 
@@ -76,20 +115,26 @@ STOPWORDS = frozenset(
 MIN_WORD_LENGTH = 3
 
 #: Below this many distinctive words a take is not evidence of a song, so words
-#: cannot group it. A wordless take lands here by definition.
+#: cannot group it. A wordless take lands here by definition. **The one number
+#: here that decides the real session's outcome, with one word of margin** — at 3
+#: the owner's headline case breaks. See the accounting in the module docstring
+#: before changing it.
 MIN_DISTINCTIVE_WORDS = 4
 
 #: How much of the shorter take's vocabulary must appear in the longer one's.
+#: Unmeasured: inert on the only real session (0.1-0.93 give identical output).
 SAME_SONG_OVERLAP = 0.6
 
 #: And how many words that must be, so a ratio over a handful of words cannot
-#: carry a match on its own.
+#: carry a match on its own. Also unmeasured on the real session, but the only
+#: thing that can reject a containment of 1.0 over one shared word — which that
+#: session does contain, between takes 4 and 7.
 MIN_SHARED_WORDS = 3
 
 #: How long after a wordless take a sung take may begin and still be the same
-#: song. Measured: the start attempt that motivated this (take 8) stopped 35.4s
-#: before the full attempt, while the chatter stretches before it sat 62s and 89s
-#: from their neighbours.
+#: song. One data point: the start attempt that motivated this (take 8) stopped
+#: 35.4s before the full attempt, and the result flips at 36s. Nothing in the
+#: session bounds it from above.
 START_ATTEMPT_GAP_SECONDS = 45.0
 
 _WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
@@ -154,7 +199,7 @@ def group_takes(takes: Sequence[Mapping[str, Any]]) -> List[List[int]]:
     groups = {
         component[0]: component for component in _components(confident, partners)
     }
-    _attach_start_attempts(takes, set(sung), groups, order)
+    _attach_start_attempts(takes, set(sung), set(confident), groups, order)
 
     grouped = [
         sorted(ids, key=lambda take_id: order[take_id])
@@ -208,6 +253,7 @@ def _components(
 def _attach_start_attempts(
     takes: Sequence[Mapping[str, Any]],
     sung: Set[int],
+    confident: Set[int],
     groups: Dict[int, List[int]],
     order: Dict[int, int],
 ) -> None:
@@ -218,11 +264,17 @@ def _attach_start_attempts(
     cannot start a song again without stopping first. Attaching only the directly
     preceding take, and only when it has no words of its own, keeps a run of
     chatter from riding along behind it.
+
+    The two sets answer two different questions and are not interchangeable. The
+    take being attached *to* must be ``confident``: a straddler is evidence of two
+    songs, so it may not seed or join a group by proximity either (SESS-14). The
+    take being attached must be outside ``sung``: a straddler has plenty of words
+    of its own, so it is not a start attempt and must never be treated as one.
     """
     group_of = {take_id: key for key, ids in groups.items() for take_id in ids}
 
     for index, row in enumerate(takes):
-        if index == 0 or row["id"] not in sung:
+        if index == 0 or row["id"] not in confident:
             continue
         candidate = takes[index - 1]
         if candidate["id"] in sung or candidate["id"] in group_of:

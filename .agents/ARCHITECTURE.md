@@ -690,23 +690,45 @@ A scan produced takes, not songs, so several attempts at one song read as strang
 `session_take_groups` + `session_takes.group_id` (migration 21) fix that, and
 `src/production/session_grouping.py` is the whole decision, made from **transcripts alone**: no
 catalog match (the owner asked for a guess, and matching a half-mumbled take against 1,300 titles
-would assert an identity the audio does not support), no model call, no acoustic measurement. What the
-thresholds cost to get right is the part worth keeping:
+would assert an identity the audio does not support), no model call, no acoustic measurement. The
+rules, and then — separately — what is actually known about the numbers in them:
 
 - **Containment (`shared / min(words)`), not Jaccard.** A restart is a handful of words against a full
-  take's sixty; Jaccard scores that 0.13 and never groups the restarts the band makes most. Measured
-  on the band's own session, the two attempts at "Swinging Party" score **0.93** and no unrelated
-  pair reaches 0.30.
+  take's sixty; Jaccard scores that 0.13 and never groups the restarts the band makes most. On the
+  band's own session the two attempts at "Swinging Party" score **0.933**.
+- **A pair also needs enough shared words.** This is the only guard against a containment of 1.0 that
+  means nothing: a one-word take sits wholly inside anything containing that word. The live session
+  has such a pair (takes 4 and 7, containment **1.000**, one shared word).
 - **A take matching two takes that do not match each other is left alone.** Containment *likes* a
-  stretch that transitions between songs best of all — its words contain everyone else's — so
-  without this rule it seeded a group and swallowed both songs (measured, not predicted). Its cost is
-  a known ceiling, asserted in the tests: a full attempt bridging two disjoint partial ones has the
-  same shape, so it too stands alone. The shy answer wins because a wrong group costs more than none.
+  stretch that transitions between songs best of all — its words contain everyone else's — so an
+  earlier draft let it seed a group and swallow both songs. Its cost is a known ceiling, asserted in
+  the tests: a full attempt bridging two disjoint partial ones has the same shape, so it too stands
+  alone. The shy answer wins because a wrong group costs more than none. This rule has to be enforced
+  in **both** passes — see the two-set gate in `_attach_start_attempts`, where using one "has words"
+  set for two different questions let a straddler seed a group by proximity instead (fixed in #115).
 - **A start attempt has no words, so words can never place it.** The owner's headline case (takes 8
   and 9) is 69 seconds of the band starting "So Tired" with nothing sung, a 35s stop, then the full
   take — grouped only by being the take *immediately* before a sung one, within 45s. Attaching just
-  the one directly preceding take, and only when it has no words of its own, is what keeps a run of
-  chatter (the same session's takes 5, 6, 7 at 89s/62s/4.5s apart) from riding in behind it.
+  the one directly preceding take, and only when it is itself too wordless to judge, is what keeps a
+  run of chatter from riding in behind it.
+
+**What the thresholds are worth (swept, not asserted).** There is one real session to tune against:
+nine takes, five with enough words to compare. Per constant:
+
+| constant | status on the live session |
+|---|---|
+| `MIN_DISTINCTIVE_WORDS = 4` | **load-bearing, one word of margin.** At 3 the output becomes `[[2,3],[7,8]]` and the headline case breaks (take 8 has exactly 3 distinctive words). No upper bound tested. |
+| `START_ATTEMPT_GAP_SECONDS = 45.0` | **one data point** (a 35.4s stop). Flips at 36s, unchanged to 200s — the floor is measured, **the ceiling is not**. |
+| `SAME_SONG_OVERLAP = 0.6` | **inert**: 0.1-0.93 give identical output. Kept for the case the session does not contain, labelled unmeasured. |
+| `MIN_SHARED_WORDS = 3` | **inert**: 1-10 give identical output. Relax it *and* the ratio together and unrelated takes merge (`[[1,8,9]]`), so the pair is jointly load-bearing and individually redundant here. |
+| rule 3 (`_straddles`) | **never fires.** Partner sets are `{2: [3], 3: [2]}`; no take straddles. Rule 3 and the clique property are validated by `tests/test_session_grouping.py` alone. |
+
+So this rule is **tuned on one nine-take session, not validated.** Anyone judging whether to trust it
+on the next upload should read that table first, and `MIN_DISTINCTIVE_WORDS` is the knob to reach for.
+An earlier version of these notes justified the containment threshold with "no unrelated pair reaches
+0.30" and the gap window with 62s/89s counter-examples; both were wrong (the 1.000 pair above; the
+62s/89s gaps sit between two wordless takes, which the rule can never reach). A false *why* on a
+magic number is worse than none — `.agents/CODING.md`.
 
 **Grouping is storage because the corrections are.** A name a producer fixed, a take they separated
 out, and the keeper they chose all have to survive a reload — the *guess* itself is cheap to redo,
