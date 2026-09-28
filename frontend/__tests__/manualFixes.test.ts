@@ -197,8 +197,10 @@ describe('producer-added fixes', () => {
     await act(async () => {
       await result.current.previewStemChain(FULL_MIX_STEM_ID);
     });
-    const audition = api.posts.filter((p) => p.url.includes('accept-fixes')).at(-1);
-    expect(audition?.body.master_fixes).toEqual([]);
+    // The full-mix row renders through its version's own cached chain route.
+    const audition = api.posts.filter((p) => p.url.includes('/preview-chain')).at(-1);
+    expect(audition?.url).toContain('/api/produce/versions/');
+    expect(audition?.body.fixes).toEqual([]);
 
     await act(async () => {
       await result.current.acceptAll(false);

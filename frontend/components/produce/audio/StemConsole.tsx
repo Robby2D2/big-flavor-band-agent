@@ -1,13 +1,8 @@
 'use client';
 
-import WaveformView from '../WaveformView';
-import { formatTime } from '../audioEngine';
 import type { StemPlaybackControl } from './useStemPlayback';
 import type { WaveformPeaks } from '../audioEngine';
 import type { FixEntry, StemInfo } from '@/hooks/useProcessingQueue';
-import { FULL_MIX_STEM_ID } from '@/hooks/useProcessingQueue';
-import { stemColor } from './stemColors';
-import Spinner from './Spinner';
 import StemRow from './StemRow';
 
 interface StemConsoleProps {
@@ -17,8 +12,6 @@ interface StemConsoleProps {
   peaks: Record<number, WaveformPeaks>;
   /** Rows whose waveform is still being fetched. */
   peaksLoadingIds: Set<number>;
-  /** Whether any playback audio has decoded yet — the transport needs one. */
-  playbackReady: boolean;
   controls: Record<number, StemPlaybackControl>;
   setControl: (id: number, patch: Partial<StemPlaybackControl>) => void;
   selectedStemId: number | null;
@@ -30,14 +23,8 @@ interface StemConsoleProps {
   identifyingStemIds: Set<number>;
   onIdentifyStem: (stemId: number) => void;
   onRenameStem: (stemId: number, displayName: string) => void;
-  playing: boolean;
   playhead: number;
   maxDuration: number;
-  onTogglePlay: () => void;
-  /** A fix chain is being rendered before playback can start. */
-  renderingFixes: boolean;
-  /** What the transport is auditioning right now, when a fix card started it. */
-  audition: { fixTitle: string; rowName: string } | null;
   onSeek: (seconds: number) => void;
   separating: boolean;
   analyzed: boolean;
@@ -45,17 +32,16 @@ interface StemConsoleProps {
 }
 
 /**
- * The merged stem console: a transport across the whole song on top, then one
- * row per part — the full mix first, then each separated stem. Picking a row
- * here is what scopes the fix queue below it, and the full mix is a row like
- * any other so the whole song can be played, analyzed and fixed alongside its
- * parts.
+ * The merged stem console: one row per part — the full mix first, then each
+ * separated stem. Picking a row here is what scopes the fix queue below it, and
+ * the full mix is a row like any other so the whole song can be played,
+ * analyzed and fixed alongside its parts. The player sits just above it, in
+ * TransportBar, so it stays in view while the rows scroll.
  */
 export default function StemConsole({
   stems,
   peaks,
   peaksLoadingIds,
-  playbackReady,
   controls,
   setControl,
   selectedStemId,
@@ -67,20 +53,13 @@ export default function StemConsole({
   identifyingStemIds,
   onIdentifyStem,
   onRenameStem,
-  playing,
   playhead,
   maxDuration,
-  onTogglePlay,
-  renderingFixes,
-  audition,
   onSeek,
   separating,
   analyzed,
   analysisNote,
 }: StemConsoleProps) {
-  const fullMixPeaks = peaks[FULL_MIX_STEM_ID]?.peaks ?? null;
-  const fullMixLoading = !fullMixPeaks && peaksLoadingIds.has(FULL_MIX_STEM_ID);
-
   return (
     <div className="bg-raised border border-white/8 rounded-xl p-4 relative">
       <div className="flex items-start justify-between gap-3 mb-3">
@@ -112,70 +91,12 @@ export default function StemConsole({
         </div>
       </div>
 
-      {/* Transport: the whole song's waveform, with a playhead you can click or
-          drag to scrub. Play here drives every un-muted row in sync. */}
-      <div className="flex items-center gap-3 bg-well border border-white/7 rounded-lg px-3 py-2.5 mb-3">
-        <button
-          onClick={onTogglePlay}
-          // The waveforms arrive well before the audio does, so without the
-          // playbackReady gate the button would look live and do nothing.
-          disabled={maxDuration === 0 || !playbackReady || renderingFixes}
-          aria-label={
-            playing ? 'Pause' : renderingFixes ? 'Rendering fixes' : playbackReady ? 'Play' : 'Preparing playback'
-          }
-          className="flex-none w-9 h-9 rounded-full bg-signal text-canvas flex items-center justify-center hover:opacity-90 disabled:opacity-40"
-        >
-          {renderingFixes || (maxDuration > 0 && !playbackReady) ? (
-            <Spinner className="w-3.5 h-3.5" />
-          ) : playing ? (
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
-              <rect x="1.5" y="1" width="3.25" height="10" rx="0.75" />
-              <rect x="7.25" y="1" width="3.25" height="10" rx="0.75" />
-            </svg>
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
-              <path d="M2.5 1.4a.6.6 0 0 1 .92-.5l6.6 4.6a.6.6 0 0 1 0 1l-6.6 4.6a.6.6 0 0 1-.92-.5V1.4Z" />
-            </svg>
-          )}
-        </button>
-        <span className="flex-none font-mono text-xs text-text/55 tabular-nums">
-          {formatTime(playhead)} / {formatTime(maxDuration)}
-        </span>
-        {renderingFixes && (
-          <span className="flex-none font-mono text-[10px] text-attention">rendering fixes…</span>
-        )}
-        {/* One transport for the whole page, so it has to say which fix started
-            it — and that what you are hearing has the fixes applied. */}
-        {audition && !renderingFixes && (
-          <span className="flex-none text-[11px] text-signal truncate max-w-[16rem]">
-            Auditioning <span className="font-semibold">{audition.fixTitle}</span> on{' '}
-            <span className="capitalize">{audition.rowName}</span>, fixes on
-          </span>
-        )}
-        <div className="flex-1 min-w-0 relative">
-          <WaveformView
-            peaks={fullMixPeaks}
-            duration={maxDuration}
-            height={48}
-            playhead={playhead}
-            onSeek={onSeek}
-            waveColor={stemColor('full mix')}
-          />
-          {fullMixLoading && (
-            <span className="absolute inset-0 flex items-center justify-center gap-2 font-mono text-[10px] text-text/45">
-              <Spinner className="w-3.5 h-3.5" />
-              loading waveform…
-            </span>
-          )}
-        </div>
-      </div>
-
       {/* A row's name column and meter are fixed-width on purpose — the console
           is read by comparing those columns down the rows — so on a phone the
           row is simply wider than the screen. Scrolling that here keeps the
           document itself from scrolling sideways and taking the header with it.
-          The transport above stays outside this region: it is fully fluid, so
-          Play and the clock remain in place while the rows are scrolled. */}
+          The player (TransportBar) is outside the console altogether, so Play
+          and the clock remain in place while the rows are scrolled. */}
       <div className="overflow-x-auto" data-testid="stem-rows-scroll">
         <div
           className={`flex flex-col gap-2 min-w-[40rem] transition-opacity ${

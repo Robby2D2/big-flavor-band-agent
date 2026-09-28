@@ -21,7 +21,6 @@ const consoleProps = {
   stems,
   peaks: {},
   peaksLoadingIds: new Set<number>(),
-  playbackReady: true,
   controls: {},
   setControl: vi.fn(),
   selectedStemId: 901,
@@ -33,12 +32,8 @@ const consoleProps = {
   identifyingStemIds: new Set<number>(),
   onIdentifyStem: vi.fn(),
   onRenameStem: vi.fn(),
-  playing: false,
   playhead: 0,
   maxDuration: 120,
-  onTogglePlay: vi.fn(),
-  renderingFixes: false,
-  audition: null,
   onSeek: vi.fn(),
   separating: false,
   analyzed: true,
@@ -60,10 +55,10 @@ describe('the stem console contains its own sideways scroll', () => {
     }
   });
 
-  it('keeps the transport outside that region, so Play stays put while the rows scroll', () => {
+  it('carries no player of its own — Play lives in the bar above the console', () => {
     render(<StemConsole {...consoleProps} />);
 
-    expect(scrollRegion()).not.toContainElement(screen.getByRole('button', { name: 'Play' }));
+    expect(screen.queryByRole('button', { name: 'Play' })).toBeNull();
   });
 
   it('holds the scrolled rows open to the full row width', () => {

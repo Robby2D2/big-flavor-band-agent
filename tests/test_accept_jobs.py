@@ -230,3 +230,220 @@ def test_a_stale_result_expires_back_to_idle(monkeypatch):
 def test_a_finished_render_outlives_a_working_session():
     """The versions list keeps a row for the unsaved mix; it must not vanish."""
     assert RESULT_TTL_SECONDS >= 4 * 60 * 60
+
+
+# --- several fix sets per song (the eviction that caused a second render) ----
+
+def test_a_later_render_does_not_evict_an_earlier_fix_set(tmp_path):
+    """A master-only preview used to replace the whole-queue render outright,
+    so the Save that followed missed the cache and rendered 21 fixes again."""
+    queue = tmp_path / "queue.wav"
+    queue.write_bytes(b"a")
+    master_only = tmp_path / "master.wav"
+    master_only.write_bytes(b"b")
+    manager = AcceptJobManager()
+
+    manager.remember_render(SONG, "whole-queue", str(queue), stems=[{"name": "vocals"}])
+    manager.remember_render(SONG, "master-only", str(master_only))
+
+    assert manager.cached_render(SONG, "whole-queue") == str(queue)
+    assert manager.cached_stems(SONG, "whole-queue") == [{"name": "vocals"}]
+
+
+def test_the_oldest_fix_set_goes_first_when_the_song_is_full(tmp_path):
+    from src.api.accept_jobs import RENDERS_PER_SONG
+
+    manager = AcceptJobManager()
+    for i in range(RENDERS_PER_SONG + 1):
+        path = tmp_path / f"{i}.wav"
+        path.write_bytes(b"x")
+        manager.remember_render(SONG, f"print-{i}", str(path))
+
+    assert manager.cached_render(SONG, "print-0") is None
+    assert manager.cached_render(SONG, f"print-{RENDERS_PER_SONG}") is not None
+
+
+# --- the chain cache -------------------------------------------------------
+
+def test_a_chain_is_found_by_its_source_and_fixes(tmp_path):
+    from src.api.accept_jobs import ChainCache
+
+    rendered = tmp_path / "vocals.wav"
+    rendered.write_bytes(b"x")
+    cache = ChainCache()
+    chain = [{"tool": "reduce_noise", "params": {"amount": 0.5}}]
+    cache.put(ChainCache.key("/stems/vocals.wav", chain), str(rendered), [{"tool": "t"}])
+
+    hit = cache.get(ChainCache.key("/stems/vocals.wav", chain))
+    assert hit == {"path": str(rendered), "notices": [{"tool": "t"}]}
+    assert cache.get(ChainCache.key("/stems/drums.wav", chain)) is None
+    changed = [{"tool": "reduce_noise", "params": {"amount": 0.6}}]
+    assert cache.get(ChainCache.key("/stems/vocals.wav", changed)) is None
+
+
+def test_a_chain_whose_file_vanished_is_a_miss(tmp_path):
+    from src.api.accept_jobs import ChainCache
+
+    cache = ChainCache()
+    cache.put("k", str(tmp_path / "gone.wav"))
+    assert cache.get("k") is None
+
+
+def test_the_chain_cache_is_bounded(tmp_path):
+    from src.api.accept_jobs import ChainCache
+
+    cache = ChainCache(size=2)
+    for name in ("a", "b", "c"):
+        path = tmp_path / f"{name}.wav"
+        path.write_bytes(b"x")
+        cache.put(name, str(path))
+
+    assert cache.get("a") is None
+    assert cache.get("c") is not None
+
+
+# --- progress, cancel, save-when-ready (PROD-19) ----------------------------
+
+@pytest.mark.asyncio
+async def test_progress_is_visible_while_the_render_runs():
+    manager = AcceptJobManager()
+    gate = asyncio.Event()
+
+    async def render():
+        manager.report(SONG, stage="stems", stem="vocals", tool="reduce_noise", done=3, total=21)
+        await gate.wait()
+        return {"candidate_path": "/tmp/x.wav"}
+
+    manager.start(SONG, preview=True, fix_count=21, render=render)
+    await asyncio.sleep(0.01)
+
+    progress = manager.status(SONG)["progress"]
+    assert progress == {"stage": "stems", "stem": "vocals", "tool": "reduce_noise",
+                        "done": 3, "total": 21}
+    gate.set()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_render_stops_and_says_so():
+    from src.api.accept_jobs import STATUS_CANCELLED
+
+    manager = AcceptJobManager()
+    finished = []
+
+    async def render():
+        await asyncio.sleep(5)
+        finished.append(True)
+        return {}
+
+    manager.start(SONG, preview=True, fix_count=3, render=render)
+    await asyncio.sleep(0.01)
+    manager.cancel(SONG)
+    await asyncio.sleep(0.05)
+
+    assert manager.status(SONG)["status"] == STATUS_CANCELLED
+    assert finished == []
+    assert not manager.is_running(SONG)
+
+
+@pytest.mark.asyncio
+async def test_a_render_between_steps_stops_at_the_next_one():
+    """A tool on a thread cannot be interrupted; the next step is where it ends."""
+    from src.api.accept_jobs import STATUS_CANCELLED
+
+    manager = AcceptJobManager()
+    steps = []
+
+    async def render():
+        for step in range(3):
+            manager.report(SONG, done=step)
+            steps.append(step)
+            if step == 0:
+                manager._jobs[SONG]["_cancelled"] = True  # cancel lands mid-step
+        return {}
+
+    manager.start(SONG, preview=True, fix_count=3, render=render)
+    await asyncio.sleep(0.05)
+
+    assert steps == [0]
+    assert manager.status(SONG)["status"] == STATUS_CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_is_refused_while_the_version_is_written():
+    manager = AcceptJobManager()
+    gate = asyncio.Event()
+
+    async def render():
+        manager.report(SONG, stage="saving")
+        await gate.wait()
+        return {"version": {"version_id": 1}}
+
+    manager.start(SONG, preview=False, fix_count=1, render=render)
+    await asyncio.sleep(0.01)
+
+    with pytest.raises(ValueError):
+        manager.cancel(SONG)
+    gate.set()
+    await asyncio.sleep(0.01)
+    assert manager.status(SONG)["status"] == STATUS_COMPLETE
+
+
+def test_there_is_nothing_to_cancel_when_idle():
+    with pytest.raises(ValueError):
+        AcceptJobManager().cancel(SONG)
+
+
+@pytest.mark.asyncio
+async def test_a_save_rides_on_the_running_render_of_the_same_fixes():
+    manager = AcceptJobManager()
+    gate = asyncio.Event()
+    saved = []
+
+    async def render():
+        await gate.wait()
+        return {"candidate_path": "/tmp/mix.wav", "notices": []}
+
+    async def save(result):
+        saved.append(result["candidate_path"])
+        return {"version": {"version_id": 77}}
+
+    manager.start(SONG, preview=True, fix_count=21, render=render, fingerprint="abc")
+    assert manager.attach_save(SONG, "other-fixes", save) is None
+    attached = manager.attach_save(SONG, "abc", save)
+    assert attached["preview"] is False
+    assert "_then_save" not in attached, "bookkeeping never reaches the browser"
+
+    gate.set()
+    await asyncio.sleep(0.02)
+
+    done = manager.status(SONG)
+    assert saved == ["/tmp/mix.wav"]
+    assert done["status"] == STATUS_COMPLETE
+    assert done["version"] == {"version_id": 77}
+
+
+@pytest.mark.asyncio
+async def test_cancelling_only_the_save_keeps_the_render():
+    manager = AcceptJobManager()
+    gate = asyncio.Event()
+    saved = []
+
+    async def render():
+        await gate.wait()
+        return {"candidate_path": "/tmp/mix.wav"}
+
+    async def save(result):
+        saved.append(result)
+        return {"version": {"version_id": 1}}
+
+    manager.start(SONG, preview=True, fix_count=2, render=render, fingerprint="abc")
+    manager.attach_save(SONG, "abc", save)
+    manager.cancel(SONG, save_only=True)
+    gate.set()
+    await asyncio.sleep(0.02)
+
+    done = manager.status(SONG)
+    assert saved == []
+    assert done["status"] == STATUS_COMPLETE
+    assert done["preview"] is True
+    assert done["candidate_path"] == "/tmp/mix.wav"

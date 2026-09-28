@@ -78,3 +78,12 @@ corrected text (**CAT-06**).
 
 **PROD-18** — Automatic lyric extraction MUST be offered as a starting point a human can correct,
 never as a final answer that overwrites a human's edit without asking.
+
+**PROD-19** — A long-running production operation — separating stems, measuring them, rendering
+fixes, saving a version — MUST be cancellable while it runs. Cancelling MUST leave the producer where
+they started: no partial version and no half-replaced stem set. Where work cannot actually stop (a
+separation pass already on the GPU), the product MUST say that it continues in the background and
+that its result will be discarded, rather than implying it stopped. Once a version is being written,
+cancel MUST be refused rather than leave half a save.
+*Why:* these operations run for minutes, and a producer who started the wrong one had no way out but
+to wait.

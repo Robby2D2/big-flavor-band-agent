@@ -5,11 +5,10 @@ import type { FixNotice } from '@/hooks/useAcceptJob';
  * promised — today, a pitch correction that fell back to a whole-file shift.
  *
  * Shown in two places because a render resolves in two: a preview resolves in
- * the sidebar that started it, while a save resolves on the page — by the time
- * it lands, the saved version is selected and the review queue it came from has
- * been cleared. Accepting a fix and getting unchanged audio back with nothing
- * said is the outcome this exists to prevent (issue #91), so it must survive
- * that hand-off.
+ * the sidebar that started it, while every render — a save included — resolves
+ * in the task panel, which outlives the review queue a save clears. Accepting a
+ * fix and getting unchanged audio back with nothing said is the outcome this
+ * exists to prevent (issue #91), so it must survive that hand-off.
  */
 export default function FixNoticePanel({ notices }: { notices: FixNotice[] }) {
   if (notices.length === 0) return null;

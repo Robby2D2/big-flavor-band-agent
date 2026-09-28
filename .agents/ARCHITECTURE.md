@@ -585,11 +585,63 @@ the UI could only suggest turning fixes off.
   like `stem_jobs.py`. Status lives in memory because the *result* is durable —
   a saved version is a DB row, a preview is a file on disk.
 - **The page follows it** with `useAcceptJob`, which polls on mount (so a reload
-  mid-render picks straight back up), shows an in-progress row in the versions
-  list, and reloads the list the moment a save lands.
+  mid-render picks straight back up) and reloads the list the moment a save lands.
+  Its progress is the task panel's to show (below), not the versions list's.
 
 Small previews — one fix, or one stem's chain — still use the synchronous
 `POST /api/produce/accept-fixes`, which finishes well inside the proxy's patience.
+
+### Fixes render once, with progress, and every long job can be cancelled (2026-09-28)
+
+The owner found fixes rendering twice, and the backend log showed three renders of one queue:
+Start analysis rendered 21 fixes; pressing play rendered every stem's chain again through
+`preview-chain` (which never looked at the warm render's per-stem files); and the full-mix row's
+play went through `/accept-fixes` with `stems: []`, which `remember_render`ed a master-only mix into
+the song's **single** cache slot — evicting the 21-fix render, so the next Save rendered it all again.
+
+- **`ChainCache`** (`accept_jobs.chain_cache`): (source path, chain) → rendered file + notices.
+  `_cached_chain` wraps `_chain_apply_tools`, and **every** fix path goes through it — `_render_mix`
+  per stem and for the master, `stems/{id}/preview-chain`, and the new
+  `versions/{id}/preview-chain` the full-mix row now uses. The downmix is cached by its part
+  paths (`_cached_downmix`), so an unchanged queue hands the master chain an unchanged source and
+  that hits too. Keyed by *path* because a stem/version/downmix file is never rewritten in place.
+  Measured on Super Remodel: play after the warm render fetched 7 stems in **0.04s, zero tool
+  calls**; toggling one stem's fixes re-renders that stem, the remix and the master only.
+- **The whole-queue cache holds 8 fix sets per song** (was 1), so nothing evicts the render a Save
+  is about to reuse.
+- **Progress:** `_render_mix` reports each step through `accept_jobs.report(stage, stem, tool,
+  done/total, stems_done/stems_total)`; `/status` returns it as `progress`.
+- **Cancel (PROD-19):** `POST /songs/{id}/accept-fixes/cancel` sets a flag and cancels the task;
+  `report()` raises `RenderCancelled` at the next step, so it stops within one tool call (a tool on
+  a thread finishes on its own, unused). Finished chains stay cached, so a re-render resumes.
+  Refused once `stage == saving`. **Separation** (`POST /stem-sets/{id}/cancel`) marks the set
+  `cancelled` at once; Demucs is one uninterruptible call, so `stem_jobs` discards its output when
+  it returns — and the panel says the GPU keeps going. **Analysis** is the browser's own requests:
+  an `AbortController` stops new ones, and rows fully measured keep their fixes.
+- **Save while the same fixes render** is attached to that render (`attach_save`) instead of
+  409 — "Save when rendered". `?save_only=true` detaches it again, leaving the render running.
+- **Frontend:** `lib/processingTasks.ts` (`buildTasks`) turns separation/analysis/render/playback
+  state into panel tasks and is where every wording is tested; `TaskPanel` floats bottom-right
+  (bottom sheet on a phone, collapsible to a counting pill) with Cancel / Cancel all / Retry.
+  **Play never waits:** `TransportBar` (moved out of `StemConsole`, sticky above it; the version
+  panel's `<audio>` and the "New mix (not saved)" row are gone) plays at once, rows whose fixes are
+  not rendered play raw and the bar says so, and rendered audio swaps in at the playhead. Playback
+  renders never start while the warm render runs — that is the duplicate this removes; its
+  completion fetches the rows from the cache instead. Only *Hear it* waits, for its own row.
+- **The console plays compressed copies of fixed stems.** A fixed stem is a full-size WAV
+  (~23–46 MB); loading seven after a render took minutes and showed as a second task, "Rendering
+  fixes to play", though nothing was rendering. `_render_mix` now ends with a `playback` stage that
+  builds each fixed stem's Opus copy (`audio_preview.stem_preview_path`, beside the file), and the
+  console fetches `GET /api/produce/preview/playback` (~2.6 MB). Loading what a finished render made
+  is shown as that render's last step ("Loading playback · 4 of 7 stems"), so one render is one task.
+- **A chain keeps only its final file.** Every step used to keep a full WAV; `_chain_apply_tools`
+  now deletes each step's input once the next step has consumed it, and everything on failure or
+  cancel. `scripts/prune_render_files.py` (dry run unless `--apply`) cleared the backlog: 433
+  files, 17.1 GB — `produced/` went from 34 GB to 18 GB.
+- **Session songs have no catalog file.** Save and lyric extraction 404'd ("Audio file for song
+  1000000 not found") because they seeded an `original` version from `{id}_*.mp3`.
+  `_seed_original` skips session songs, and `_resolve_clean_source_path` with no version resolves a
+  session song to its default version, else its newest.
 
 ---
 

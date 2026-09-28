@@ -31,6 +31,12 @@ logger = logging.getLogger("backend-api")
 STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"
+
+
+async def _cancelled(stem_set_id: int, db: DatabaseManager) -> bool:
+    stem_set = await db.get_stem_set(stem_set_id)
+    return bool(stem_set and stem_set["status"] == STATUS_CANCELLED)
 
 
 class StemJobManager:
@@ -64,11 +70,20 @@ class StemJobManager:
         db: DatabaseManager,
     ) -> None:
         """Run one separation job, recording status/stems in the DB. Never raises."""
+        if await _cancelled(stem_set_id, db):
+            return
         await db.set_stem_set_status(stem_set_id, STATUS_RUNNING)
         try:
             stems = await run_in_threadpool(
                 stem_separation.separate_stems, source_path, output_dir, model_name
             )
+            # Demucs is one long call on a thread and cannot be interrupted, so
+            # a cancel (see cancel_stem_set) only marks the set; the work it
+            # asked to stop is thrown away here, once the thread returns.
+            if await _cancelled(stem_set_id, db):
+                logger.info("Stem set %s was cancelled; discarding its output", stem_set_id)
+                await run_in_threadpool(_remove_dir, output_dir)
+                return
             rows = [
                 await db.add_stem(stem_set_id, stem["name"], stem["path"])
                 for stem in stems
@@ -90,7 +105,9 @@ class StemJobManager:
                 await run_in_threadpool(_remove_dir, output_dir)
             except Exception:
                 logger.warning("Could not clean up partial stem output %s", output_dir)
-            await db.set_stem_set_status(stem_set_id, STATUS_FAILED, str(exc))
+            # A run the producer already cancelled stays cancelled.
+            if not await _cancelled(stem_set_id, db):
+                await db.set_stem_set_status(stem_set_id, STATUS_FAILED, str(exc))
 
 
 async def warm_stem_peaks(stems: List[Dict], db: DatabaseManager) -> None:

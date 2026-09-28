@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fixCopyFor, fixTitleFor, manualFixCopy } from '@/components/produce/audio/fixCopy';
 import { readJson } from '@/lib/apiJson';
 import { mapWithConcurrency } from '@/lib/concurrency';
+import type { AnalysisState, SeparationState, TaskRow } from '@/lib/processingTasks';
 
 export type Confidence = 'high' | 'worth_a_listen' | null;
 
@@ -375,12 +376,50 @@ interface AnalyzeOutcome {
   result: AnalyzeResult;
 }
 
-/** Run `jobs` a few at a time, keeping the outcomes that came back. */
+/** One analysis request, and the console row it measures. */
+interface AnalyzeJob {
+  rowId: number;
+  run: (signal?: AbortSignal) => Promise<AnalyzeOutcome | null>;
+}
+
+/**
+ * Run `jobs` a few at a time, keeping the outcomes that came back.
+ *
+ * `onDone` hears each job finish — how the task panel counts checks. Once
+ * `signal` is aborted no further job starts, and one cut off mid-request counts
+ * as no result rather than an error: cancelling is not a failure (PROD-19).
+ */
 async function runAnalyzeJobs(
-  jobs: Array<() => Promise<AnalyzeOutcome | null>>
+  jobs: AnalyzeJob[],
+  { signal, onDone }: { signal?: AbortSignal; onDone?: (rowId: number) => void } = {}
 ): Promise<AnalyzeOutcome[]> {
-  const results = await mapWithConcurrency(jobs, ANALYZE_CONCURRENCY, (job) => job());
+  const results = await mapWithConcurrency(jobs, ANALYZE_CONCURRENCY, async (job) => {
+    if (signal?.aborted) return null;
+    try {
+      const outcome = await job.run(signal);
+      if (!signal?.aborted) onDone?.(job.rowId);
+      return outcome;
+    } catch (err) {
+      if (signal?.aborted) return null;
+      throw err;
+    }
+  });
   return results.filter((entry): entry is AnalyzeOutcome => entry !== null);
+}
+
+/** Thrown out of a wait the producer cancelled, so callers can tell it from a failure. */
+class CancelledError extends Error {
+  constructor(message = 'Cancelled') {
+    super(message);
+    this.name = 'CancelledError';
+  }
+}
+
+/** The task panel's rows for a pass: each console row and how many checks it runs. */
+function analysisRows(jobs: AnalyzeJob[], labelFor: (rowId: number) => string): TaskRow[] {
+  const totals = new Map<number, number>();
+  for (const job of jobs) totals.set(job.rowId, (totals.get(job.rowId) ?? 0) + 1);
+  return Array.from(totals, ([rowId, total]) => ({ label: labelFor(rowId), done: 0, total }));
 }
 
 /** The recommended outcomes, as queue cards. */
@@ -494,6 +533,15 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const [detectedBpm, setDetectedBpm] = useState<Record<number, number>>({});
   const [identifyingStemIds, setIdentifyingStemIds] = useState<Set<number>>(new Set());
 
+  // What the task panel shows for the two jobs this hook runs. A separation is
+  // a server job the page polls; a measuring pass is this page's own requests.
+  const [separationTask, setSeparationTask] = useState<SeparationState | null>(null);
+  const [analysisTask, setAnalysisTask] = useState<AnalysisState | null>(null);
+  // Aborts whichever of the two is waiting (PROD-19), and remembers the stem
+  // set being separated so it can be cancelled on the server too.
+  const abortRef = useRef<AbortController | null>(null);
+  const separatingSetIdRef = useRef<number | null>(null);
+
   // Optimistic preload: a stem set for *this version* may already sit complete
   // on disk. Show it (waveforms, playback) the moment the tab mounts instead of
   // making the user press "Start analysis" just to see what's already there —
@@ -573,44 +621,65 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // finish, even if an older one is already complete — otherwise a forced
   // separation would short-circuit straight back to the stale stems.
   const waitForStemSet = useCallback(
-    async (forceNew: boolean): Promise<StemSetRow> => {
+    async (forceNew: boolean, signal?: AbortSignal): Promise<StemSetRow> => {
       let sets = await fetchStemSets(songId);
       const existing = latestCompleteForVersion(sets, sourceVersionId);
       if (!forceNew && existing) return existing;
 
-      const alreadyRunning = sets.some(
+      const running = sets.find(
         (s) => IN_FLIGHT.has(s.status) && s.source_version_id === sourceVersionId
       );
-      if (!alreadyRunning) {
-        await postJson('/api/produce/stems/separate', {
+      if (running) {
+        separatingSetIdRef.current = running.id;
+      } else {
+        const started = await postJson('/api/produce/stems/separate', {
           song_id: songId,
           source_version_id: sourceVersionId,
         });
+        separatingSetIdRef.current = started?.stem_set?.id ?? null;
       }
+      setSeparationTask({ status: 'running', startedAt: Date.now() });
       setAnalysisNote('Separating into stems — this takes a few minutes…');
-      while (true) {
-        await sleep(POLL_MS);
-        sets = await fetchStemSets(songId);
-        // This version's newest set, not the song's — a separation running for
-        // a different version must not satisfy this wait.
-        const newest = sets
-          .filter((s) => s.source_version_id === sourceVersionId)
-          .sort((a, b) => b.id - a.id)[0];
-        if (newest && newest.status === 'complete' && newest.stems.length > 0) return newest;
-        if (newest && newest.status === 'failed') {
-          throw new Error((newest as any).error || 'Stem separation failed');
+      try {
+        while (true) {
+          await sleep(POLL_MS);
+          if (signal?.aborted) throw new CancelledError();
+          sets = await fetchStemSets(songId);
+          // This version's newest set, not the song's — a separation running for
+          // a different version must not satisfy this wait.
+          const newest = sets
+            .filter((s) => s.source_version_id === sourceVersionId)
+            .sort((a, b) => b.id - a.id)[0];
+          if (newest && newest.status === 'complete' && newest.stems.length > 0) {
+            setSeparationTask(null);
+            return newest;
+          }
+          if (newest && newest.status === 'cancelled') throw new CancelledError();
+          if (newest && newest.status === 'failed') {
+            throw new Error((newest as any).error || 'Stem separation failed');
+          }
         }
+      } catch (err) {
+        setSeparationTask((prev) =>
+          err instanceof CancelledError
+            ? { status: 'cancelled', startedAt: prev?.startedAt ?? Date.now() }
+            : { status: 'failed', startedAt: prev?.startedAt ?? Date.now(), error: (err as Error).message }
+        );
+        throw err;
+      } finally {
+        separatingSetIdRef.current = null;
       }
     },
     [songId, sourceVersionId]
   );
 
   const analyzeStemTool = useCallback(
-    async (stemId: number, tool: string): Promise<AnalyzeOutcome | null> => {
+    async (stemId: number, tool: string, signal?: AbortSignal): Promise<AnalyzeOutcome | null> => {
       const res = await fetch(`/api/produce/tools/${tool}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ song_id: songId, stem_id: stemId }),
+        signal,
       });
       // Checked before reading the body: one tool failing to analyze — or its
       // response never making it back — shouldn't sink the whole queue.
@@ -623,11 +692,12 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   );
 
   const analyzeMasterTool = useCallback(
-    async (tool: string): Promise<AnalyzeOutcome | null> => {
+    async (tool: string, signal?: AbortSignal): Promise<AnalyzeOutcome | null> => {
       const res = await fetch(`/api/produce/tools/${tool}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ song_id: songId, source_version_id: sourceVersionId }),
+        signal,
       });
       if (!res.ok) return null;
       const data = await readJson(res);
@@ -640,16 +710,20 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const runAnalysis = useCallback(
     async () => {
       if (sourceVersionId == null) return;
+      const controller = new AbortController();
+      abortRef.current = controller;
       setAnalyzing(true);
       setAnalyzed(false);
       setAnalysisNote(null);
       setError(null);
+      setSeparationTask(null);
+      setAnalysisTask(null);
       // Measurements describe audio that is about to be re-measured, so they
       // go; producer-added cards are not measurements and stay put.
       setFixes((prev) => prev.filter((f) => f.source === 'manual'));
       setAnalyzedStemIds(new Set());
       try {
-        const stemSet = await waitForStemSet(false);
+        const stemSet = await waitForStemSet(false, controller.signal);
         setAnalysisNote(null);
         setStems(stemSet.stems);
         setStemsOnAnotherVersion(false);
@@ -659,15 +733,57 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
             : FULL_MIX_STEM_ID
         );
 
-        const jobs: Array<() => Promise<AnalyzeOutcome | null>> = [];
-        for (const stem of stemSet.stems) {
-          for (const tool of analysisToolsFor(stem)) jobs.push(() => analyzeStemTool(stem.id, tool));
+        const jobs: AnalyzeJob[] = [];
+        for (const tool of MASTER_TOOLS) {
+          jobs.push({ rowId: FULL_MIX_STEM_ID, run: (signal) => analyzeMasterTool(tool, signal) });
         }
-        for (const tool of MASTER_TOOLS) jobs.push(() => analyzeMasterTool(tool));
+        for (const stem of stemSet.stems) {
+          for (const tool of analysisToolsFor(stem)) {
+            jobs.push({ rowId: stem.id, run: (signal) => analyzeStemTool(stem.id, tool, signal) });
+          }
+        }
 
-        const outcomes = await runAnalyzeJobs(jobs);
-        const results = toFixEntries(outcomes);
-        setDetectedBpm(measuredTempos(outcomes));
+        const labelFor = (rowId: number) => {
+          const stem = stemSet.stems.find((s) => s.id === rowId);
+          return stem ? stemLabel(stem) : FULL_MIX_STEM_NAME;
+        };
+        const rows = analysisRows(jobs, labelFor);
+        // Same order analysisRows uses — rows are matched by position, since two
+        // stems can carry the same label.
+        const rowOrder = Array.from(new Set(jobs.map((job) => job.rowId)));
+        const doneByRow = new Map<number, number>();
+        setAnalysisTask({ status: 'running', rows });
+
+        const outcomes = await runAnalyzeJobs(jobs, {
+          signal: controller.signal,
+          onDone: (rowId) => {
+            doneByRow.set(rowId, (doneByRow.get(rowId) ?? 0) + 1);
+            const index = rowOrder.indexOf(rowId);
+            setAnalysisTask((prev) =>
+              prev && {
+                ...prev,
+                rows: prev.rows.map((row, i) =>
+                  i === index ? { ...row, done: doneByRow.get(rowId) ?? 0 } : row
+                ),
+              }
+            );
+          },
+        });
+
+        // Cancelled mid-pass: keep what the finished rows measured, and only
+        // call those rows analyzed — a half-measured stem reads as clean.
+        const cancelled = controller.signal.aborted;
+        const finishedRows = new Set(
+          rowOrder.filter(
+            (rowId) =>
+              (doneByRow.get(rowId) ?? 0) === jobs.filter((job) => job.rowId === rowId).length
+          )
+        );
+        const kept = cancelled
+          ? outcomes.filter((outcome) => finishedRows.has(outcome.rowId))
+          : outcomes;
+        const results = toFixEntries(kept);
+        setDetectedBpm(measuredTempos(kept));
         // A re-separation mints new stem ids, so a manual card pinned to a stem
         // that no longer exists has nothing left to run against.
         const liveStemIds = new Set(stemSet.stems.map((s) => s.id));
@@ -677,14 +793,26 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
             results
           )
         );
+        if (cancelled) {
+          setAnalyzedStemIds(finishedRows);
+          setAnalysisTask((prev) => prev && { ...prev, status: 'cancelled' });
+          return;
+        }
         setAnalyzedStemIds(
           new Set([FULL_MIX_STEM_ID, ...stemSet.stems.map((s) => s.id)])
         );
+        setAnalysisTask((prev) => prev && { ...prev, status: 'done' });
         setAnalyzed(true);
       } catch (err) {
-        setError((err as Error).message);
+        // A cancelled separation is reported by its own task, not as an error.
+        if (!(err instanceof CancelledError)) {
+          setError((err as Error).message);
+          setAnalysisTask((prev) => prev && { ...prev, status: 'failed', error: (err as Error).message });
+        }
       } finally {
         setAnalyzing(false);
+        setAnalysisNote(null);
+        abortRef.current = null;
       }
     },
     [sourceVersionId, waitForStemSet, analyzeStemTool, analyzeMasterTool]
@@ -705,10 +833,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         const stem = stems.find((s) => s.id === stemId);
         const outcomes = await runAnalyzeJobs(
           isFullMix
-            ? MASTER_TOOLS.map((tool) => () => analyzeMasterTool(tool))
-            : (stem ? analysisToolsFor(stem) : [...PER_STEM_TOOLS]).map(
-                (tool) => () => analyzeStemTool(stemId, tool)
-              )
+            ? MASTER_TOOLS.map((tool) => ({ rowId: stemId, run: () => analyzeMasterTool(tool) }))
+            : (stem ? analysisToolsFor(stem) : [...PER_STEM_TOOLS]).map((tool) => ({
+                rowId: stemId,
+                run: () => analyzeStemTool(stemId, tool),
+              }))
         );
         const results = toFixEntries(outcomes);
         setDetectedBpm((prev) => ({ ...prev, ...measuredTempos(outcomes) }));
@@ -736,6 +865,34 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
 
   const startAnalysis = useCallback(() => runAnalysis(), [runAnalysis]);
 
+  /** Stop a measuring pass: nothing new starts, and finished rows are kept. */
+  const cancelAnalysis = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  /**
+   * Cancel the separation in flight. The server marks the set cancelled at once
+   * and discards Demucs's output when its uninterruptible pass ends; the page is
+   * free immediately, keeping the stems this version had.
+   */
+  const cancelSeparation = useCallback(async () => {
+    const stemSetId = separatingSetIdRef.current;
+    abortRef.current?.abort();
+    setSeparationTask((prev) => prev && { ...prev, status: 'cancelled' });
+    if (stemSetId == null) return;
+    try {
+      await postJson(`/api/produce/stem-sets/${stemSetId}/cancel`, {});
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, []);
+
+  /** Clear finished tasks from the panel; running ones stay. */
+  const dismissTasks = useCallback(() => {
+    setSeparationTask((prev) => (prev?.status === 'running' ? prev : null));
+    setAnalysisTask((prev) => (prev?.status === 'running' ? prev : null));
+  }, []);
+
   /**
    * Separate this version into stems and stop there.
    *
@@ -748,11 +905,14 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
    */
   const separateStems = useCallback(async () => {
     if (sourceVersionId == null) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setSeparating(true);
     setAnalysisNote(null);
     setError(null);
+    setSeparationTask(null);
     try {
-      const stemSet = await waitForStemSet(true);
+      const stemSet = await waitForStemSet(true, controller.signal);
       setStems(stemSet.stems);
       setStemsOnAnotherVersion(false);
       setSelectedStemId((prev) =>
@@ -766,10 +926,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setAnalyzed(false);
       setAnalyzedStemIds(new Set());
     } catch (err) {
-      setError((err as Error).message);
+      if (!(err instanceof CancelledError)) setError((err as Error).message);
     } finally {
       setSeparating(false);
       setAnalysisNote(null);
+      abortRef.current = null;
     }
   }, [sourceVersionId, waitForStemSet]);
 
@@ -1078,21 +1239,18 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         .filter(isRunnable)
         .map((f) => ({ tool: f.tool, params: f.currentParams }));
       // The full mix has no stem file to run a chain over — its chain is the
-      // master fixes rendered against the source version.
+      // master fixes rendered against the source version. Its own route, so it
+      // can never displace the whole-queue render a Save is about to reuse.
       if (stemId === FULL_MIX_STEM_ID) {
-        const data = await postJson('/api/produce/accept-fixes', {
-          song_id: songId,
-          source_version_id: sourceVersionId,
-          stems: [],
-          master_fixes: chain,
-          preview: true,
+        const data = await postJson(`/api/produce/versions/${sourceVersionId}/preview-chain`, {
+          fixes: chain,
         });
         return data.candidate_path as string;
       }
       const data = await postJson(`/api/produce/stems/${stemId}/preview-chain`, { fixes: chain });
       return data.candidate_path as string;
     },
-    [fixesForStem, songId, sourceVersionId, isRunnable]
+    [fixesForStem, sourceVersionId, isRunnable]
   );
 
   const ensureToolParams = useCallback(async () => {
@@ -1142,7 +1300,12 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     masterFixes,
     enabledCount,
     startAnalysis,
+    cancelAnalysis,
     separateStems,
+    cancelSeparation,
+    separationTask,
+    analysisTask,
+    dismissTasks,
     separating,
     analyzeStem,
     renameStem,

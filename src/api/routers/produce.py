@@ -25,8 +25,9 @@ import logging
 import shutil
 import time
 from datetime import date, datetime
+from functools import partial
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -38,7 +39,12 @@ from src.rag.big_flavor_rag import SongRAGSystem
 from src.auth import require_role
 from src.api.dependencies import get_agent, get_db, get_rag
 from src.api import radio_service
-from src.api.accept_jobs import accept_jobs, fingerprint as _render_fingerprint
+from src.api.accept_jobs import (
+    STAGE_SAVING,
+    accept_jobs,
+    chain_cache,
+    fingerprint as _render_fingerprint,
+)
 from src.api.region_tools import build_region_tool_args
 from src.production import (
     audio_preview,
@@ -166,18 +172,40 @@ def _resolve_source_path(song_id: int) -> Path:
     return audio_files[0]
 
 
+async def _seed_original(song_id: int, db: DatabaseManager) -> None:
+    """Record the song's catalog file as its 'original' version, if it has one.
+
+    A song produced from a recording session has no catalog file — its takes
+    are its versions — so there is nothing to seed, and asking for the file is
+    how saving and lyric extraction used to 404 on every session song.
+    """
+    if song_id >= SESSION_SONG_ID_START:
+        return
+    source_path = await run_in_threadpool(_resolve_source_path, song_id)
+    await db.ensure_original_version(song_id, str(source_path))
+
+
 async def _resolve_clean_source_path(
     song_id: int, source_version_id: Optional[int], db: DatabaseManager
 ) -> Path:
     """Resolve the audio file a clean run should start from.
 
     With no ``source_version_id`` this is the catalog original (the existing
-    behaviour). With one, it is that version's audio file — so an already-cleaned
-    version can be re-cleaned with different options (issue #49). The version must
-    belong to the song and its file must exist, else 404.
+    behaviour) — or, for a session song, which has none, its default version,
+    else its newest. With one, it is that version's audio file — so an
+    already-cleaned version can be re-cleaned with different options (issue
+    #49). The version must belong to the song and its file must exist, else 404.
     """
     if source_version_id is None:
-        return await run_in_threadpool(_resolve_source_path, song_id)
+        if song_id < SESSION_SONG_ID_START:
+            return await run_in_threadpool(_resolve_source_path, song_id)
+        version = await db.get_published_version(song_id)
+        if version is None:
+            newest = await db.list_song_versions(song_id)
+            version = newest[0] if newest else None
+        if version is None:
+            raise HTTPException(status_code=404, detail="This song has no versions yet")
+        source_version_id = version["id"]
 
     version = await db.get_song_version(source_version_id)
     if version is None or version["song_id"] != song_id:
@@ -660,8 +688,7 @@ async def save_autoclean_candidate(
     auto-clean candidate already exists for the song (same steps + intensity), its
     audio file and metrics are replaced in place rather than appending a duplicate.
     """
-    source_path = await run_in_threadpool(_resolve_source_path, song_id)
-    await db.ensure_original_version(song_id, str(source_path))
+    await _seed_original(song_id, db)
 
     after = await run_in_threadpool(_measure_audio, output_path)
     region = cleanup_result.get("region")
@@ -778,9 +805,7 @@ async def list_versions(
     A song made from a recording session has no catalog original — its takes
     are its versions — so there is nothing to seed for it.
     """
-    if song_id < SESSION_SONG_ID_START:
-        source_path = await run_in_threadpool(_resolve_source_path, song_id)
-        await db.ensure_original_version(song_id, str(source_path))
+    await _seed_original(song_id, db)
     versions = await db.list_song_versions(song_id)
     # _version_view stats each file; run it off the event loop.
     views = await run_in_threadpool(lambda: [_version_view(v) for v in versions])
@@ -962,6 +987,28 @@ async def stream_candidate_preview(
     if not candidate.exists():
         raise HTTPException(status_code=404, detail="Candidate file not found")
     return FileResponse(candidate, headers={"Content-Disposition": "inline"})
+
+
+@router.get("/api/produce/preview/playback")
+async def stream_candidate_playback(
+    path: str,
+    _role: str = Depends(require_role("editor")),
+):
+    """A rendered file's compressed playback copy, for the console to decode.
+
+    ``/api/produce/preview`` serves the rendered WAV itself, which is right for
+    auditioning a full mix once and far too heavy for the console, which loads
+    every fixed stem at once. Built on first request if the render did not
+    already make it; restricted to produced/ like the route above.
+    """
+    if not _is_within_produced(path):
+        raise HTTPException(status_code=400, detail="Path must be a produced file")
+    candidate = Path(path)
+    if not await run_in_threadpool(candidate.exists):
+        raise HTTPException(status_code=404, detail="Candidate file not found")
+    return await _serve_preview_or_503(
+        candidate, audio_preview.stem_preview_path(candidate), f"candidate {candidate.name}"
+    )
 
 
 async def clean_song_to_candidate(
@@ -1240,6 +1287,34 @@ async def separate_song_stems(
     return {"stem_set": _stem_set_view(stem_set)}
 
 
+@router.post("/api/produce/stem-sets/{stem_set_id}/cancel")
+async def cancel_stem_separation(
+    stem_set_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Cancel a separation that has not finished (PROD-19).
+
+    The set is marked cancelled at once, so the page is free straight away and
+    the version keeps whatever stems it had. Demucs itself cannot be stopped
+    mid-pass: the GPU finishes it in the background and the job then deletes
+    what it produced (see ``stem_jobs``).
+    """
+    from src.api import stem_jobs
+
+    stem_set = await db.get_stem_set(stem_set_id)
+    if stem_set is None:
+        raise HTTPException(status_code=404, detail="Stem set not found")
+    if stem_set["status"] not in ("queued", "running"):
+        raise HTTPException(
+            status_code=409, detail=f"This separation is already {stem_set['status']}"
+        )
+    updated = await db.set_stem_set_status(
+        stem_set_id, stem_jobs.STATUS_CANCELLED, "Cancelled by the producer"
+    )
+    return {"stem_set": _stem_set_view(updated or stem_set)}
+
+
 @router.get("/api/produce/songs/{song_id}/stems")
 async def list_song_stems(
     song_id: int,
@@ -1451,6 +1526,7 @@ async def _chain_apply_tools(
     output_dir: Path,
     tag: str,
     scope: Optional[str] = None,
+    on_step: Optional[Callable[[str], None]] = None,
 ) -> Tuple[Path, List[Dict[str, Any]]]:
     """Sequentially apply each fix spec, step N's output feeding step N+1.
 
@@ -1473,6 +1549,15 @@ async def _chain_apply_tools(
     producer is looking at. They are usually the same word, but not always — a
     single-stem preview needs a unique directory per run and still has to say
     "vocals" rather than a timestamp — so a caller can set them apart.
+
+    ``on_step`` is told each tool's name just before it runs — how a background
+    render reports progress, and where a cancelled one stops.
+
+    Only the chain's **final** file is kept. Each step writes a full-length WAV
+    (~23 MB for a four-minute stem), and nothing ever reads a step's output
+    again once the next step has consumed it — keeping them all left 3.1 GB for
+    one song after a few renders. A chain that fails or is cancelled keeps
+    nothing: it is not cached, so nothing could reuse it.
     """
     if not specs:
         return source_path, []
@@ -1481,28 +1566,68 @@ async def _chain_apply_tools(
     chain_dir.mkdir(parents=True, exist_ok=True)
     current = source_path
     notices: List[Dict[str, Any]] = []
-    for i, spec in enumerate(specs):
-        next_path = chain_dir / f"{i:02d}_{spec.tool}_{int(time.time() * 1000)}.wav"
-        args = {
-            "file_path": str(current),
-            "output_path": str(next_path),
-            "start_s": spec.start_s,
-            "end_s": spec.end_s,
-            **(spec.params or {}),
-        }
-        result = await agent.execute_tool(spec.tool, args)
-        if result.get("status") != "success":
-            raise HTTPException(
-                status_code=502, detail=result.get("error", f"{spec.tool} failed")
-            )
-        if result.get("fallback_reason"):
-            notices.append({
-                "scope": scope or tag,
-                "tool": spec.tool,
-                "reason": result["fallback_reason"],
-            })
-        current = next_path
+    try:
+        for i, spec in enumerate(specs):
+            if on_step is not None:
+                on_step(spec.tool)
+            next_path = chain_dir / f"{i:02d}_{spec.tool}_{int(time.time() * 1000)}.wav"
+            args = {
+                "file_path": str(current),
+                "output_path": str(next_path),
+                "start_s": spec.start_s,
+                "end_s": spec.end_s,
+                **(spec.params or {}),
+            }
+            result = await agent.execute_tool(spec.tool, args)
+            if result.get("status") != "success":
+                raise HTTPException(
+                    status_code=502, detail=result.get("error", f"{spec.tool} failed")
+                )
+            if result.get("fallback_reason"):
+                notices.append({
+                    "scope": scope or tag,
+                    "tool": spec.tool,
+                    "reason": result["fallback_reason"],
+                })
+            if current != source_path:
+                current.unlink(missing_ok=True)  # the previous step's output
+            current = next_path
+    except BaseException:
+        # BaseException, so a cancelled render (CancelledError) tidies up too.
+        if current != source_path:
+            current.unlink(missing_ok=True)
+        raise
     return current, notices
+
+
+async def _cached_chain(
+    agent: BigFlavorAgent,
+    specs: List[StemFixSpec],
+    source_path: Path,
+    output_dir: Path,
+    tag: str,
+    scope: Optional[str] = None,
+    on_step: Optional[Callable[[str], None]] = None,
+) -> Tuple[Path, List[Dict[str, Any]]]:
+    """``_chain_apply_tools``, rendering each (source, chain) only once.
+
+    The whole-queue render, a stem's play-time preview and the full mix's all
+    come through here, so they share one another's results: pressing play after
+    Start analysis finds every chain already rendered, and a Save after
+    toggling one vocal fix re-renders the vocals alone. A hit reports no steps —
+    there is nothing to wait for.
+    """
+    if not specs:
+        return source_path, []
+    key = chain_cache.key(str(source_path), [spec.model_dump() for spec in specs])
+    hit = chain_cache.get(key)
+    if hit is not None:
+        return Path(hit["path"]), list(hit["notices"])
+    path, notices = await _chain_apply_tools(
+        agent, specs, source_path, output_dir, tag=tag, scope=scope, on_step=on_step
+    )
+    chain_cache.put(key, str(path), notices)
+    return path, notices
 
 
 class StemPreviewChainRequest(BaseModel):
@@ -1531,11 +1656,39 @@ async def preview_stem_fix_chain(
         raise HTTPException(status_code=404, detail="Stem set not found")
 
     output_dir = _produced_dir() / str(stem_set["song_id"]) / "stem_preview" / str(stem_id)
-    candidate_path, notices = await _chain_apply_tools(
+    candidate_path, notices = await _cached_chain(
         agent, request.fixes, Path(stem["path"]), output_dir,
         tag=f"run{int(time.time() * 1000)}", scope=stem["name"],
     )
     return {"stem_id": stem_id, "candidate_path": str(candidate_path), "notices": notices}
+
+
+@router.post("/api/produce/versions/{version_id}/preview-chain")
+async def preview_version_fix_chain(
+    version_id: int,
+    request: StemPreviewChainRequest,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Render the master fixes over a whole version, for the full-mix row.
+
+    The full-mix row's fixes are the master bucket, and it has no stem file to
+    run them over. It used to borrow ``/accept-fixes``, which also recorded the
+    result as the song's rendered mix — and so evicted the whole-queue render a
+    Save was about to reuse. This is the same chain through the chain cache,
+    touching nothing else.
+    """
+    version = await db.get_song_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    source = await _resolve_clean_source_path(version["song_id"], version_id, db)
+    output_dir = _produced_dir() / str(version["song_id"]) / "master_preview" / str(version_id)
+    candidate_path, notices = await _cached_chain(
+        agent, request.fixes, source, output_dir,
+        tag=f"run{int(time.time() * 1000)}", scope="master",
+    )
+    return {"version_id": version_id, "candidate_path": str(candidate_path), "notices": notices}
 
 
 class StemAcceptSpec(BaseModel):
@@ -1580,6 +1733,7 @@ async def _render_mix(
     request: AcceptFixesRequest,
     agent: BigFlavorAgent,
     db: DatabaseManager,
+    report: Optional[Callable[..., None]] = None,
 ) -> Tuple[Path, List[Dict[str, Any]], List[Dict[str, str]], Optional[str]]:
     """The expensive half: chain every fix onto its stem, remix, master.
 
@@ -1591,8 +1745,29 @@ async def _render_mix(
 
     Also returns every notice the chains raised, so a fix that quietly did less
     than its card said can be reported next to the result it produced.
+
+    Every chain — and the downmix — goes through the chain cache, so only what
+    changed since the last render is rendered again. ``report`` (a background
+    render's ``accept_jobs.report``) hears each step, which is how the task
+    panel counts fixes and where a cancelled render stops.
     """
     run_dir = _produced_dir() / str(request.song_id) / "accept_fixes" / str(int(time.time() * 1000))
+
+    total = sum(len(s.fixes) for s in request.stems) + len(request.master_fixes)
+    stems_total = sum(1 for s in request.stems if s.fixes)
+    done = 0
+    stems_done = 0
+
+    def say(**fields: Any) -> None:
+        if report is not None:
+            report(total=total, stems_total=stems_total, **fields)
+
+    def stepper(stage: str, stem: Optional[str]) -> Callable[[str], None]:
+        def on_step(tool: str) -> None:
+            nonlocal done
+            say(stage=stage, stem=stem, tool=tool, done=done, stems_done=stems_done)
+            done += 1
+        return on_step
 
     notices: List[Dict[str, Any]] = []
     remix_inputs: List[Dict[str, str]] = []
@@ -1609,20 +1784,21 @@ async def _render_mix(
         # Carried onto the set this render may produce, so a kept set still
         # names the separator its audio ultimately came from.
         source_model = source_model or stem_set.get("model")
-        fixed_path, stem_notices = await _chain_apply_tools(
-            agent, stem_spec.fixes, Path(stem["path"]), run_dir, tag=stem["name"]
+        before = done
+        fixed_path, stem_notices = await _cached_chain(
+            agent, stem_spec.fixes, Path(stem["path"]), run_dir, tag=stem["name"],
+            on_step=stepper("stems", stem["name"]),
         )
+        # A cache hit ran no steps; count its fixes as done all the same.
+        done = before + len(stem_spec.fixes)
+        if stem_spec.fixes:
+            stems_done += 1
         notices.extend(stem_notices)
         remix_inputs.append({"name": stem["name"], "path": str(fixed_path)})
 
     if remix_inputs:
-        downmix_path = run_dir / "downmix.wav"
-        try:
-            await run_in_threadpool(
-                stem_separation.remix_stems, remix_inputs, str(downmix_path), {}
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        say(stage="remix", stem=None, tool=None, done=done, stems_done=stems_done)
+        downmix_path = await _cached_downmix(remix_inputs, run_dir)
     else:
         # No stems in this run (master-only fixes) — start from the song's
         # current source audio instead of a remix.
@@ -1630,10 +1806,27 @@ async def _render_mix(
             request.song_id, request.source_version_id, db
         )
 
-    final_path, master_notices = await _chain_apply_tools(
-        agent, request.master_fixes, downmix_path, run_dir, tag="master"
+    final_path, master_notices = await _cached_chain(
+        agent, request.master_fixes, downmix_path, run_dir, tag="master",
+        on_step=stepper("master", None),
     )
     notices.extend(master_notices)
+    say(stage="master", stem=None, tool=None, done=total, stems_done=stems_done)
+
+    # Last stage: the compressed copies the console plays. A fixed stem is a
+    # full-size WAV, and sending seven of them to the browser (~160 MB) was
+    # the minutes-long "Rendering fixes to play" that followed every render.
+    fixed = [
+        Path(part["path"])
+        for part, spec in zip(remix_inputs, request.stems)
+        if spec.fixes
+    ]
+    ready = 0
+    say(stage="playback", playback_done=0, playback_total=len(fixed))
+    for path in fixed:
+        await _build_playback_copy(path)
+        ready += 1
+        say(stage="playback", playback_done=ready, playback_total=len(fixed))
 
     # `remix_inputs` is every stem that went into this mix: the fixed ones as
     # freshly written files, and — because _chain_apply_tools returns its source
@@ -1642,6 +1835,42 @@ async def _render_mix(
     # which is what makes keeping it as the saved version's stem set possible
     # without re-separating anything.
     return final_path, notices, remix_inputs, source_model
+
+
+async def _build_playback_copy(path: Path) -> None:
+    """Make the compressed copy of a rendered file the console will fetch.
+
+    Best-effort: the playback route builds any copy that is missing, so a
+    failure here only moves the encode to the first play.
+    """
+    try:
+        await run_in_threadpool(
+            audio_preview.build_preview, str(path), str(audio_preview.stem_preview_path(path))
+        )
+    except Exception:
+        logger.exception("Playback copy failed for %s", path)
+
+
+async def _cached_downmix(parts: List[Dict[str, str]], run_dir: Path) -> Path:
+    """Sum the parts at unity gain, once per distinct set of part files.
+
+    Part paths come out of the chain cache, so an unchanged queue hands over
+    the same paths and the mix after it is reused too — which in turn is what
+    lets the master chain hit the cache on its own source.
+    """
+    key = chain_cache.key("remix", parts)
+    hit = chain_cache.get(key)
+    if hit is not None:
+        return Path(hit["path"])
+    downmix_path = run_dir / "downmix.wav"
+    try:
+        await run_in_threadpool(
+            stem_separation.remix_stems, parts, str(downmix_path), {}
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    chain_cache.put(key, str(downmix_path))
+    return downmix_path
 
 
 # Background tagging tasks, held so the event loop's only reference to a running
@@ -1809,18 +2038,43 @@ async def _render_accept_fixes(
     request: AcceptFixesRequest,
     agent: BigFlavorAgent,
     db: DatabaseManager,
+    report: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
     """Render, remember the result, and save it unless this was a preview."""
-    final_path, notices, parts, model = await _render_mix(request, agent, db)
+    final_path, notices, parts, model = await _render_mix(request, agent, db, report)
     accept_jobs.remember_render(
         request.song_id, _accept_fingerprint(request), str(final_path), notices, parts, model
     )
 
     if request.preview:
         return {"candidate_path": str(final_path), "notices": notices}
+    if report is not None:
+        # From here the version is being written, and cancel is refused.
+        report(stage=STAGE_SAVING)
     return {
         **await _finalize_save(request, final_path, db, parts, model),
         "notices": notices,
+    }
+
+
+async def _save_rendered(
+    request: AcceptFixesRequest, db: DatabaseManager, print_: str
+) -> Dict[str, Any]:
+    """Save the already-rendered mix for this fix set as a version.
+
+    The parts and model belong to the render, not to this request — a save that
+    reuses one never ran the DSP itself, so it reads them back from the cache
+    rather than making the producer separate a mix whose pieces are on disk.
+    """
+    return {
+        **await _finalize_save(
+            request,
+            Path(accept_jobs.cached_render(request.song_id, print_)),
+            db,
+            accept_jobs.cached_stems(request.song_id, print_),
+            accept_jobs.cached_model(request.song_id, print_),
+        ),
+        "notices": accept_jobs.cached_notices(request.song_id, print_),
     }
 
 
@@ -1865,36 +2119,42 @@ async def start_accept_fixes(
         # The notices belong to the render, not to the request that triggered
         # it — Start analysis warms almost every render, so reading them back
         # here is what keeps a reused result as honest as a fresh one.
-        remembered = accept_jobs.cached_notices(request.song_id, print_)
-        # The parts belong to the render too: a save that reuses one still keeps
-        # its stems, rather than making the producer separate a mix whose pieces
-        # are already on disk.
-        remembered_parts = accept_jobs.cached_stems(request.song_id, print_)
-        remembered_model = accept_jobs.cached_model(request.song_id, print_)
         result = (
-            {"candidate_path": cached, "notices": remembered}
+            {
+                "candidate_path": cached,
+                "notices": accept_jobs.cached_notices(request.song_id, print_),
+            }
             if request.preview
-            else {**await _finalize_save(
-                      request, Path(cached), db, remembered_parts, remembered_model
-                  ),
-                  "notices": remembered}
+            else await _save_rendered(request, db, print_)
         )
         logger.info("Accept-fixes reused an existing render for song %s", request.song_id)
         return accept_jobs.complete_now(
             request.song_id, request.preview, fix_count, result
         )
 
+    # Save pressed while Start analysis is still rendering these very fixes:
+    # ride on that render instead of refusing, and save when it lands.
+    if not request.preview:
+        attached = accept_jobs.attach_save(
+            request.song_id, print_, lambda _result: _save_rendered(request, db, print_)
+        )
+        if attached is not None:
+            logger.info("Save for song %s will follow the running render", request.song_id)
+            return attached
+
     try:
         return accept_jobs.start(
             request.song_id,
             preview=request.preview,
             fix_count=fix_count,
-            render=lambda: _render_accept_fixes(request, agent, db),
+            render=lambda: _render_accept_fixes(
+                request, agent, db, report=partial(accept_jobs.report, request.song_id)
+            ),
             fingerprint=print_,
         )
     except RuntimeError as exc:
-        # Already rendering this song — the UI disables the buttons, so this is
-        # a double-submit rather than something the producer needs to fix.
+        # Already rendering different fixes for this song — the task panel
+        # offers to cancel that one first.
         raise HTTPException(status_code=409, detail=str(exc))
 
 
@@ -1905,6 +2165,23 @@ async def accept_fixes_status(
 ):
     """The song's in-flight (or just-finished) whole-queue render."""
     return accept_jobs.status(song_id)
+
+
+@router.post("/api/produce/songs/{song_id}/accept-fixes/cancel")
+async def cancel_accept_fixes(
+    song_id: int,
+    save_only: bool = False,
+    _role: str = Depends(require_role("editor")),
+):
+    """Stop the song's running render, or only the save waiting on it (PROD-19).
+
+    A render stops at its next step; the chains it finished stay cached, so the
+    next render picks up from there. Refused once the version is being written.
+    """
+    try:
+        return accept_jobs.cancel(song_id, save_only=save_only)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/api/produce/songs/{song_id}/accept-fixes/dismiss")
@@ -1934,8 +2211,7 @@ async def save_candidate_version(
     -> publish). Shared by region-apply and stem-mix apply so both enter that
     flow identically.
     """
-    source_path = await run_in_threadpool(_resolve_source_path, song_id)
-    await db.ensure_original_version(song_id, str(source_path))
+    await _seed_original(song_id, db)
     version = await db.add_song_version(
         song_id, candidate_path, label="cleaned", metrics=metrics
     )

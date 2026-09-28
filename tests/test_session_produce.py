@@ -161,10 +161,20 @@ class FakeDB:
         return self.versions[version_id]
 
     async def list_song_versions(self, song_id):
-        return [v for v in self.versions.values() if v["song_id"] == song_id]
+        rows = [v for v in self.versions.values() if v["song_id"] == song_id]
+        return sorted(rows, key=lambda v: v["created_at"], reverse=True)
 
     async def ensure_original_version(self, song_id, audio_path):
         raise AssertionError("a session song has no catalog original to seed")
+
+    async def get_song_version(self, version_id):
+        return self.versions.get(version_id)
+
+    async def get_published_version(self, song_id):
+        return next(
+            (v for v in self.versions.values() if v["song_id"] == song_id and v["is_published"]),
+            None,
+        )
 
     # --- stems -------------------------------------------------------------
     async def create_stem_set(self, song_id, model, source_version_id=None):
@@ -475,3 +485,42 @@ def test_a_session_songs_versions_list_needs_no_catalog_original(
 
     assert resp.status_code == 200
     assert len(resp.json()["versions"]) == 2
+
+
+# --- a session song has no catalog file (saving and lyrics used to 404) ------
+
+@pytest.mark.asyncio
+async def test_saving_a_fixed_mix_of_a_session_song_needs_no_catalog_file(
+    session_client, monkeypatch
+):
+    """"Accept all & save" 404'd with "Audio file for song 1000000 not found":
+    saving seeded an 'original' version from a catalog MP3 the song never had."""
+    client, db, tmp_path = session_client
+    _, group, _ = _seed_song(db, tmp_path)
+    song_id = _produce(client, monkeypatch, group).json()["song_id"]
+
+    saved = await produce.save_candidate_version(song_id, "/produced/mix.wav", {}, db)
+
+    assert db.versions[saved["version_id"]]["label"] == "cleaned"
+    assert saved["is_published"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_session_songs_own_audio_is_its_default_then_its_newest_take(
+    session_client, monkeypatch
+):
+    """What lyric extraction (and any whole-song tool) reads when no version is
+    named: the catalog file for a catalog song; for a session song, which has
+    none, the default version — or before one is chosen, the newest take."""
+    client, db, tmp_path = session_client
+    _, group, (first, second, _) = _seed_song(db, tmp_path)
+    song_id = _produce(client, monkeypatch, group).json()["song_id"]
+    take1 = db.versions[db.takes[first]["song_version_id"]]
+    take2 = db.versions[db.takes[second]["song_version_id"]]
+
+    newest = await produce._resolve_clean_source_path(song_id, None, db)
+    assert str(newest) == take2["audio_path"]
+
+    take1["is_published"] = True
+    default = await produce._resolve_clean_source_path(song_id, None, db)
+    assert str(default) == take1["audio_path"]

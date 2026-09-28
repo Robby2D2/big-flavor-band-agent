@@ -5,20 +5,24 @@ import {
   useProcessingQueue,
   FixEntry,
   FULL_MIX_STEM_ID,
+  StemInfo,
   stemLabel,
 } from '@/hooks/useProcessingQueue';
+import type { AcceptJob } from '@/hooks/useAcceptJob';
+import { buildTasks, TaskId } from '@/lib/processingTasks';
 import { decodeAudio, fetchPeaks, Region, WaveformPeaks } from '../audioEngine';
 import { mapWithConcurrency } from '@/lib/concurrency';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
 import VersionDetails, { VersionDetail } from './VersionDetails';
-import type { UnsavedRender } from '@/lib/unsavedRender';
 import StemConsole from './StemConsole';
 import StemDetailPanel from './StemDetailPanel';
 import FixQueue from './FixQueue';
 import AdvancedDrawer from './AdvancedDrawer';
 import ResultSidebar from './ResultSidebar';
 import LyricsCard from './LyricsCard';
+import TaskPanel from './TaskPanel';
+import TransportBar from './TransportBar';
 
 /**
  * How many stems to render through their fix chains at once.
@@ -38,10 +42,12 @@ interface AudioProcessingTabProps {
   onApplied: () => void;
   /** Tell the page a background render just started, so it begins polling. */
   onRenderStarted: () => void;
-  /** A whole-queue render is in flight (the page owns this job's status). */
-  renderInProgress?: boolean;
-  /** The finished-but-unsaved mix, when its row in the list is selected. */
-  unsavedRender?: UnsavedRender | null;
+  /** The song's whole-queue render, which the page polls (useAcceptJob). */
+  renderJob: AcceptJob;
+  /** Stop that render, or only the save riding on it (PROD-19). */
+  onCancelRender: (saveOnly: boolean) => Promise<void>;
+  /** Forget a finished render, clearing its task from the panel. */
+  onDismissRender: () => void;
   /** Acting on the selected version — the page owns these mutations. */
   versionActions: {
     busyId: number | null;
@@ -65,18 +71,20 @@ export default function AudioProcessingTab({
   sourceVersionId,
   onApplied,
   onRenderStarted,
-  renderInProgress = false,
-  unsavedRender = null,
+  renderJob,
+  onCancelRender,
+  onDismissRender,
   versionActions,
 }: AudioProcessingTabProps) {
   const selectedVersion = versions.find((v) => v.id === sourceVersionId) ?? null;
+  const renderInProgress = renderJob.status === 'running';
 
   const queue = useProcessingQueue(songId, sourceVersionId);
 
   // Analysis only measures; rendering is what takes minutes. Kick the render
-  // off the moment the findings land, so Preview and Save meet a finished mix
-  // instead of starting one. Fires once per analysis pass (`analyzed` is reset
-  // to false at the start of each).
+  // off the moment the findings land, so play, Preview and Save meet finished
+  // audio instead of starting on it. Fires once per analysis pass (`analyzed`
+  // is reset to false at the start of each, and a cancelled pass never sets it).
   const { analyzed, warmRender } = queue;
   useEffect(() => {
     if (!analyzed) return;
@@ -92,6 +100,7 @@ export default function AudioProcessingTab({
   const [region, setRegion] = useState<Region | null>(null);
   const [drawerFix, setDrawerFix] = useState<FixEntry | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
 
   const fetchedPeakUrls = useRef<Map<number, string>>(new Map());
   const decodedUrls = useRef<Map<number, string>>(new Map());
@@ -238,14 +247,26 @@ export default function AudioProcessingTab({
     () => Object.values(peaks).reduce((m, p) => Math.max(m, p.duration), 0),
     [peaks]
   );
-  // What the transport plays for each row: its rendered fix chain when the row
-  // has enabled fixes, otherwise the raw audio. The transport is the only
-  // player on the page, so "with fixes" has to be what you simply hear rather
-  // than a mode you switch into.
+  // What the transport plays for each row: its rendered fix chain when that
+  // render matches the row's enabled fixes, otherwise the raw audio. The
+  // transport is the only player on the page, so "with fixes" is what you
+  // simply hear once it is ready — and the bar says when it is not.
   const [fixedBuffers, setFixedBuffers] = useState<
     Record<number, { signature: string; buffer: AudioBuffer }>
   >({});
-  const [renderingFixes, setRenderingFixes] = useState(false);
+  // Hear it waits for its own fix; the transport's play button never waits.
+  const [auditionRendering, setAuditionRendering] = useState(false);
+  // Rows rendering in the background so they can play with their fixes, and
+  // how far that has got — counted for the task panel.
+  const [playbackRendering, setPlaybackRendering] = useState<number[]>([]);
+  const [playbackLoad, setPlaybackLoad] = useState<{
+    done: number;
+    total: number;
+    afterRender: boolean;
+  } | null>(null);
+  const inFlightRef = useRef<Set<number>>(new Set());
+  // Bumped by "Play without" to drop the renders in flight.
+  const renderTokenRef = useRef(0);
 
   // Pulled off `queue` first only so the memo's deps are plain identifiers:
   // exhaustive-deps can't verify member expressions like `queue.consoleStems`
@@ -286,64 +307,127 @@ export default function AudioProcessingTab({
   // play() silently does nothing with no decoded buffers, so the transport has
   // to stay disabled until at least one has landed.
   const playbackReady = Object.keys(buffers).length > 0;
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playback.playing;
+  }, [playback.playing]);
+
+  /** Whether a row can be heard with the current mute/solo. */
+  const anySolo = Object.values(controls).some((c) => c.solo);
+  const isAudible = (id: number) => {
+    const c = controls[id];
+    if (!c || c.mute) return false;
+    return anySolo ? c.solo : true;
+  };
+
+  /** Rows with enabled fixes whose rendered audio does not match them yet. */
+  const staleRows = (onlyAudible: boolean): StemInfo[] =>
+    queue.consoleStems.filter((stem) => {
+      const signature = fixSignature[stem.id];
+      if (!signature) return false; // no enabled fixes — the raw audio is correct
+      if (onlyAudible && !isAudible(stem.id)) return false;
+      return fixedBuffers[stem.id]?.signature !== signature;
+    });
+
+  const unrenderedRows = staleRows(true);
+  const withFixes =
+    unrenderedRows.length === 0 &&
+    queue.consoleStems.some((stem) => fixSignature[stem.id] && isAudible(stem.id));
 
   /**
-   * Which fix card started the transport.
+   * Render rows through their fix chains and decode the results.
    *
-   * A fix used to be auditioned through its own `<audio>` element, which meant
-   * judging it as an isolated clip: no other stems, no solo/mute, and as many
-   * playheads on the page as there were cards. Hear it now drives the console's
-   * one transport instead, so the fix is heard where it will actually live.
+   * On the server every chain goes through one cache, so a row the warm render
+   * already did comes straight back — this is where "fixes render once" pays
+   * off for playback.
    */
-  const [audition, setAudition] = useState<{ fixId: string; rowId: number } | null>(null);
+  const renderRows = (rows: StemInfo[], onEach?: () => void) =>
+    mapWithConcurrency(rows, RENDER_CONCURRENCY, async (stem) => {
+      const signature = fixSignature[stem.id];
+      const path = await queue.previewStemChain(stem.id);
+      // The compressed playback copy, not the rendered WAV: ~1.5 MB a stem
+      // instead of ~23 MB, which is what made loading take minutes.
+      const buffer = await decodeAudio(
+        `/api/produce/clean/playback?path=${encodeURIComponent(path)}`
+      );
+      onEach?.();
+      return [stem.id, { signature, buffer }] as const;
+    });
 
   const playWhenRenderedRef = useRef<{ from?: number } | null>(null);
 
   /**
-   * Render any row whose enabled chain isn't already decoded, then start playback.
+   * Bring rows' fixed audio in behind the transport, without holding it up.
    *
-   * Chain-applying is real DSP on the server, so it happens on demand at play
-   * time rather than on every toggle in the fix queue — pressing play (or Hear
-   * it on a card) is the point where the producer has actually asked to hear
-   * the result. `from` resumes at a position, so a toggle mid-audition picks up
-   * where it left off instead of starting the song again.
+   * Playback carries on with the original audio meanwhile, and when a render
+   * lands mid-play it swaps in at the playhead. Nothing starts while the
+   * whole-queue render is running: it is rendering these same chains, and
+   * asking for them again is how fixes used to render twice — the completion
+   * effect below picks them up from the cache instead.
    */
-  const renderStaleThenPlay = async (from?: number) => {
-    const stale = queue.consoleStems.filter((stem) => {
-      const signature = fixSignature[stem.id];
-      if (!signature) return false; // no enabled fixes — the raw audio is correct
-      return fixedBuffers[stem.id]?.signature !== signature;
-    });
+  const renderInBackground = async (rows: StemInfo[], afterRender = false) => {
+    if (renderInProgress) return;
+    const pending = rows.filter((row) => !inFlightRef.current.has(row.id));
+    if (pending.length === 0) return;
 
-    if (stale.length === 0) {
-      void playback.play(from);
-      return;
-    }
-
-    setRenderingFixes(true);
-    setPlaybackError(null);
+    const token = renderTokenRef.current;
+    pending.forEach((row) => inFlightRef.current.add(row.id));
+    setPlaybackRendering(Array.from(inFlightRef.current));
+    setPlaybackLoad((prev) => ({
+      done: prev?.done ?? 0,
+      total: (prev?.total ?? 0) + pending.length,
+      afterRender: (prev?.afterRender ?? false) || afterRender,
+    }));
     try {
-      const rendered = await mapWithConcurrency(stale, RENDER_CONCURRENCY, async (stem) => {
-        const signature = fixSignature[stem.id];
-        const path = await queue.previewStemChain(stem.id);
-        const buffer = await decodeAudio(
-          `/api/produce/clean/preview?path=${encodeURIComponent(path)}`
-        );
-        return [stem.id, { signature, buffer }] as const;
+      const rendered = await renderRows(pending, () => {
+        if (token === renderTokenRef.current) {
+          setPlaybackLoad((prev) => prev && { ...prev, done: prev.done + 1 });
+        }
       });
-      // Start playing from the effect below rather than here: `playback.play`
-      // closes over the buffers of the render it came from, so calling it now
-      // would play the pre-render audio we just replaced.
-      playWhenRenderedRef.current = { from };
+      if (token !== renderTokenRef.current) return; // "Play without"
+      if (playingRef.current) playWhenRenderedRef.current = {};
       setFixedBuffers((prev) => ({ ...prev, ...Object.fromEntries(rendered) }));
     } catch (err) {
-      // Fall through to playing what we have: the raw stems are still a
-      // truthful rendition of the song, just without the pending fixes.
-      setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
-      void playback.play(from);
+      if (token === renderTokenRef.current) {
+        setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
+      }
     } finally {
-      setRenderingFixes(false);
+      pending.forEach((row) => inFlightRef.current.delete(row.id));
+      setPlaybackRendering(Array.from(inFlightRef.current));
+      if (inFlightRef.current.size === 0) setPlaybackLoad(null);
     }
+  };
+
+  const cancelPlaybackRender = () => {
+    renderTokenRef.current += 1;
+    inFlightRef.current.clear();
+    setPlaybackRendering([]);
+    setPlaybackLoad(null);
+  };
+
+  /** Hear it: render the auditioned row first — hearing that fix is the point. */
+  const renderRowThenPlay = async (rowId: number, from?: number) => {
+    const rows = staleRows(false).filter((stem) => stem.id === rowId);
+    if (rows.length > 0) {
+      setAuditionRendering(true);
+      setPlaybackError(null);
+      try {
+        const rendered = await renderRows(rows);
+        // Start playing from the effect below rather than here: `playback.play`
+        // closes over the buffers of the render it came from, so calling it now
+        // would play the pre-render audio we just replaced.
+        playWhenRenderedRef.current = { from };
+        setFixedBuffers((prev) => ({ ...prev, ...Object.fromEntries(rendered) }));
+      } catch (err) {
+        setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
+        void playback.play(from);
+      } finally {
+        setAuditionRendering(false);
+      }
+    } else {
+      void playback.play(from);
+    }
+    void renderInBackground(staleRows(true).filter((stem) => stem.id !== rowId));
   };
 
   const handleTogglePlay = () => {
@@ -352,10 +436,11 @@ export default function AudioProcessingTab({
       return;
     }
     // The transport's own play button means "play the song", not "audition
-    // this fix" — so it takes the page back to plain playback. (Pausing needs
-    // no such reset: `activeAudition` derives from `playback.playing`.)
+    // this fix" — so it takes the page back to plain playback. It plays at
+    // once; anything not rendered yet follows as it lands.
     setAudition(null);
-    void renderStaleThenPlay();
+    void playback.play();
+    void renderInBackground(staleRows(true));
   };
 
   useEffect(() => {
@@ -369,21 +454,54 @@ export default function AudioProcessingTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveBuffers]);
 
+  // The warm render finished: every chain it did is in the server's cache, and
+  // it made their compressed copies, so fetching the audible rows now costs a
+  // lookup and a small download — shown as the render's own last step.
+  useEffect(() => {
+    if (renderJob.status !== 'complete') return;
+    void renderInBackground(staleRows(true), true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderJob.status]);
+
+  // While playing, a row that becomes audible or has a fix toggled renders in
+  // the background. Keyed on which tools are on, not their params, so dragging
+  // a slider in the Adjust drawer does not start a render per step.
+  const audibleKey = queue.consoleStems.filter((s) => isAudible(s.id)).map((s) => s.id).join(',');
+  const enabledKey = queue.consoleStems
+    .map((s) => `${s.id}:${fixesForStem(s.id).filter((f) => f.enabled).map((f) => f.tool).join('+')}`)
+    .join('|');
+  useEffect(() => {
+    if (!playback.playing) return;
+    void renderInBackground(staleRows(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playback.playing, audibleKey, enabledKey]);
+
+  /**
+   * Which fix card started the transport.
+   *
+   * A fix used to be auditioned through its own `<audio>` element, which meant
+   * judging it as an isolated clip: no other stems, no solo/mute, and as many
+   * playheads on the page as there were cards. Hear it now drives the console's
+   * one transport instead, so the fix is heard where it will actually live.
+   */
+  const [audition, setAudition] = useState<{ fixId: string; rowId: number } | null>(null);
+
   // A play request that has to wait for the commit: Hear it may turn the fix on
   // first, and the render has to be built from the signature *after* that
   // toggle, not the one the click handler closed over.
   const [playRequestSeq, setPlayRequestSeq] = useState(0);
-  const playRequestFrom = useRef<number | undefined>(undefined);
+  const playRequest = useRef<{ rowId: number; from?: number } | null>(null);
 
-  const requestPlay = (from?: number) => {
-    playRequestFrom.current = from;
+  const requestPlay = (rowId: number, from?: number) => {
+    playRequest.current = { rowId, from };
     setPlayRequestSeq((n) => n + 1);
   };
 
   useEffect(() => {
-    if (playRequestSeq === 0) return;
-    void renderStaleThenPlay(playRequestFrom.current);
-    // Fires once per request. `renderStaleThenPlay` is redefined every render
+    const request = playRequest.current;
+    if (playRequestSeq === 0 || !request) return;
+    void renderRowThenPlay(request.rowId, request.from);
+    // Fires once per request. `renderRowThenPlay` is redefined every render
     // and reads the current fix signature, which is the whole point of
     // deferring the call to here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -397,7 +515,7 @@ export default function AudioProcessingTab({
     queue.setSelectedStemId(rowId);
     if (!fix.enabled) queue.toggleFix(fix.id);
     setAudition({ fixId: fix.id, rowId });
-    requestPlay(playback.playhead);
+    requestPlay(rowId, playback.playhead);
   };
 
   /**
@@ -408,12 +526,12 @@ export default function AudioProcessingTab({
    */
   const handleToggleFix = (id: string) => {
     queue.toggleFix(id);
-    if (audition && playback.playing) requestPlay(playback.playhead);
+    if (audition && playback.playing) requestPlay(audition.rowId, playback.playhead);
   };
 
   const handleRemoveFix = (id: string) => {
     queue.removeFix(id);
-    if (audition && playback.playing) requestPlay(playback.playhead);
+    if (audition && playback.playing) requestPlay(audition.rowId, playback.playhead);
   };
 
   const setControl = (id: number, patch: Partial<StemPlaybackControl>) => {
@@ -426,13 +544,66 @@ export default function AudioProcessingTab({
 
   // Derived rather than cleared: the audition is over the moment the transport
   // stops, and deriving it means there is no stale "now playing" to tidy up.
-  const activeAudition = playback.playing || renderingFixes ? audition : null;
+  const activeAudition = playback.playing || auditionRendering ? audition : null;
   const auditionFix = activeAudition
     ? queue.fixes.find((f) => f.id === activeAudition.fixId) ?? null
     : null;
   const auditionRow = activeAudition
     ? queue.consoleStems.find((s) => s.id === activeAudition.rowId) ?? null
     : null;
+
+  // --- the task panel -------------------------------------------------------
+  const separationRunning = queue.separationTask?.status === 'running';
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!separationRunning) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [separationRunning]);
+
+  const rowName = (id: number) => {
+    const stem = queue.consoleStems.find((s) => s.id === id);
+    return stem ? stemLabel(stem) : 'row';
+  };
+
+  const tasks = buildTasks({
+    separation: queue.separationTask,
+    analysis: queue.analysisTask,
+    render: renderJob,
+    playback:
+      playbackLoad && playbackRendering.length > 0
+        ? { ...playbackLoad, rows: playbackRendering.map(rowName) }
+        : null,
+    now,
+  });
+
+  const handleCancelTask = async (id: TaskId) => {
+    setTaskError(null);
+    try {
+      if (id === 'separate') await queue.cancelSeparation();
+      else if (id === 'analyze') queue.cancelAnalysis();
+      else if (id === 'playback') cancelPlaybackRender();
+      // Finished on the server but still loading into the console: stop the
+      // loading, and play the original audio.
+      else if (id === 'render' && renderJob.status !== 'running') cancelPlaybackRender();
+      // A save riding on a render stops being a save; the render carries on
+      // and stays cached, and its own Cancel stops that too.
+      else if (id === 'render') await onCancelRender(renderJob.preview === false);
+    } catch (err) {
+      setTaskError((err as Error).message);
+    }
+  };
+
+  const handleRetryTask = (id: TaskId) => {
+    setTaskError(null);
+    if (id === 'render') void warmRender().then(onRenderStarted);
+    else void queue.startAnalysis();
+  };
+
+  const handleDismissTasks = () => {
+    queue.dismissTasks();
+    if (renderJob.status !== 'running' && renderJob.status !== 'idle') onDismissRender();
+  };
 
   const selectedStem = queue.consoleStems.find((s) => s.id === queue.selectedStemId) ?? null;
   const fullMixSelected = queue.selectedStemId === FULL_MIX_STEM_ID;
@@ -443,6 +614,7 @@ export default function AudioProcessingTab({
   // once a pass has completed, is in flight, or a single row has been analyzed
   // on its own.
   const hasEverAnalyzed = queue.analyzed || queue.analyzing || queue.analyzedStemIds.size > 0;
+  const fullMixPeaks = peaks[FULL_MIX_STEM_ID]?.peaks ?? null;
 
   if (versions.length === 0) {
     return <p className="text-sm text-text/50">No versions yet for this song.</p>;
@@ -452,7 +624,6 @@ export default function AudioProcessingTab({
     <div className="flex flex-col gap-4">
       <VersionDetails
         version={selectedVersion}
-        unsavedRender={unsavedRender}
         renderInProgress={renderInProgress}
         canDelete={versions.length > 1}
         busy={selectedVersion != null && versionActions.busyId === selectedVersion.id}
@@ -474,6 +645,11 @@ export default function AudioProcessingTab({
       {queue.error && (
         <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded-lg text-sm">
           {queue.error}
+        </div>
+      )}
+      {taskError && (
+        <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded-lg text-sm">
+          {taskError}
         </div>
       )}
       {peaksError && (
@@ -528,11 +704,30 @@ export default function AudioProcessingTab({
               back to the empty-state prompt above. */}
           {queue.stems.length > 0 && (
             <>
+              <TransportBar
+                peaks={fullMixPeaks}
+                peaksLoading={!fullMixPeaks && peaksLoadingIds.has(FULL_MIX_STEM_ID)}
+                playbackReady={playbackReady}
+                playing={playback.playing}
+                playhead={playback.playhead}
+                maxDuration={playback.maxDuration}
+                onTogglePlay={handleTogglePlay}
+                onSeek={playback.seek}
+                auditionRendering={auditionRendering}
+                audition={
+                  auditionFix && auditionRow
+                    ? { fixTitle: auditionFix.title, rowName: stemLabel(auditionRow) }
+                    : null
+                }
+                unrenderedRows={unrenderedRows.map(stemLabel)}
+                renderingFixes={renderInProgress || playbackRendering.length > 0}
+                withFixes={withFixes}
+              />
+
               <StemConsole
                 stems={queue.consoleStems}
                 peaks={peaks}
                 peaksLoadingIds={peaksLoadingIds}
-                playbackReady={playbackReady}
                 controls={controls}
                 setControl={setControl}
                 selectedStemId={queue.selectedStemId}
@@ -544,16 +739,8 @@ export default function AudioProcessingTab({
                 identifyingStemIds={queue.identifyingStemIds}
                 onIdentifyStem={queue.identifyStem}
                 onRenameStem={queue.renameStem}
-                playing={playback.playing}
                 playhead={playback.playhead}
                 maxDuration={playback.maxDuration}
-                onTogglePlay={handleTogglePlay}
-                renderingFixes={renderingFixes || renderInProgress}
-                audition={
-                  auditionFix && auditionRow
-                    ? { fixTitle: auditionFix.title, rowName: stemLabel(auditionRow) }
-                    : null
-                }
                 onSeek={playback.seek}
                 separating={queue.analyzing || queue.separating}
                 analyzed={queue.analyzed}
@@ -590,7 +777,7 @@ export default function AudioProcessingTab({
                   onAdjust={setDrawerFix}
                   onHear={handleHear}
                   auditionFixId={activeAudition?.fixId ?? null}
-                  rendering={renderingFixes}
+                  rendering={auditionRendering}
                   canHear={playbackReady}
                   onAddFix={(tool) =>
                     queue.selectedStemId != null && queue.addManualFix(queue.selectedStemId, tool)
@@ -616,7 +803,7 @@ export default function AudioProcessingTab({
               totalCount={queue.fixes.length}
               onAcceptAll={async () => {
                 // A save's notices are not in this response — the render has
-                // barely begun. The page reports them when the job lands.
+                // barely begun. The task panel reports them when it lands.
                 await queue.acceptAll(false);
                 onRenderStarted();
               }}
@@ -635,6 +822,13 @@ export default function AudioProcessingTab({
           <LyricsCard songId={songId} />
         </div>
       </div>
+
+      <TaskPanel
+        tasks={tasks}
+        onCancel={(id) => void handleCancelTask(id)}
+        onRetry={handleRetryTask}
+        onDismiss={handleDismissTasks}
+      />
 
       {drawerFix && (
         <AdvancedDrawer

@@ -37,6 +37,34 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-28 — Fixes render once; a task panel counts and cancels every long job (PROD-19)
+The owner asked for real progress after Start analysis, a play button that works while fixes render,
+one player instead of two, cancellable tasks, and a fix for fixes "rendering twice". The backend log
+showed **three** renders of one 21-fix queue: warm render, then play re-rendering every stem via
+`preview-chain`, then a full-mix play evicting the one-slot render cache so Save rendered it all again.
+
+- **Root fix: one chain cache** (`accept_jobs.chain_cache`) shared by the warm render, stem and
+  full-mix previews, plus 8 whole-queue renders per song instead of 1. Live on Super Remodel: play
+  after analysis fetched 7 stems in 0.04s with zero tool calls; a repeat preview was `reused`.
+- **Cancel**: renders stop at the next step (verified live: cancelled at 2/8, re-render resumed at
+  2/8); separation is marked cancelled at once and Demucs's output discarded when it returns (unit
+  tested only — not run live); analysis aborts from the browser, keeping fully measured rows.
+- **UI**: `TaskPanel` + `lib/processingTasks.ts`; `TransportBar` sticky above the console; the
+  version panel's player and the "New mix (not saved)" row are removed; Save during the warm render
+  attaches to it ("Save when rendered").
+- New requirement **PROD-19**. No migration: `song_stem_sets.status` is a plain string.
+- Dropped from the plan: a separate `rendered-stems` lookup endpoint — `preview-chain` answers from
+  the cache, so it already is one.
+- Follow-up the same day, from the owner's screenshots: "Rendering fixes to play" after "Fixes
+  rendered" was the browser downloading full-size WAVs (45.8 MB a stem), not rendering — now Opus
+  playback copies (2.6 MB) made as the render's last stage, and shown as part of that one task.
+  Chains keep only their final file; `scripts/prune_render_files.py --apply` freed 17.1 GB.
+  Save and lyric extraction 404'd on session songs (no catalog MP3) — fixed in
+  `_seed_original` / `_resolve_clean_source_path`.
+- **This stack serves the live site from the working tree** (dev server + mounted source), so
+  restarting containers on a feature branch puts that branch live. Worth remembering before
+  restarting anything mid-branch.
+
 ### 2026-09-28 — Session review only groups; producing a group makes a new catalog song (SESS-15/18/19/20)
 The owner asked that the session page only group takes into songs, drop "Keep", and hand each song to
 the produce page for analysis and the default choice. The keeper had never led anywhere: no import

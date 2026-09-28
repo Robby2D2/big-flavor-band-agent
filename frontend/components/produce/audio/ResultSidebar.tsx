@@ -12,7 +12,10 @@ interface ResultSidebarProps {
   onAcceptAll: () => Promise<void>;
   onPreviewFull: () => Promise<{ path: string; notices?: FixNotice[] }>;
   onAccepted: () => void;
-  /** A render is already running — starting another would only queue behind it. */
+  /**
+   * A render is running. Preview waits for it; Save does not — pressed during
+   * the render of these same fixes, it saves the moment that render lands.
+   */
   renderInProgress?: boolean;
 }
 
@@ -82,10 +85,14 @@ export default function ResultSidebar({
         <div className="mt-4 pt-3.5 border-t border-white/9 flex flex-col gap-2">
           <button
             onClick={handleAccept}
-            disabled={busy != null || enabledCount === 0 || renderInProgress}
+            disabled={busy != null || enabledCount === 0}
             className="font-semibold text-sm text-canvas bg-signal rounded-lg py-3 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {busy === 'accept' ? 'Saving…' : 'Accept all & save version'}
+            {busy === 'accept'
+              ? 'Saving…'
+              : renderInProgress
+                ? 'Save when rendered'
+                : 'Accept all & save version'}
           </button>
           <button
             onClick={handlePreview}
@@ -95,7 +102,9 @@ export default function ResultSidebar({
             {busy === 'preview' ? 'Rendering…' : 'Preview full mix first'}
           </button>
           <p className="text-center text-[10.5px] text-text/35">
-            Saves as a new version. The original is never touched.
+            {renderInProgress
+              ? 'Rendering now — follow it, or cancel it, in the task panel.'
+              : 'Saves as a new version. The original is never touched.'}
           </p>
         </div>
       </div>
@@ -119,8 +128,8 @@ export default function ResultSidebar({
 
       {accepted && (
         <div className="bg-confirm/10 border border-confirm/30 rounded-xl p-3.5">
-          <p className="text-sm text-confirm font-semibold">Saved as a new version.</p>
-          <p className="text-xs text-text/50 mt-1">Find it under the Versions tab.</p>
+          <p className="text-sm text-confirm font-semibold">Save started.</p>
+          <p className="text-xs text-text/50 mt-1">The task panel says when the new version is ready.</p>
         </div>
       )}
     </div>

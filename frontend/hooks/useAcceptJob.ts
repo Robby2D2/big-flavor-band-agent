@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * looking idle while the server is still working.
  */
 
-export type AcceptJobStatus = 'idle' | 'running' | 'complete' | 'failed';
+export type AcceptJobStatus = 'idle' | 'running' | 'complete' | 'failed' | 'cancelled';
 
 /**
  * A fix that succeeded but did less than its card promised.
@@ -29,6 +29,22 @@ export interface FixNotice {
   reason: string;
 }
 
+/** How far a running render has got, step by step (see accept_jobs.report). */
+export interface RenderProgress {
+  stage?: 'stems' | 'remix' | 'master' | 'playback' | 'saving';
+  /** Fix steps finished, of `total` across every stem and the master. */
+  done?: number;
+  total?: number;
+  stems_done?: number;
+  stems_total?: number;
+  /** The stem and tool being worked on right now. */
+  stem?: string | null;
+  tool?: string | null;
+  /** Compressed playback copies made so far, of how many fixed stems. */
+  playback_done?: number;
+  playback_total?: number;
+}
+
 export interface AcceptJob {
   status: AcceptJobStatus;
   /** A preview render makes no version; a save does. */
@@ -41,35 +57,10 @@ export interface AcceptJob {
   reused?: boolean;
   /** Fixes that ran but did less than their card said. */
   notices?: FixNotice[];
+  progress?: RenderProgress | null;
 }
 
-const POLL_MS = 2500;
-
-/** What the versions list should say about this render, if anything. */
-export function describeAcceptJob(job: AcceptJob): {
-  label: string;
-  detail: string;
-  tone: 'progress' | 'error';
-} | null {
-  if (job.status === 'running') {
-    const fixes = job.fix_count === 1 ? '1 fix' : `${job.fix_count ?? 0} fixes`;
-    return {
-      label: job.preview ? 'Rendering preview…' : 'Saving new version…',
-      detail: `applying ${fixes} · this can take a few minutes`,
-      tone: 'progress',
-    };
-  }
-
-  if (job.status === 'failed') {
-    return {
-      label: 'Render failed',
-      detail: job.error || 'Something went wrong rendering this mix.',
-      tone: 'error',
-    };
-  }
-
-  return null;
-}
+const POLL_MS = 2000;
 
 export function useAcceptJob(
   songId: number,
@@ -80,11 +71,6 @@ export function useAcceptJob(
   // Bumped to re-run the poll loop after starting a render, so there is only
   // ever one implementation of the polling itself.
   const [nonce, setNonce] = useState(0);
-  // Notices belong to the finished render, but a save's response returns long
-  // before the render finishes — so the only place they can be read is the poll
-  // that completes the job, and that poll dismisses the job in the same breath.
-  // Kept here so they outlive it and the page can still report them (issue #91).
-  const [saveNotices, setSaveNotices] = useState<FixNotice[]>([]);
 
   // Keep the callback current without restarting the loop on every render.
   const savedCallback = useRef(onVersionSaved);
@@ -97,7 +83,7 @@ export function useAcceptJob(
     try {
       await fetch(`/api/produce/songs/${songId}/accept-fixes/dismiss`, { method: 'POST' });
     } catch {
-      // Dismissing is bookkeeping; the row is already gone from the UI.
+      // Dismissing is bookkeeping; the task is already gone from the UI.
     }
   }, [songId]);
 
@@ -118,17 +104,16 @@ export function useAcceptJob(
       }
       if (cancelled) return;
 
-      setJob(current);
-
       // A finished save is the moment the new version exists: reload the list,
-      // then clear the job so the progress row goes away. A cache hit lands
-      // here on the very first poll, having never been "running".
+      // and keep the job — with its notices (issue #91) — so the task panel can
+      // say it was saved. The server's copy is dismissed, so a later poll or a
+      // reload does not report the same save twice. A cache hit lands here on
+      // the very first poll, having never been "running".
       if (current.status === 'complete' && !current.preview) {
-        setSaveNotices(current.notices ?? []);
         savedCallback.current(current.version?.version_id ?? null);
-        void dismiss();
-        return;
+        void fetch(`/api/produce/songs/${songId}/accept-fixes/dismiss`, { method: 'POST' });
       }
+      setJob(current);
 
       if (current.status === 'running') {
         wasRunning = true;
@@ -141,15 +126,30 @@ export function useAcceptJob(
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [songId, nonce, dismiss]);
+  }, [songId, nonce]);
 
   /** Called right after starting a render, so polling picks it up at once. */
   const refresh = useCallback(() => {
-    // A new render is under way: whatever the last save reported describes a
-    // mix that is no longer the one on screen.
-    setSaveNotices([]);
     setNonce((n) => n + 1);
   }, []);
 
-  return { job, saveNotices, refresh, dismiss };
+  /**
+   * Stop the render at its next step, or only the save riding on it (PROD-19).
+   * Throws the server's reason when it is too late — the version is being
+   * written — so the panel can say so.
+   */
+  const cancel = useCallback(
+    async (saveOnly = false) => {
+      const response = await fetch(
+        `/api/produce/songs/${songId}/accept-fixes/cancel?save_only=${saveOnly}`,
+        { method: 'POST' }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not cancel the render');
+      setNonce((n) => n + 1);
+    },
+    [songId]
+  );
+
+  return { job, refresh, dismiss, cancel };
 }

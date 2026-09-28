@@ -190,7 +190,7 @@ async def test_a_preview_never_registers_a_stem_set(produced_dir, tmp_path, monk
 
     monkeypatch.setattr(produce, "_keep_rendered_stems", spy)
 
-    async def fake_render(request, agent, db):
+    async def fake_render(request, agent, db, report=None):
         return Path(tmp_path / "mix.wav"), [], [{"name": "vocals", "path": "x"}], "htdemucs_6s"
 
     monkeypatch.setattr(produce, "_render_mix", fake_render)

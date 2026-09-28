@@ -23,10 +23,12 @@ describe('ResultSidebar while a render is in flight', () => {
     expect(button(/Preview full mix first/)).toBeEnabled();
   });
 
-  it('disables both, so a second render cannot be queued behind the first', () => {
+  it('lets Save ride on the running render, but holds Preview until it lands', () => {
+    // Pressed during the warm render of these same fixes, a save is attached
+    // to it server-side instead of being refused or rendering again.
     render(<ResultSidebar {...props} renderInProgress />);
 
-    expect(button(/Accept all & save version/)).toBeDisabled();
+    expect(button(/Save when rendered/)).toBeEnabled();
     expect(button(/Preview full mix first/)).toBeDisabled();
   });
 
@@ -72,7 +74,7 @@ describe('ResultSidebar and what a render had to say', () => {
 
     await userEvent.click(button(/Accept all & save version/));
 
-    await waitFor(() => expect(screen.getByText(/Saved as a new version/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Save started/)).toBeInTheDocument());
     expect(screen.queryByText(/did less than it said/)).not.toBeInTheDocument();
     expect(screen.queryByText(/did less than they said/)).not.toBeInTheDocument();
   });

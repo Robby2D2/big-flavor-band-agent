@@ -72,55 +72,70 @@ describe('useAcceptJob', () => {
   });
 
   // A save answers long before its render finishes, so the only place its
-  // notices ever appear is the poll that completes the job — and that poll
-  // dismisses the job in the same breath. Losing them there is how a producer
-  // ended up with a saved version of unchanged audio and nothing said (#91).
+  // notices ever appear is the poll that completes the job. The job now stays
+  // on screen with them — the task panel reports it — while the server's copy
+  // is dismissed so the same save is never reported twice (#91).
   const notice = {
     scope: 'drums',
     tool: 'correct_pitch',
     reason: 'Input does not look like a single line; applied a whole-file shift instead.',
   };
 
-  it("keeps a finished save's notices after the job that carried them is dismissed", async () => {
+  it("keeps a finished save's notices on the job, and dismisses the server's copy", async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      String(url).includes('dismiss')
+        ? respond({})
+        : respond({
+            status: 'complete',
+            preview: false,
+            version: { version_id: 77, is_published: false },
+            notices: [notice],
+          })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAcceptJob(880, vi.fn()));
+
+    await waitFor(() => expect(result.current.job.notices).toEqual([notice]));
+    expect(result.current.job.status).toBe('complete');
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('dismiss'))).toBe(true);
+  });
+
+  it('cancels through the server and polls again for the outcome (PROD-19)', async () => {
+    let cancelled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/cancel')) {
+        cancelled = true;
+        return respond({ status: 'running' });
+      }
+      return respond(cancelled ? { status: 'cancelled', preview: true } : { status: 'running', preview: true });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAcceptJob(880, vi.fn()));
+    await waitFor(() => expect(result.current.job.status).toBe('running'));
+
+    await act(() => result.current.cancel());
+
+    await waitFor(() => expect(result.current.job.status).toBe('cancelled'));
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/cancel?save_only=false'))
+    ).toBe(true);
+  });
+
+  it('cancels only the save when asked, and says why when it is too late', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) =>
-        String(url).includes('dismiss')
-          ? respond({})
-          : respond({
-              status: 'complete',
-              preview: false,
-              version: { version_id: 77, is_published: false },
-              notices: [notice],
-            })
+        String(url).includes('/cancel')
+          ? respond({ error: 'The version is being written and can no longer be cancelled' }, false)
+          : respond({ status: 'running', preview: false })
       )
     );
 
     const { result } = renderHook(() => useAcceptJob(880, vi.fn()));
+    await waitFor(() => expect(result.current.job.status).toBe('running'));
 
-    await waitFor(() => expect(result.current.saveNotices).toEqual([notice]));
-    await waitFor(() => expect(result.current.job.status).toBe('idle'));
-    expect(result.current.saveNotices).toEqual([notice]);
-  });
-
-  it('drops them when the next render starts — they describe a mix no longer on screen', async () => {
-    let statusCalls = 0;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (String(url).includes('dismiss')) return respond({});
-        statusCalls += 1;
-        return statusCalls === 1
-          ? respond({ status: 'complete', preview: false, notices: [notice] })
-          : respond({ status: 'idle' });
-      })
-    );
-
-    const { result } = renderHook(() => useAcceptJob(880, vi.fn()));
-    await waitFor(() => expect(result.current.saveNotices).toEqual([notice]));
-
-    act(() => result.current.refresh());
-
-    await waitFor(() => expect(result.current.saveNotices).toEqual([]));
+    await expect(result.current.cancel(true)).rejects.toThrow(/can no longer be cancelled/);
   });
 });

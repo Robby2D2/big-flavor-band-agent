@@ -4,7 +4,6 @@ import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import AudioProcessingTab from '@/components/produce/audio/AudioProcessingTab';
-import FixNoticePanel from '@/components/produce/audio/FixNoticePanel';
 import type { VersionDetail } from '@/components/produce/audio/VersionDetails';
 import {
   formatBytes,
@@ -12,12 +11,7 @@ import {
   formatProducedAt,
   formatSteps,
 } from '@/lib/formatVersion';
-import { describeAcceptJob, useAcceptJob } from '@/hooks/useAcceptJob';
-import {
-  UNSAVED_VERSION_ID,
-  unsavedRenderFrom,
-  unsavedRenderLabel,
-} from '@/lib/unsavedRender';
+import { useAcceptJob } from '@/hooks/useAcceptJob';
 
 interface CatalogSong {
   id: number;
@@ -50,7 +44,6 @@ export default function ProduceSongPage({
   // when the selected version is renamed away or deleted.
   useEffect(() => {
     setSelectedVersionId((prev) => {
-      if (prev === UNSAVED_VERSION_ID) return prev;
       if (prev != null && versions.some((v) => v.id === prev)) return prev;
       const published = versions.find((v) => v.is_published);
       return published?.id ?? versions[0]?.id ?? null;
@@ -120,16 +113,14 @@ export default function ProduceSongPage({
     }
   };
 
-  const { job: renderJob, saveNotices, refresh: refreshRenderJob } = useAcceptJob(
-    songId,
-    handleVersionSaved
-  );
-  const renderNotice = describeAcceptJob(renderJob);
-  const renderInProgress = renderJob.status === 'running';
-  // Start analysis renders what it detected, so there is usually a finished mix
-  // that belongs to no version yet. It keeps a row so it can be played against
-  // the original before anyone decides to save it.
-  const unsavedRender = unsavedRenderFrom(renderJob);
+  // The song's whole-queue render. Its progress, outcome and any notices are
+  // the task panel's to show (inside AudioProcessingTab), not this list's.
+  const {
+    job: renderJob,
+    refresh: refreshRenderJob,
+    cancel: cancelRender,
+    dismiss: dismissRender,
+  } = useAcceptJob(songId, handleVersionSaved);
 
   // Intensity is only recorded by the older auto-clean path; the per-fix flow
   // has no such setting, so for most songs the column is dead space.
@@ -139,15 +130,6 @@ export default function ProduceSongPage({
   // lands rather than on the next page load.
   const awaitingDefault =
     Boolean(song?.awaiting_default) && !versions.some((v) => v.is_published);
-
-  // If the unsaved mix goes away (dismissed, or superseded by a new render)
-  // while it was selected, fall back to a real version.
-  useEffect(() => {
-    if (!unsavedRender && selectedVersionId === UNSAVED_VERSION_ID) {
-      const published = versions.find((v) => v.is_published);
-      setSelectedVersionId(published?.id ?? versions[0]?.id ?? null);
-    }
-  }, [unsavedRender, selectedVersionId, versions]);
 
   const handleSetDefault = async (versionId: number) => {
     setVersionBusyId(versionId);
@@ -325,62 +307,6 @@ export default function ProduceSongPage({
                   </tr>
                 </thead>
                 <tbody className="text-text">
-                  {renderNotice && (
-                    <tr className="border-t border-white/8 bg-white/5">
-                      <td className="py-2 px-3">
-                        {renderNotice.tone === 'progress' ? (
-                          <span className="inline-block h-3 w-3 rounded-full border-2 border-signal border-t-transparent animate-spin" />
-                        ) : (
-                          <span className="text-red-500">!</span>
-                        )}
-                      </td>
-                      <td className="py-2 px-3" colSpan={showIntensity ? 6 : 5}>
-                        <span
-                          className={`font-medium ${
-                            renderNotice.tone === 'error'
-                              ? 'text-red-600 dark:text-red-400'
-                              : 'text-text'
-                          }`}
-                        >
-                          {renderNotice.label}
-                        </span>
-                        <span className="text-text/45 ml-2">{renderNotice.detail}</span>
-                      </td>
-                    </tr>
-                  )}
-                  {unsavedRender && (
-                    <tr
-                      onClick={() => setSelectedVersionId(UNSAVED_VERSION_ID)}
-                      aria-selected={selectedVersionId === UNSAVED_VERSION_ID}
-                      className={`border-t border-white/8 align-middle cursor-pointer ${
-                        selectedVersionId === UNSAVED_VERSION_ID
-                          ? 'bg-signal/10'
-                          : 'hover:bg-white/5'
-                      }`}
-                    >
-                      <td className="py-2 px-3">
-                        <input
-                          type="radio"
-                          name="selected-version"
-                          checked={selectedVersionId === UNSAVED_VERSION_ID}
-                          onChange={() => setSelectedVersionId(UNSAVED_VERSION_ID)}
-                          aria-label="Audition the new unsaved mix"
-                          className="accent-signal"
-                        />
-                      </td>
-                      <td className="py-2 px-3">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">New mix</span>
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-200">
-                            Not saved
-                          </span>
-                        </div>
-                      </td>
-                      <td className="py-2 px-3 text-text/55" colSpan={showIntensity ? 5 : 4}>
-                        {unsavedRenderLabel(unsavedRender)}
-                      </td>
-                    </tr>
-                  )}
                   {versions.map((v) => {
                     const selected = v.id === selectedVersionId;
                     return (
@@ -440,14 +366,6 @@ export default function ProduceSongPage({
             </div>
           )}
 
-          {/* A save's render finishes after the review queue that started it has
-              been cleared for the new version, so this is where it gets to
-              report a fix that did less than its card said (issue #91). */}
-          {saveNotices.length > 0 && (
-            <div className="mt-4">
-              <FixNoticePanel notices={saveNotices} />
-            </div>
-          )}
           </section>
 
           <AudioProcessingTab
@@ -456,10 +374,9 @@ export default function ProduceSongPage({
             sourceVersionId={selectedVersionId}
             onApplied={loadVersions}
             onRenderStarted={refreshRenderJob}
-            renderInProgress={renderInProgress}
-            unsavedRender={
-              selectedVersionId === UNSAVED_VERSION_ID ? unsavedRender : null
-            }
+            renderJob={renderJob}
+            onCancelRender={cancelRender}
+            onDismissRender={dismissRender}
             versionActions={{
               busyId: versionBusyId,
               onSetDefault: handleSetDefault,
