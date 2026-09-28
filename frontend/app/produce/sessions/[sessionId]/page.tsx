@@ -8,7 +8,9 @@ import Header from '@/components/Header';
 import TakeCard, {
   SessionTake,
 } from '@/components/produce/session/TakeCard';
+import TakeGroupCard from '@/components/produce/session/TakeGroupCard';
 import { stemColor } from '@/components/produce/audio/stemColors';
+import { TakeGroupRecord, reviewRows } from '@/lib/takeGroups';
 
 interface SessionTrack {
   id: number;
@@ -33,6 +35,7 @@ interface SessionDetail {
   duration_seconds: number | null;
   tracks: SessionTrack[];
   takes: SessionTake[];
+  groups: TakeGroupRecord[];
 }
 
 const STAGE_COPY: Record<string, string> = {
@@ -51,6 +54,7 @@ export default function SessionPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showDead, setShowDead] = useState(false);
+  const [regrouping, setRegrouping] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -107,6 +111,49 @@ export default function SessionPage() {
     }).catch(() => load());
   };
 
+  const renameGroup = async (group: TakeGroupRecord, name: string) => {
+    await fetch(`/api/produce/sessions/groups/${group.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    load();
+  };
+
+  // Clicking the chosen keeper again clears it: the producer must be able to go
+  // back to "not decided yet", which is where every group starts (SESS-15).
+  const chooseKeeper = async (group: TakeGroupRecord, take: SessionTake) => {
+    const keeper = group.keeper_take_id === take.id ? null : take.id;
+    await fetch(`/api/produce/sessions/groups/${group.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keeper_take_id: keeper }),
+    });
+    load();
+  };
+
+  const separate = async (take: SessionTake) => {
+    await fetch(`/api/produce/sessions/takes/${take.id}/separate`, {
+      method: 'POST',
+    });
+    load();
+  };
+
+  const regroup = async () => {
+    if (
+      !window.confirm(
+        'Guess the songs again from what was transcribed? Any group name you set and any keeper you chose will be discarded. No take or audio is lost.'
+      )
+    ) {
+      return;
+    }
+    setRegrouping(true);
+    await fetch(`/api/produce/sessions/${sessionId}/regroup`, { method: 'POST' })
+      .catch(() => undefined)
+      .finally(() => setRegrouping(false));
+    load();
+  };
+
   const remove = async () => {
     if (!window.confirm('Delete this session and everything rendered from it?')) {
       return;
@@ -125,6 +172,14 @@ export default function SessionPage() {
   );
 
   const kept = (session?.takes ?? []).filter((take) => !take.excluded);
+
+  // Grouping rearranges takes; it never removes one. Every take the scan found is
+  // in exactly one row, either inside its song's group or on its own (SESS-14).
+  const rows = useMemo(
+    () => reviewRows(session?.takes ?? [], session?.groups ?? []),
+    [session]
+  );
+  const groupCount = rows.filter((row) => row.kind === 'group').length;
 
   return (
     <div className="min-h-screen bg-canvas text-text">
@@ -210,28 +265,63 @@ export default function SessionPage() {
 
             {session.takes.length > 0 && (
               <section className="mt-8">
-                <div className="mb-3 flex items-baseline justify-between">
+                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                   <h2 className="text-lg font-medium">
-                    {kept.length} {kept.length === 1 ? 'take' : 'takes'}
+                    {session.takes.length}{' '}
+                    {session.takes.length === 1 ? 'take' : 'takes'}
+                    {groupCount > 0 && (
+                      <span className="ml-2 text-sm font-normal text-text/50">
+                        in {groupCount} {groupCount === 1 ? 'song' : 'songs'} and{' '}
+                        {rows.length - groupCount} on their own
+                      </span>
+                    )}
                   </h2>
-                  <p className="text-xs text-text/40">
-                    Open one to hear it and see its channels
-                  </p>
+                  <div className="flex items-baseline gap-3">
+                    <p className="text-xs text-text/40">
+                      Open one to hear it and see its channels
+                    </p>
+                    {!busy && (
+                      <button
+                        type="button"
+                        onClick={regroup}
+                        disabled={regrouping}
+                        className="rounded border border-raised px-2 py-1 text-xs text-text/70 hover:bg-raised disabled:opacity-50"
+                      >
+                        {regrouping ? 'Guessing…' : 'Re-guess songs'}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <ul className="space-y-2">
-                  {session.takes.map((take, index) => (
-                    <TakeCard
-                      key={take.id}
-                      take={take}
-                      index={index + 1}
-                      onToggleExcluded={toggleExcluded}
-                    />
-                  ))}
+                  {rows.map((row) =>
+                    row.kind === 'group' ? (
+                      <TakeGroupCard
+                        key={`group-${row.group.id}`}
+                        group={row.group}
+                        takes={row.takes}
+                        onRename={renameGroup}
+                        onChooseKeeper={chooseKeeper}
+                        onSeparate={separate}
+                        onToggleExcluded={toggleExcluded}
+                      />
+                    ) : (
+                      <TakeCard
+                        key={row.take.id}
+                        take={row.take}
+                        index={row.position}
+                        onToggleExcluded={toggleExcluded}
+                      />
+                    )
+                  )}
                 </ul>
                 <p className="mt-3 text-xs text-text/40">
                   Detection is a first pass — a stretch of talking can read as a
-                  song. Discard anything that isn&apos;t one; nothing is imported into
-                  the catalog until you say so.
+                  song, and which takes are the same song is guessed from the words
+                  they share, not matched against the catalog. A take that fits no
+                  song stands on its own. Discard anything that isn&apos;t a song;
+                  nothing is imported into the catalog until you say so.
+                  {kept.length !== session.takes.length &&
+                    ` ${session.takes.length - kept.length} discarded so far.`}
                 </p>
               </section>
             )}
