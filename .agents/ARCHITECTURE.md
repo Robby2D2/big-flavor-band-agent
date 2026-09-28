@@ -674,9 +674,10 @@ currently make any call (see below) and the configured key is invalid.
 - **The scan is a background job whose narration is durable.** `recording_sessions` carries `stage`
   and `progress` beside `status`, unlike `stem_jobs`' in-memory state, because a scan runs for tens
   of minutes and a page reloaded mid-run has to pick the story back up.
-- **Nothing reaches the catalog.** Takes are staged in `session_takes`/`session_take_stems` and a
-  producer discards what isn't a song (a flag, never a delete). Import into `songs`/`song_versions`
-  is a later step; matching a take to a catalog song is deliberately not built yet.
+- **Nothing reaches the catalog until a producer produces a song.** Takes are staged in
+  `session_takes`/`session_take_stems` and a producer discards what isn't a song (a flag, never a
+  delete). Producing a group is the only way out — see "A song group becomes a catalog song" below.
+  A take is never matched to a song already in the catalog.
 - **Unpacking flattens every member to its basename.** Reaper references media by basename, a Google
   Drive export nests it under a folder, and flattening is also what makes zip-slip impossible — no
   member keeps a path to escape with.
@@ -772,12 +773,17 @@ An earlier version of these notes justified the containment threshold with "no u
 62s/89s gaps sit between two wordless takes, which the rule can never reach). A false *why* on a
 magic number is worse than none — `.agents/CODING.md`.
 
-**Grouping is storage because the corrections are.** A name a producer fixed, a take they separated
-out, and the keeper they chose all have to survive a reload — the *guess* itself is cheap to redo,
-which is why `POST /sessions/{id}/regroup` exists (it reads transcripts only, so a session scanned
-before grouping existed can be grouped without re-uploading gigabytes) and why re-running it is never
-automatic: it discards those corrections. `keeper_take_id` has no default, so **SESS-15** — a group
-starts with no keeper and nothing chooses one — holds by construction rather than by care.
+**Grouping is storage because the corrections are.** A name a producer fixed and a take they moved
+have to survive a reload — the *guess* itself is cheap to redo, which is why
+`POST /sessions/{id}/regroup` exists (it reads transcripts only, so a session scanned before grouping
+existed can be grouped without re-uploading gigabytes) and why re-running it is never automatic: it
+discards those corrections. It never touches a group already produced, nor its takes.
+
+A producer regroups by hand through one control per take, a song menu (**SESS-18**):
+`PATCH /sessions/takes/{id}` with `group_id` moves it to another song or out on its own, and
+`POST /sessions/{id}/groups` starts a new song from it — the only way a take the guess left alone can
+be produced. A move that empties an unproduced group deletes it (an empty guess is noise); a produced
+take cannot move at all (409), because its version already belongs to that song.
 
 The name is *not* stored. `frontend/lib/takeGroups.ts` derives it at display time by running the
 existing `takeName()` over the group's fullest take, so **SESS-12**'s six-word cap and wordless label
@@ -786,6 +792,45 @@ module flattens takes and groups into review rows, which is where the count inva
 rows must flatten back to exactly the takes that went in (**SESS-14**). Inside a group a take is
 headed by its position, length and start time rather than its words — two attempts at one song can
 produce the identical six-word headline, which is exactly what **SESS-13** exists for.
+
+### A song group becomes a catalog song (2026-09-28)
+
+Review used to end in choosing a per-group "keeper", which led nowhere — no import step existed. Now
+review is **only grouping**, and `POST /sessions/groups/{id}/produce` (`src/api/session_import.py`,
+migration 24) is the human import **SESS-10** waits for:
+
+- **One new song per group, always** (**SESS-19**). The owner ruled that a session never matches a
+  catalog song: a re-recording is a new song on purpose, which bends **CAT-04** knowingly.
+- **Every non-discarded take becomes a `song_versions` row, label `session`, none published.** The
+  default is chosen on `/produce/{songId}` like any song's (**SESS-15**); the page's "Produce this
+  song →" button lands there. `list_versions` seeds no `original` for these songs — they have no
+  catalog file.
+- **Session songs take ids from `session_song_id_seq`, starting at 1,000,000**
+  (`database.SESSION_SONG_ID_START`). `songs.id` has no sequence because catalog ids come from
+  bigflavorband.com (max ~2.6k), and a later scrape must not collide. The range is also the marker
+  for the next rule.
+- **A session song is hidden from listeners until it has a default** (**SESS-20**). One predicate,
+  `database.LISTED_SONG_SQL` (`id < 1,000,000 OR a published version exists`), is ANDed into every
+  search query in `big_flavor_rag.py` and `search_similar_songs`, and filters
+  `search_similar_songs_by_audio`'s rows (asked for 2× so the limit survives). Radio top-up and the DJ
+  reach songs only through those searches. Not `audio_url IS NULL`: 688 of the 1,415 catalog songs
+  have a NULL `audio_url` and play from their `{id}_*.mp3` file, so that rule would hide half the
+  catalog. It is a predicate rather than a view so search keeps working if migration 24 has not been
+  applied yet.
+- **The catalog keeps its own copy.** The mix is copied to `produced/{song_id}/session/take-{id}.*`
+  and each channel into the version's stem set via `produce._keep_stems` (the fix-queue's
+  stem-keeping, generalised with an `origin`, here `session`, model `session-channels`), carrying the
+  band's track names as `display_name` (**SESS-11**). Deleting the session `rmtree`s its folder, so a
+  reference would dangle. Because the version has a complete stem set, Start analysis measures it
+  with no Demucs run.
+- **Producing again only adds.** `session_takes.song_version_id` marks what came in;
+  `ensure_session_group_song` locks the group row (`FOR UPDATE`) so two clicks make one song; and
+  the copy path is fixed per take, so a half-finished run lands on the same version row (**CAT-09**).
+- The catalog-clean batch skips session songs (it cleans catalog originals, which they lack), and a
+  `session` version does not count as "cleaned".
+
+Not done: setting the default does not index the version's audio, so until a reindex a session song
+is found by title and text search but not by audio similarity or tempo.
 
 ### `AnthropicProvider` cannot make a call (found 2026-09-25, not yet fixed)
 

@@ -7,7 +7,7 @@ Main exports:
     - DatabaseManager: Main database interface class
 """
 
-from .database import DatabaseManager
+from .database import LISTED_SONG_SQL, SESSION_SONG_ID_START, DatabaseManager
 from .radio_state_store import RadioStateStore
 
-__all__ = ['DatabaseManager', 'RadioStateStore']
+__all__ = ['DatabaseManager', 'RadioStateStore', 'LISTED_SONG_SQL', 'SESSION_SONG_ID_START']

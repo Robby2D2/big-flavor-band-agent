@@ -28,7 +28,7 @@ def test_catalog_song_view_marks_cleaned_and_surfaces_columns():
         "duration_seconds": 212,
         "recorded_on": date(2019, 7, 4),
     }
-    view = produce._catalog_song_view(song, cleaned_ids={5, 9})
+    view = produce._catalog_song_view(song, cleaned_ids={5, 9}, published_ids={5})
     assert view == {
         "id": 5,
         "title": "Big Flavor Jam",
@@ -37,17 +37,32 @@ def test_catalog_song_view_marks_cleaned_and_surfaces_columns():
         "duration_seconds": 212,
         "recorded_on": "2019-07-04",
         "cleaned": True,
+        "awaiting_default": False,
     }
 
 
 def test_catalog_song_view_not_cleaned_and_missing_title():
     song = {"id": 7}
-    view = produce._catalog_song_view(song, cleaned_ids={5})
+    view = produce._catalog_song_view(song, cleaned_ids={5}, published_ids=set())
     assert view["cleaned"] is False
     assert view["title"] == "Unknown"
     assert view["genre"] is None
     # A song with no recorded-on date surfaces null, not a crash (issue #51).
     assert view["recorded_on"] is None
+    # A catalog song never waits on a default: it has its catalog file.
+    assert view["awaiting_default"] is False
+
+
+def test_catalog_song_view_flags_session_song_without_default():
+    """A session song is hidden from listeners until it has a default (SESS-20)."""
+    song_id = produce.SESSION_SONG_ID_START + 3
+    song = {"id": song_id, "title": "Super Remodel"}
+
+    waiting = produce._catalog_song_view(song, cleaned_ids=set(), published_ids=set())
+    chosen = produce._catalog_song_view(song, cleaned_ids=set(), published_ids={song_id})
+
+    assert waiting["awaiting_default"] is True
+    assert chosen["awaiting_default"] is False
 
 
 def test_iso_date_normalizes_date_string_and_null():

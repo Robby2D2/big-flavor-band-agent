@@ -22,6 +22,8 @@ import {
 interface CatalogSong {
   id: number;
   title: string;
+  /** Made from a recording session and no version chosen as default yet. */
+  awaiting_default: boolean;
 }
 
 export default function ProduceSongPage({
@@ -132,6 +134,11 @@ export default function ProduceSongPage({
   // Intensity is only recorded by the older auto-clean path; the per-fix flow
   // has no such setting, so for most songs the column is dead space.
   const showIntensity = versions.some((v) => v.aggressiveness);
+
+  // Read against the live versions list, so it clears the moment Set default
+  // lands rather than on the next page load.
+  const awaitingDefault =
+    Boolean(song?.awaiting_default) && !versions.some((v) => v.is_published);
 
   // If the unsaved mix goes away (dismissed, or superseded by a new render)
   // while it was selected, fall back to a real version.
@@ -253,6 +260,14 @@ export default function ProduceSongPage({
         <h1 className="text-2xl font-bold text-text mb-6">
           {song?.title}
         </h1>
+
+        {awaitingDefault && (
+          <div className="mb-6 rounded-lg border border-amber-300/40 bg-amber-100/10 p-4 text-sm text-text/80">
+            Each take from the recording session is a version below. Audition
+            them, run analysis on any you like, and set one as the default —
+            until then this song is hidden from search and the radio.
+          </div>
+        )}
 
         <div className="bg-panel border border-white/8 rounded-xl p-6">
           <h2 className="text-xl font-semibold text-text mb-1">Audio processing</h2>

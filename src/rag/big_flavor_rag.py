@@ -20,7 +20,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # Import from database package
-from database import DatabaseManager
+from database import LISTED_SONG_SQL, DatabaseManager
 
 # Import audio embedding extractor
 from src.rag.audio_embedding_extractor import AudioEmbeddingExtractor
@@ -457,19 +457,8 @@ class SongRAGSystem:
         # Extract features from query audio
         features = self.embedding_extractor.extract_all_features(query_audio_path)
         query_embedding = features['combined_embedding']
-        
-        # Search database
-        async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM search_similar_songs_by_audio($1, $2, $3)
-                """,
-                str(query_embedding),  # Convert to string for pgvector
-                limit,
-                similarity_threshold
-            )
-        
-        results = [dict(row) for row in rows]
+
+        results = await self.search_by_embedding(query_embedding, limit, similarity_threshold)
         logger.info(f"Audio similarity search found {len(results)} results")
         return results
     
@@ -490,16 +479,22 @@ class SongRAGSystem:
         Returns:
             List of similar songs
         """
+        # The stored function knows nothing of listing, so it is asked for a
+        # wider net and unlisted songs are dropped here, keeping its order.
         async with self.db.pool.acquire() as conn:
             rows = await conn.fetch(
-                """
-                SELECT * FROM search_similar_songs_by_audio($1, $2, $3)
+                f"""
+                SELECT r.* FROM search_similar_songs_by_audio($1, $2 * 2, $3) r
+                JOIN songs s ON s.id = r.song_id
+                WHERE {LISTED_SONG_SQL}
+                ORDER BY r.similarity DESC
+                LIMIT $2
                 """,
                 str(query_embedding),  # Convert to string for pgvector
                 limit,
                 similarity_threshold
             )
-        
+
         results = [dict(row) for row in rows]
         return results
     
@@ -520,7 +515,7 @@ class SongRAGSystem:
         Returns:
             List of matching songs
         """
-        conditions = []
+        conditions = [LISTED_SONG_SQL]
         params = []
         param_count = 0
         
@@ -579,7 +574,7 @@ class SongRAGSystem:
         if not self.text_embedding_model:
             logger.warning("Text embedding model not available. Falling back to keyword-only search.")
             # Fall back to simple keyword search
-            query = """
+            query = f"""
                 SELECT DISTINCT
                     s.id,
                     s.title,
@@ -596,11 +591,12 @@ class SongRAGSystem:
                     ae.audio_path
                 FROM songs s
                 LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-                WHERE
+                WHERE (
                     s.title ILIKE $1 OR
                     s.genre ILIKE $1 OR
                     s.mood ILIKE $1 OR
                     s.energy ILIKE $1
+                ) AND {LISTED_SONG_SQL}
                 ORDER BY s.title
                 LIMIT $2
             """
@@ -626,7 +622,7 @@ class SongRAGSystem:
         # to compete with. Still a few hundred rows over a 1.3k-song catalog.
         candidate_limit = min(300, max(limit * 5, 50))
 
-        query = """
+        query = f"""
             WITH song_vectors AS (
                 -- Everything a song can be matched on: its whole-lyric and
                 -- metadata embeddings, plus each verse-sized lyric chunk
@@ -726,6 +722,7 @@ class SongRAGSystem:
                 WHERE ae_inner.song_id = s.id
                 LIMIT 1
             ) ae ON TRUE
+            WHERE {LISTED_SONG_SQL}
             ORDER BY max_similarity DESC, s.title
             LIMIT $2
         """
@@ -821,7 +818,7 @@ class SongRAGSystem:
             # Create case-insensitive LIKE pattern
             keyword_pattern = f"%{keyword}%"
             
-            query = """
+            query = f"""
                 SELECT DISTINCT
                     s.id,
                     s.title,
@@ -837,7 +834,7 @@ class SongRAGSystem:
                 FROM songs s
                 JOIN text_embeddings te ON s.id = te.song_id
                 LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-                WHERE te.content_type = 'lyrics'
+                WHERE te.content_type = 'lyrics' AND {LISTED_SONG_SQL}
                 AND te.content ILIKE $1
                 ORDER BY s.title
                 LIMIT $2
@@ -878,7 +875,7 @@ class SongRAGSystem:
         if fuzzy:
             # Use ILIKE for case-insensitive fuzzy matching
             # Order by length to prefer closer matches
-            query = """
+            query = f"""
                 SELECT 
                     s.id,
                     s.title,
@@ -891,7 +888,7 @@ class SongRAGSystem:
                     LENGTH(s.title) as title_length
                 FROM songs s
                 LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-                WHERE s.title ILIKE $1
+                WHERE s.title ILIKE $1 AND {LISTED_SONG_SQL}
                 ORDER BY title_length, s.title
                 LIMIT $2
             """
@@ -901,7 +898,7 @@ class SongRAGSystem:
                 rows = await conn.fetch(query, pattern, limit)
         else:
             # Exact match
-            query = """
+            query = f"""
                 SELECT 
                     s.id,
                     s.title,
@@ -913,7 +910,7 @@ class SongRAGSystem:
                     (ae.librosa_features->>'tempo')::float as tempo_bpm
                 FROM songs s
                 LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-                WHERE s.title = $1
+                WHERE s.title = $1 AND {LISTED_SONG_SQL}
                 LIMIT $2
             """
             

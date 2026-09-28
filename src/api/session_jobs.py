@@ -481,11 +481,20 @@ async def group_session_takes(db: DatabaseManager, session_id: int) -> int:
 
     Runs on the transcripts already stored, so it needs no audio and can be
     re-run on a session scanned before grouping existed. Any previous grouping is
-    dropped first — including a producer's names and keepers, which is why
-    re-running it is a deliberate action and never automatic.
+    dropped first — including a producer's names, which is why re-running it is
+    a deliberate action and never automatic. A group already produced into the
+    catalog survives, and its takes are not guessed again.
     """
     await db.clear_session_take_groups(session_id)
-    takes = await db.list_session_takes(session_id)
+    produced_groups = {
+        group["id"]
+        for group in await db.list_session_take_groups(session_id)
+        if group.get("song_id") is not None
+    }
+    takes = [
+        take for take in await db.list_session_takes(session_id)
+        if take.get("group_id") not in produced_groups
+    ]
     groups = session_grouping.group_takes(takes)
 
     for ids in groups:

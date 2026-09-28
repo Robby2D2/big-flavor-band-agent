@@ -29,7 +29,8 @@ export interface TakeGroupRecord {
   id: number;
   /** The name a producer set by hand, or null to show the guess. */
   name: string | null;
-  keeper_take_id: number | null;
+  /** The catalog song this group was produced into, or null while staged. */
+  song_id: number | null;
 }
 
 /** A take plus its 1-based position in the session, which never changes. */

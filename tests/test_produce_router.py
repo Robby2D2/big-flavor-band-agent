@@ -101,6 +101,13 @@ class FakeDB:
             v["song_id"] for v in self._versions.values() if v["label"] != "original"
         }
 
+    async def get_published_audio_paths(self):
+        return {
+            v["song_id"]: v["audio_path"]
+            for v in self._versions.values()
+            if v["is_published"]
+        }
+
     async def get_song_lyrics(self, song_id):
         return self._lyrics.get(song_id)
 

@@ -24,7 +24,7 @@ from src.api.routers.produce import (
     clean_song_to_candidate,
     publish_candidate_version,
 )
-from database import DatabaseManager
+from database import SESSION_SONG_ID_START, DatabaseManager
 
 logger = logging.getLogger("backend-api")
 
@@ -131,7 +131,12 @@ class BatchCleanManager:
         rag: SongRAGSystem,
     ) -> None:
         try:
-            songs = await db.get_all_songs()
+            # The batch cleans catalog originals; a song made from a session
+            # has none — its audio is its versions.
+            songs = [
+                s for s in await db.get_all_songs()
+                if s["id"] < SESSION_SONG_ID_START
+            ]
             cleaned_ids = await db.get_song_ids_with_cleaned_versions()
 
             # not_cleaned selection drops songs that already have a cleaned version.

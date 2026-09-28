@@ -12,6 +12,8 @@ interface CatalogSong {
   duration_seconds: number | null;
   recorded_on: string | null;
   cleaned: boolean;
+  /** A session song listeners cannot see until a default version is chosen. */
+  awaiting_default: boolean;
 }
 
 type Intensity = 'gentle' | 'moderate' | 'aggressive';
@@ -446,6 +448,14 @@ export default function ProducePage() {
                       >
                         {song.title}
                       </Link>
+                      {song.awaiting_default && (
+                        <span
+                          className="ml-2 text-xs px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-200"
+                          title="Made from a recording session. Hidden from search and radio until you choose its default version."
+                        >
+                          No default yet
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 px-3 text-text/55">
                       {song.genre ?? '—'}

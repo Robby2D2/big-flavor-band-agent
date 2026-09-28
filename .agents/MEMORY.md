@@ -37,6 +37,34 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-28 — Session review only groups; producing a group makes a new catalog song (SESS-15/18/19/20)
+The owner asked that the session page only group takes into songs, drop "Keep", and hand each song to
+the produce page for analysis and the default choice. The keeper had never led anywhere: no import
+step existed. Now each take has a song menu (move / on its own / new song), and "Produce this song →"
+(`POST /sessions/groups/{id}/produce`, `src/api/session_import.py`) creates **one new song**, copies
+each non-discarded take in as an unpublished `session`-label version with its channels as the
+version's stem set, and navigates to `/produce/{songId}`. Details in `ARCHITECTURE.md`.
+
+The owner's rulings, which are now requirements: session songs get ids from **1,000,000** up
+(`session_song_id_seq`, clear of scraped ids); a session **never** matches an existing catalog song,
+knowingly bending CAT-04; songs with **no default are hidden** from search, DJ and radio (SESS-20);
+`keeper_take_id` is **dropped**.
+
+- **Migration 24 is a manual step in production**, like 21 and 23 (the deploy scripts do not run
+  migrations). It adds the sequence, `session_take_groups.song_id`, `session_takes.song_version_id`,
+  and drops the keeper column. Search keeps working without it; the session page's produce button
+  does not.
+- **"No default → hidden" is keyed on the id range, not `audio_url`.** 688 of 1,415 catalog songs
+  have a NULL `audio_url` and still play from `{id}_*.mp3`; the obvious rule would have hidden half
+  the catalog. Checked against the live DB in a rolled-back transaction: the session song is hidden,
+  then listed once a version is published, and 1,415 + 1 are listed.
+- Verified end to end on session 4 ("Super Remodel", the owner's screenshot): song 1000000, versions
+  "Take 1 (0:24)" / "Take 2 (3:59)", stem sets carry "4 Kev Vox" etc., a second press adds nothing.
+  **Left in the local DB, no default chosen** — that choice is the owner's.
+- Found, not fixed: session 4's takes have no stem for "5 Tom Instr (bass too high)" — the scan never
+  rendered it, which is upstream of this change. Setting a default does not index audio, so a session
+  song is not in audio-similarity or tempo search until a reindex.
+
 ### 2026-09-28 — Recording sessions import straight from Google Drive (SESS-16/17)
 The owner asked to stop uploading multi-GB zips: the sessions already live in the shared `ReaperProjects`
 Drive folder. `/produce/sessions` now has **Import from Drive** — the backend lists the dated project

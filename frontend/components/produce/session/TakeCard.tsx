@@ -25,23 +25,37 @@ export interface SessionTake {
   transcript: string | null;
   excluded: boolean;
   has_audio: boolean;
+  /** The catalog version this take became when its song was produced. */
+  song_version_id: number | null;
   stems: SessionStem[];
 }
+
+/** A song a take can be moved into, as the menu names it. */
+export interface SongOption {
+  id: number;
+  label: string;
+}
+
+/** Where a take is moved: a song, a new song of its own, or nowhere. */
+export type MoveTarget = number | 'new' | null;
 
 interface TakeCardProps {
   take: SessionTake;
   /** The take's 1-based position among all the session's takes — its handle. */
   index: number;
   onToggleExcluded: (take: SessionTake) => void;
+  /** The session's songs, for the menu that moves a take between them. */
+  songs: SongOption[];
+  onMove: (take: SessionTake, target: MoveTarget) => void;
   /**
    * Shown inside a song group, where the guessed name belongs to the group and a
    * take has to be told apart from its siblings some other way (SESS-13).
    */
   inGroup?: boolean;
-  isKeeper?: boolean;
-  onChooseKeeper?: (take: SessionTake) => void;
-  onSeparate?: (take: SessionTake) => void;
 }
+
+const NEW_SONG = 'new';
+const ON_ITS_OWN = '';
 
 const clock = (seconds: number): string => {
   const total = Math.max(0, Math.round(seconds));
@@ -61,10 +75,9 @@ export default function TakeCard({
   take,
   index,
   onToggleExcluded,
+  songs,
+  onMove,
   inGroup = false,
-  isKeeper = false,
-  onChooseKeeper,
-  onSeparate,
 }: TakeCardProps) {
   const [open, setOpen] = useState(false);
   const [peaks, setPeaks] = useState<Peaks | null>(null);
@@ -116,18 +129,6 @@ export default function TakeCard({
       }`}
     >
       <div className="flex flex-wrap items-center gap-3 p-4">
-        {onChooseKeeper && (
-          <label className="flex items-center gap-1.5 text-xs text-text/60">
-            <input
-              type="radio"
-              checked={isKeeper}
-              onChange={() => onChooseKeeper(take)}
-              className="accent-confirm"
-            />
-            Keep
-          </label>
-        )}
-
         <button
           type="button"
           onClick={toggleOpen}
@@ -170,24 +171,44 @@ export default function TakeCard({
           {take.rec_pass !== null ? ` · pass ${take.rec_pass}` : ''}
         </span>
 
-        {onSeparate && (
-          <button
-            type="button"
-            onClick={() => onSeparate(take)}
-            className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised"
-            title="Not the same song — show this take on its own"
-          >
-            Separate
-          </button>
-        )}
+        {take.song_version_id !== null ? (
+          // Once a take is a catalog version it belongs to that song; moving it
+          // would leave the version behind in the wrong one.
+          <span className="rounded bg-confirm/15 px-2 py-1 text-xs text-confirm">
+            In catalog
+          </span>
+        ) : (
+          <>
+            <select
+              aria-label="Which song this take is"
+              value={take.group_id ?? ON_ITS_OWN}
+              onChange={(event) => {
+                const value = event.target.value;
+                onMove(
+                  take,
+                  value === NEW_SONG ? 'new' : value === ON_ITS_OWN ? null : Number(value)
+                );
+              }}
+              className="max-w-[12rem] rounded border border-raised bg-well px-2 py-1 text-xs"
+            >
+              {songs.map((song) => (
+                <option key={song.id} value={song.id}>
+                  {song.label}
+                </option>
+              ))}
+              <option value={ON_ITS_OWN}>On its own</option>
+              <option value={NEW_SONG}>New song…</option>
+            </select>
 
-        <button
-          type="button"
-          onClick={() => onToggleExcluded(take)}
-          className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised"
-        >
-          {take.excluded ? 'Restore' : 'Discard'}
-        </button>
+            <button
+              type="button"
+              onClick={() => onToggleExcluded(take)}
+              className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised"
+            >
+              {take.excluded ? 'Restore' : 'Discard'}
+            </button>
+          </>
+        )}
       </div>
 
       {open && (

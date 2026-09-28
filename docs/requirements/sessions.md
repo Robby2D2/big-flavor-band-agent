@@ -76,6 +76,26 @@ the product cannot confidently assign to a song MUST be shown on its own, never 
 or dropped.
 *Why:* a grouping guess that loses a take loses recorded material.
 
-**SESS-15** — A group of takes MUST start with no keeper chosen, and the product MUST NOT choose one
-for the producer. Until a human chooses, nothing from that group is eligible to reach the catalog
-(**SESS-10**).
+**SESS-15** — A song produced from a session MUST start with no default version, and the product
+MUST NOT choose one for the producer. The producer chooses it on the produce page, as for any song
+(**PROD-04**).
+*Amended 2026-09-28:* this used to say a group starts with no *keeper*. Review now only groups takes,
+and the choice the keeper stood in for is the default version.
+
+**SESS-18** — A producer MUST be able to move any take into any song of its session, out on its own,
+or into a new song of its own — including a take the grouping guess left alone. No move may lose a
+take (**SESS-14**). A take that has already become a catalog version stays with that song.
+
+**SESS-19** — Producing a song group is the human import **SESS-10** requires. It MUST create one
+**new** catalog song whose versions are the group's takes that were not discarded, and it MUST NOT
+match the group to a song already in the catalog. Producing the same group again MUST return the same
+song and add only the takes that joined it since. The song's audio MUST NOT depend on the session:
+deleting the session MUST leave the song intact.
+*Why:* the owner's ruling — a rehearsal re-recording an existing song is a new song, not a new version
+of the old one. This knowingly allows what **CAT-04** would otherwise call a duplicate.
+
+**SESS-20** — A song produced from a session MUST NOT be offered to listeners — in any search mode,
+the DJ, or the radio — until a producer has chosen its default version. It MUST remain visible to
+producers in the produce catalog, marked as waiting for one.
+*Why:* until then there is no version to play, and a song that surfaces but cannot play is worse than
+one not yet listed.

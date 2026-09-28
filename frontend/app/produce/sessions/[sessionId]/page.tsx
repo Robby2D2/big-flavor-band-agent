@@ -6,11 +6,13 @@ import { useParams, useRouter } from 'next/navigation';
 
 import Header from '@/components/Header';
 import TakeCard, {
+  MoveTarget,
   SessionTake,
+  SongOption,
 } from '@/components/produce/session/TakeCard';
 import TakeGroupCard from '@/components/produce/session/TakeGroupCard';
 import { stemColor } from '@/components/produce/audio/stemColors';
-import { TakeGroupRecord, reviewRows } from '@/lib/takeGroups';
+import { TakeGroupRecord, groupName, reviewRows } from '@/lib/takeGroups';
 
 interface SessionTrack {
   id: number;
@@ -56,6 +58,8 @@ export default function SessionPage() {
   const [loading, setLoading] = useState(true);
   const [showDead, setShowDead] = useState(false);
   const [regrouping, setRegrouping] = useState(false);
+  const [producingId, setProducingId] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -121,29 +125,57 @@ export default function SessionPage() {
     load();
   };
 
-  // Clicking the chosen keeper again clears it: the producer must be able to go
-  // back to "not decided yet", which is where every group starts (SESS-15).
-  const chooseKeeper = async (group: TakeGroupRecord, take: SessionTake) => {
-    const keeper = group.keeper_take_id === take.id ? null : take.id;
-    await fetch(`/api/produce/sessions/groups/${group.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keeper_take_id: keeper }),
-    });
+  // Moving is how a producer overrules the guess (SESS-18): into another song,
+  // out on its own, or into a new song of its own.
+  const moveTake = async (take: SessionTake, target: MoveTarget) => {
+    setActionError(null);
+    const response =
+      target === 'new'
+        ? await fetch(`/api/produce/sessions/${sessionId}/groups`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ take_ids: [take.id] }),
+          })
+        : await fetch(`/api/produce/sessions/takes/${take.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ group_id: target }),
+          });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      setActionError(data.error || 'Could not move the take');
+    }
     load();
   };
 
-  const separate = async (take: SessionTake) => {
-    await fetch(`/api/produce/sessions/takes/${take.id}/separate`, {
-      method: 'POST',
-    });
-    load();
+  // Producing brings the group into the catalog and hands over to the produce
+  // page, where analysis runs and the default version is chosen (SESS-19).
+  const produceGroup = async (group: TakeGroupRecord, title: string) => {
+    setActionError(null);
+    setProducingId(group.id);
+    try {
+      const response = await fetch(
+        `/api/produce/sessions/groups/${group.id}/produce`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not produce this song');
+      router.push(`/produce/${data.song_id}`);
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Could not produce this song');
+      setProducingId(null);
+      load();
+    }
   };
 
   const regroup = async () => {
     if (
       !window.confirm(
-        'Guess the songs again from what was transcribed? Any group name you set and any keeper you chose will be discarded. No take or audio is lost.'
+        'Guess the songs again from what was transcribed? Any song name you set and any take you moved will be discarded, except in songs already produced. No take or audio is lost.'
       )
     ) {
       return;
@@ -182,11 +214,22 @@ export default function SessionPage() {
   );
   const groupCount = rows.filter((row) => row.kind === 'group').length;
 
+  // Every song the menu can move a take into, named as its card is.
+  const songs: SongOption[] = useMemo(
+    () =>
+      rows.flatMap((row) =>
+        row.kind === 'group'
+          ? [{ id: row.group.id, label: groupName(row.group, row.takes).text }]
+          : []
+      ),
+    [rows]
+  );
+
   return (
     <div className="min-h-screen bg-canvas text-text">
       <Header
         title="Recording session"
-        subtitle="Review the takes found in this rehearsal"
+        subtitle="Group the takes into songs"
       />
       <main className="mx-auto max-w-5xl px-4 py-8">
         <Link
@@ -279,7 +322,7 @@ export default function SessionPage() {
                   </h2>
                   <div className="flex items-baseline gap-3">
                     <p className="text-xs text-text/40">
-                      Open one to hear it and see its channels
+                      Open a take to hear it and see its channels
                     </p>
                     {!busy && (
                       <button
@@ -300,9 +343,11 @@ export default function SessionPage() {
                         key={`group-${row.group.id}`}
                         group={row.group}
                         takes={row.takes}
+                        songs={songs}
+                        producing={producingId === row.group.id}
                         onRename={renameGroup}
-                        onChooseKeeper={chooseKeeper}
-                        onSeparate={separate}
+                        onProduce={produceGroup}
+                        onMove={moveTake}
                         onToggleExcluded={toggleExcluded}
                       />
                     ) : (
@@ -310,17 +355,24 @@ export default function SessionPage() {
                         key={row.take.id}
                         take={row.take}
                         index={row.position}
+                        songs={songs}
+                        onMove={moveTake}
                         onToggleExcluded={toggleExcluded}
                       />
                     )
                   )}
                 </ul>
+                {actionError && (
+                  <p className="mt-3 text-sm text-attention">{actionError}</p>
+                )}
                 <p className="mt-3 text-xs text-text/40">
                   Detection is a first pass — a stretch of talking can read as a
                   song, and which takes are the same song is guessed from the words
-                  they share, not matched against the catalog. A take that fits no
-                  song stands on its own. Discard anything that isn&apos;t a song;
-                  nothing is imported into the catalog until you say so.
+                  they share, not matched against the catalog. Use each take&apos;s
+                  song menu to put it with the right song, or make it a new one,
+                  and discard anything that isn&apos;t a song. Nothing reaches the
+                  catalog until you produce a song, and every song produced from a
+                  session is a new one.
                   {kept.length !== session.takes.length &&
                     ` ${session.takes.length - kept.length} discarded so far.`}
                 </p>

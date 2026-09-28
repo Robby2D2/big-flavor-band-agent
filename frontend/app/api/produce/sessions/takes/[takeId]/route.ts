@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, UserRole } from '@/lib/server-auth';
-import { backendAuthHeaders } from '@/lib/backend';
+import { backendAuthHeaders, backendErrorMessage } from '@/lib/backend';
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8000';
 
-// Set a take aside, or bring it back. Detection is fallible — a stretch of
-// talking can read as a song — so discarding is a flag, never a delete.
+// Discard or restore a take, or move it to another song. Detection is fallible
+// — talking can read as a song — so discarding is a flag, never a delete.
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ takeId: string }> }
@@ -30,7 +30,7 @@ export async function PATCH(
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       return NextResponse.json(
-        { error: data.detail || 'Could not update the take' },
+        { error: backendErrorMessage(data) || 'Could not update the take' },
         { status: response.status }
       );
     }
