@@ -5,6 +5,9 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import Header from '@/components/Header';
+import DriveImportPanel, {
+  DriveFolder,
+} from '@/components/produce/session/DriveImportPanel';
 import {
   SessionSummary,
   UploadProgress,
@@ -19,6 +22,7 @@ interface SessionRow extends SessionSummary {
 }
 
 const STAGE_COPY: Record<string, string> = {
+  downloading: 'Downloading from Drive',
   unpacking: 'Unpacking the upload',
   scanning: 'Measuring the tracks',
   transcribing: 'Listening for songs',
@@ -46,6 +50,14 @@ export default function SessionsPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  // Google Drive import. `driveConfigured` stays null until the backend says,
+  // and false hides the option on a deployment with no Drive key.
+  const [driveConfigured, setDriveConfigured] = useState<boolean | null>(null);
+  const [driveOpen, setDriveOpen] = useState(false);
+  const [driveFolders, setDriveFolders] = useState<DriveFolder[] | null>(null);
+  const [driveError, setDriveError] = useState<string | null>(null);
+  const [importingId, setImportingId] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     try {
       const response = await fetch('/api/produce/sessions');
@@ -64,9 +76,25 @@ export default function SessionsPage() {
     }
   }, []);
 
+  const loadDrive = useCallback(async () => {
+    try {
+      const response = await fetch('/api/produce/sessions/drive');
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to read Google Drive');
+      setDriveConfigured(Boolean(data.configured));
+      setDriveFolders(data.folders || []);
+      setDriveError(null);
+    } catch (err: unknown) {
+      // Configured but unreachable: keep the option so the reason can be read.
+      setDriveConfigured(true);
+      setDriveError(err instanceof Error ? err.message : 'Failed to read Google Drive');
+    }
+  }, []);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadDrive();
+  }, [load, loadDrive]);
 
   // A scan takes tens of minutes, so the list follows it rather than making
   // someone reload to find out whether it finished.
@@ -92,6 +120,31 @@ export default function SessionsPage() {
     }
   };
 
+  const openDrive = () => {
+    setDriveOpen(true);
+    setDriveFolders(null);
+    loadDrive();
+  };
+
+  const onImport = async (folder: DriveFolder) => {
+    setImportingId(folder.id);
+    setDriveError(null);
+    try {
+      const response = await fetch('/api/produce/sessions/drive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_id: folder.id }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Could not import from Google Drive');
+      router.push(`/produce/sessions/${data.id}`);
+    } catch (err: unknown) {
+      setDriveError(err instanceof Error ? err.message : 'Could not import from Google Drive');
+      setImportingId(null);
+      loadDrive();
+    }
+  };
+
   return (
     <div className="min-h-screen bg-canvas text-text">
       <Header
@@ -103,7 +156,8 @@ export default function SessionsPage() {
           <div>
             <h1 className="text-2xl font-semibold">Recording sessions</h1>
             <p className="mt-1 text-sm text-text/60">
-              Upload a Reaper session and the songs inside it are found for you.
+              Import a Reaper session from Drive or upload it, and the songs
+              inside it are found for you.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -113,6 +167,16 @@ export default function SessionsPage() {
             >
               Back to catalog
             </Link>
+            {driveConfigured && (
+              <button
+                type="button"
+                onClick={openDrive}
+                disabled={!!uploading || driveOpen}
+                className="rounded border border-signal/60 px-4 py-2 text-sm font-medium text-signal hover:bg-signal/10 disabled:opacity-50"
+              >
+                Import from Drive
+              </button>
+            )}
             <button
               type="button"
               onClick={() => fileInput.current?.click()}
@@ -131,6 +195,16 @@ export default function SessionsPage() {
           onChange={onPick}
           className="hidden"
         />
+
+        {driveOpen && (
+          <DriveImportPanel
+            folders={driveFolders}
+            error={driveError}
+            importingId={importingId}
+            onImport={onImport}
+            onClose={() => setDriveOpen(false)}
+          />
+        )}
 
         {uploading && (
           <div className="mb-6 rounded border border-raised bg-panel p-4">
@@ -164,8 +238,11 @@ export default function SessionsPage() {
           <div className="rounded border border-raised bg-panel p-8 text-center">
             <p className="text-text/70">No sessions yet.</p>
             <p className="mt-2 text-sm text-text/50">
-              Upload the zip of a Reaper project folder — the WavPack tracks and
-              the .RPP together.
+              {driveConfigured
+                ? 'Import a project folder from Google Drive, or upload'
+                : 'Upload'}{' '}
+              the zip of a Reaper project folder — the WavPack tracks and the
+              .RPP together.
             </p>
           </div>
         )}

@@ -37,6 +37,28 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-28 — Recording sessions import straight from Google Drive (SESS-16/17)
+The owner asked to stop uploading multi-GB zips: the sessions already live in the shared `ReaperProjects`
+Drive folder. `/produce/sessions` now has **Import from Drive** — the backend lists the dated project
+folders and downloads one server-side (`src/production/drive_source.py`, migration `23`
+`drive_folder_id`). Details in ARCHITECTURE.md "Sessions can come straight from Google Drive".
+
+- **Setup is two things outside the repo:** a service-account key in `./secrets/` named by
+  `GOOGLE_DRIVE_KEY` in `.env`, and the **Google Drive API enabled** on that key's Cloud project — a
+  fresh key gets `403 … has not been used in project … or it is disabled` until it is. The folder is
+  link-shared, so the service account needs no invite.
+- The key file was first dropped at the repo root **un-ignored**; it now lives in gitignored
+  `secrets/` (`*-drive.json` is ignored too). Adding `google-auth` means a backend **rebuild**, and
+  the `./secrets` mount means a **recreate** (`docker-compose up -d backend`), not a restart.
+- Download is `.RPP` first, then only the media it references; `.part` → rename only at Drive's
+  exact size; `Range` resume on a drop. 17 offline tests in `tests/test_drive_source.py` fake the
+  `requests` session.
+- **The real Drive is not one-folder-per-night.** Nights are filed inside other nights' folders, one
+  appears twice, some folders hold two projects, one project is empty, and `_Archive` holds 2008-era
+  material. Discovery was rewritten around "a folder that directly holds a `.RPP`" after surveying all
+  of it — the first design (walk the root's children) would have mixed nested nights' tracks into their
+  parent and hidden 8 of 33 sessions.
+
 ### 2026-09-28 — Three broken search functions retired rather than repaired (issue #114)
 `search_by_tempo_and_audio`, `search_songs_hybrid` and `search_similar_songs_by_text` had raised on
 *every* call since migration `04` (`song_id VARCHAR(50)` against an integer; the two text-side ones also

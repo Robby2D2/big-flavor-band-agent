@@ -55,6 +55,7 @@ src/
     region.py                 # region scoping (resolve_region/apply_to_region/blend_strength)
     tools/                    # ONE FILE PER TOOL (trim_silence.py, reduce_noise.py, apply_eq.py, …)
     rpp_parser.py             # Reaper .RPP projects — tracks, items, recording passes
+    drive_source.py           # Google Drive session folders: list, pick the .RPP + its media, resumable download
     wavpack_io.py             # ffmpeg seam for WavPack session audio (probe/envelope/slice)
     session_detect.py         # loudness envelopes -> candidate regions
     session_transcribe.py     # vocal-only mix of a region -> timed transcript lines
@@ -686,6 +687,44 @@ currently make any call (see below) and the configured key is invalid.
   produce routes) and a compressed preview, so `fetchPeaks` reads a session take as it reads a stem.
 
 Staging lives under the writable `./audio_library/sessions` mount (the catalog mount is `:ro`).
+
+### Sessions can come straight from Google Drive (2026-09-28)
+
+The band's Reaper projects already sit in a shared Drive folder (`ReaperProjects`), so
+`GET/POST /api/produce/sessions/drive` list the sessions there and import one **server-side** — no
+zip, no browser transfer (SESS-16/17). `src/production/drive_source.py` is the only module that talks
+to Drive.
+
+- **A session is any folder that directly holds a `.RPP`, at any depth** — not "a child of the root".
+  The real Drive files nights inside other nights (`20240719 - July Christie/` holds seven 2025
+  sessions; `20250213 - Broken Tooth` exists in two places), so a top-level listing missed 8 of 33.
+  A session's files are its own plus non-session sub-folders ("Audio/"); a nested session's tracks are
+  never mixed in. `_`-prefixed folders (`_Archive`, 4,691 files of 2008-era material) are skipped.
+  Listing runs a level at a time on 8 threads: ~3 s for the whole tree. Nested rows carry `location`
+  so duplicate copies can be told apart.
+- **Several projects in one folder** ("1. Warm Up.RPP" + "2. Warm Up.RPP"): every one is read (a few
+  MB each) and the one referencing the most files actually present is scanned; only it lands in `raw/`.
+  A project with **no items at all** (`20240419 - Nixtamalization`) fails with that said plainly.
+- **Zip uploads from before Drive import** are matched by name + date, so the list shows them as
+  imported rather than offering a second multi-GB fetch.
+
+- **Auth is a read-only service account**, key file in `./secrets/` (gitignored, mounted `:ro` at
+  `/app/secrets`), named by `GOOGLE_DRIVE_KEY`; the root is `GOOGLE_DRIVE_FOLDER_ID`. The folder is
+  link-shared, so the account needs no invite. No key → `configured: false` and the UI hides the
+  option. Plain `requests` via `google-auth`'s `AuthorizedSession`, not the heavy API client.
+- **The `.RPP` is fetched first and decides the rest.** Only media whose basename the project
+  references is downloaded — a project folder also carries `.reapeaks`, `.RPP-bak` and renders — and
+  it lands flat in `raw/`, exactly what `unpack_session` produces, so the scan after it is shared.
+  `SessionJobManager` takes a `gather` step (unpack a zip, or `fetch_from_drive`) and runs the same
+  pipeline; the download owns progress 0–10% under the `downloading` stage.
+- **A file is renamed from `.part` only once its size matches Drive's.** A dropped connection resumes
+  with `Range` (up to 4 attempts, 429/5xx retried, 4xx not); a server that ignores the range restarts
+  the file rather than appending a second copy.
+- **Drive's own error text is surfaced** (`DriveError` → 502 detail) because it is the fix: "Drive API
+  has not been used in project …" is what a new key hits first.
+- `recording_sessions.drive_folder_id` (migration 23) is **unique where set**: a double click cannot
+  scan a folder twice, and deleting the session frees it to be imported again. A failed import is
+  retried by deleting it — same as a failed upload.
 
 ### Takes are grouped by song, and a guess is only ever offered (2026-09-27, issue #109)
 

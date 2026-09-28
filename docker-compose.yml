@@ -83,6 +83,11 @@ services:
       # reason as TORCH_HOME above — these are hundreds of MB each and were
       # otherwise re-downloaded on every container recreate.
       - HF_HOME=/app/.cache/huggingface
+      # Recording-session import from the band's Google Drive (drive_source.py).
+      # GOOGLE_DRIVE_KEY names a service-account key file in ./secrets; leave it
+      # unset and the "Import from Drive" option simply doesn't appear.
+      - GOOGLE_DRIVE_KEY=${GOOGLE_DRIVE_KEY:-}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID:-1kFoDGTT8fHU-MKOGewyodOaJT2I-yok6}
     # Shares the single RTX 3090 with ollama (below) — both containers can see the
     # GPU at the same time. torch/demucs/faster-whisper work here is spiky (a
     # request at a time), not the constant load ollama's inference is, so VRAM
@@ -119,6 +124,8 @@ services:
       - ./scraper:/app/scraper:ro
       # Shared playlist directory for Liquidsoap integration
       - ./streaming/playlist:/app/streaming/playlist
+      # Credential files (the Google Drive service-account key). Gitignored.
+      - ./secrets:/app/secrets:ro
       # Persistent Demucs model-weights cache (issue #67) — same pattern as the
       # Ollama model volume, so the ~300MB checkpoint downloads once.
       - demucs_models:/app/.cache/torch

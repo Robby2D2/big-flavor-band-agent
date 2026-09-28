@@ -39,6 +39,7 @@ interface SessionDetail {
 }
 
 const STAGE_COPY: Record<string, string> = {
+  downloading: 'Downloading the session from Google Drive',
   unpacking: 'Unpacking the upload',
   scanning: 'Measuring every channel',
   transcribing: 'Listening for where the songs are',

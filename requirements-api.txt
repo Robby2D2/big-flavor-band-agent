@@ -44,6 +44,8 @@ noisereduce>=3.0.0
 # Web Scraping (for future use)
 beautifulsoup4>=4.12.0
 requests>=2.31.0
+# Service-account auth for importing recording sessions from Google Drive
+google-auth>=2.29.0
 
 # Additional utilities
 PyYAML>=6.0.0

@@ -103,3 +103,8 @@ docker-compose.override.yml
 # doesn't cover memories/ or project.yml, which was tripping the
 # release-manager's dirty-working-tree guard)
 .serena/
+
+# Credentials mounted into the backend (e.g. the Google Drive service-account
+# key). Private keys — never commit.
+secrets/
+*-drive.json

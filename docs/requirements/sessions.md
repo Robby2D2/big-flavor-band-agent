@@ -19,6 +19,17 @@ result.
 
 **SESS-03** — Upload progress MUST be visible.
 
+**SESS-16** — Where the band's Google Drive is connected, a producer MUST be able to import a session
+straight from its project folder there, without downloading it or building a zip. The transfer runs
+on the server and its progress MUST be visible the way a scan's is (**SESS-06**); it MUST NOT depend
+on the producer's browser staying open.
+*Why:* the sessions already live on Drive; moving gigabytes down to a laptop and back up is the whole
+cost the feature removes.
+
+**SESS-17** — An imported file MUST be whole before a scan reads it: an interrupted download MUST
+resume or fail the import, never be scanned as a truncated track. The same Drive folder MUST NOT be
+imported twice at once, and the import list MUST show which folders already have a session.
+
 ---
 
 ## Detection

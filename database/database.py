@@ -1059,17 +1059,30 @@ class DatabaseManager:
 
     # Recording-session operations (migration 18)
     async def create_recording_session(
-        self, name: str, source_filename: Optional[str], recorded_on: Optional[Any]
+        self,
+        name: str,
+        source_filename: Optional[str],
+        recorded_on: Optional[Any],
+        status: str = "uploading",
+        drive_folder_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Insert a session in the 'uploading' state. Returns the inserted row."""
+        """Insert a session. Returns the inserted row.
+
+        A zip upload starts 'uploading'; a Drive import (migration 23) has
+        nothing to upload and starts 'running'. ``drive_folder_id`` is unique
+        where set, so a second import of the same folder raises
+        ``asyncpg.UniqueViolationError``.
+        """
         query = """
-            INSERT INTO recording_sessions (name, source_filename, recorded_on, status)
-            VALUES ($1, $2, $3, 'uploading')
+            INSERT INTO recording_sessions
+                (name, source_filename, recorded_on, status, drive_folder_id)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING *
         """
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                query, name, source_filename, _parse_recorded_on(recorded_on)
+                query, name, source_filename, _parse_recorded_on(recorded_on),
+                status, drive_folder_id,
             )
         return dict(row)
 

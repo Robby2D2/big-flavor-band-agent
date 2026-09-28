@@ -42,6 +42,7 @@ beautifulsoup4>=4.12.0  # For HTML parsing
 selenium>=4.15.0  # For dynamic web scraping
 webdriver-manager>=4.0.1  # For automatic driver management
 requests>=2.31.0  # For HTTP requests
+google-auth>=2.29.0  # Recording-session import from Google Drive
 
 # Optional: For future enhancements
 # pydub>=0.25.0  # For audio processing

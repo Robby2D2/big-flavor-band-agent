@@ -10,6 +10,9 @@ Two things shape the surface:
   the file and PUTs the pieces, which also makes a dropped connection resumable
   instead of fatal. ``POST /sessions`` opens one, ``PUT .../chunk`` appends, and
   ``POST .../complete`` starts the scan.
+* **Or it comes from Drive.** The band's Reaper projects already sit in a shared
+  Google Drive folder, so ``/sessions/drive`` lists those folders and imports one
+  by downloading it server-side — no zip, no browser transfer (``drive_source``).
 * **Audio is served the way the stem console's is** — a cached drawing envelope
   for the waveform and a compressed copy for playback, never the 24-bit source,
   because a take is minutes of multitrack and the browser only needs to draw it
@@ -25,6 +28,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
@@ -36,9 +40,10 @@ from src.api.session_jobs import (
     group_session_takes,
     manager as session_manager,
     session_dir,
+    upload_zip_path,
 )
 from src.auth import require_role
-from src.production import audio_preview, waveform_peaks
+from src.production import audio_preview, drive_source, waveform_peaks
 
 logger = logging.getLogger("backend-api")
 
@@ -54,6 +59,10 @@ _DRIVE_SUFFIX = re.compile(r"-\d{8}T\d{6}Z-\d+-\d+$")
 
 class SessionCreate(BaseModel):
     filename: str
+
+
+class DriveImport(BaseModel):
+    folder_id: str
 
 
 class TakeUpdate(BaseModel):
@@ -88,6 +97,91 @@ async def create_session(
     return _session_payload(session)
 
 
+@router.get("/api/produce/sessions/drive")
+async def list_drive_sessions(
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """The session folders on the band's Drive, marked with any import of each.
+
+    A folder counts as imported when a session came from it, or — for the
+    sessions uploaded as zips before Drive import existed — when a session has
+    its name and date, so a night already scanned is not fetched again by
+    accident.
+
+    Declared before ``/sessions/{session_id}`` so "drive" is not read as an id.
+    """
+    if not drive_source.configured():
+        return {"configured": False, "folders": []}
+
+    found = await _drive_sessions()
+    rows = await db.list_recording_sessions()
+    by_folder = {row["drive_folder_id"]: row for row in rows if row.get("drive_folder_id")}
+    by_night = {
+        _night_key(row["name"], row.get("recorded_on")): row
+        for row in rows
+        if not row.get("drive_folder_id")
+    }
+    payload = []
+    for drive_session in found:
+        folder = drive_session.folder
+        name, recorded_on = parse_session_name(folder.name)
+        session = by_folder.get(folder.id) or by_night.get(_night_key(name, recorded_on))
+        payload.append({
+            "id": folder.id,
+            "folder_name": folder.name,
+            "location": " / ".join(drive_session.location) or None,
+            "name": name,
+            "recorded_on": recorded_on,
+            "session_id": session["id"] if session else None,
+            "session_status": session["status"] if session else None,
+        })
+    return {"configured": True, "folders": payload}
+
+
+@router.post("/api/produce/sessions/drive")
+async def import_drive_session(
+    body: DriveImport,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Open a session from a Drive folder and start downloading and scanning it."""
+    if not drive_source.configured():
+        raise HTTPException(status_code=404, detail="Google Drive import is not set up")
+
+    # Only a session folder under the configured root, never an arbitrary id.
+    folder = next(
+        (
+            found.folder
+            for found in await _drive_sessions()
+            if found.folder.id == body.folder_id
+        ),
+        None,
+    )
+    if folder is None:
+        raise HTTPException(status_code=404, detail="No such session folder on Drive")
+
+    name, recorded_on = parse_session_name(folder.name)
+    try:
+        session = await db.create_recording_session(
+            name=name,
+            source_filename=folder.name,
+            recorded_on=recorded_on,
+            status="running",
+            drive_folder_id=folder.id,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409, detail="This folder has already been imported"
+        )
+
+    await run_in_threadpool(
+        lambda: session_dir(session["id"]).mkdir(parents=True, exist_ok=True)
+    )
+    session_manager.start_from_drive(session["id"], folder.id, db)
+    return _session_payload(session)
+
+
 @router.put("/api/produce/sessions/{session_id}/chunk")
 async def upload_chunk(
     session_id: int,
@@ -109,7 +203,7 @@ async def upload_chunk(
             status_code=409, detail=f"Session is {session['status']}, not uploading"
         )
 
-    target = _zip_path(session_id)
+    target = upload_zip_path(session_id)
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Empty chunk")
@@ -138,7 +232,7 @@ async def complete_upload(
     if session_manager.is_running(session_id):
         return _session_payload(session)
 
-    target = _zip_path(session_id)
+    target = upload_zip_path(session_id)
     if not target.exists() or target.stat().st_size == 0:
         raise HTTPException(status_code=400, detail="No upload received")
 
@@ -342,21 +436,46 @@ async def stem_preview(
 def parse_session_filename(filename: str) -> tuple[str, Optional[str]]:
     """Read a session's name and date out of the uploaded file's name.
 
-    The band names its project folders ``20260501 May the Farts Be With You``, so
-    the date is already there. A zip made by Google Drive carries an export
-    suffix, which is stripped first.
+    A zip made by Google Drive carries an export suffix, which is stripped
+    first.
     """
-    stem = Path(filename).stem
-    stem = _DRIVE_SUFFIX.sub("", stem)
-    match = _DATED_NAME.match(stem)
+    return parse_session_name(_DRIVE_SUFFIX.sub("", Path(filename).stem))
+
+
+def parse_session_name(folder_name: str) -> tuple[str, Optional[str]]:
+    """Read a session's name and date out of its project folder's name.
+
+    The band names its project folders ``20260501 May the Farts Be With You``, so
+    the date is already there. Taken as-is — no extension stripping — because a
+    folder name may contain a dot ("Vol. 2").
+    """
+    match = _DATED_NAME.match(folder_name)
     if not match:
-        return (stem or "Recording session"), None
+        return (folder_name.strip() or "Recording session"), None
     raw = match.group("date")
     return match.group("name"), f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
 
 
-def _zip_path(session_id: int) -> Path:
-    return session_dir(session_id) / "upload.zip"
+async def _drive_sessions() -> List[drive_source.DriveSession]:
+    """Find the session folders on Drive, surfacing Drive's own error text."""
+
+    def fetch() -> List[drive_source.DriveSession]:
+        client = drive_source.DriveClient()
+        return drive_source.find_sessions(client, drive_source.root_folder_id())
+
+    try:
+        return await run_in_threadpool(fetch)
+    except drive_source.DriveError as exc:
+        logger.warning("Google Drive listing failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+
+def _night_key(name: str, recorded_on: Any) -> tuple[str, Optional[str]]:
+    """A session's identity by what the band called the night and its date."""
+    if recorded_on is not None and not isinstance(recorded_on, str):
+        recorded_on = recorded_on.isoformat()
+    return (" ".join(name.split()).casefold(), recorded_on)
 
 
 def _session_payload(row: Dict[str, Any]) -> Dict[str, Any]:

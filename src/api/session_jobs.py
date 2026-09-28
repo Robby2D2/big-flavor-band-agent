@@ -29,6 +29,7 @@ from fastapi.concurrency import run_in_threadpool
 from database import DatabaseManager
 from src.llm.llm_provider import get_llm_provider
 from src.production import (
+    drive_source,
     session_attempts,
     session_detect,
     session_grouping,
@@ -45,6 +46,7 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
 
+STAGE_DOWNLOADING = "downloading"
 STAGE_UNPACKING = "unpacking"
 STAGE_SCANNING = "scanning"
 STAGE_TRANSCRIBING = "transcribing"
@@ -78,19 +80,41 @@ class SessionJobManager:
 
     def start(self, session_id: int, zip_path: str, db: DatabaseManager) -> None:
         """Kick off the scan of an uploaded session."""
-        task = asyncio.create_task(self._run(session_id, zip_path, db))
-        self._tasks[session_id] = task
-        task.add_done_callback(lambda _t: self._tasks.pop(session_id, None))
+
+        async def unpack(raw_dir: Path) -> None:
+            await _stage(db, session_id, STAGE_UNPACKING, 0)
+            await run_in_threadpool(unpack_session, zip_path, raw_dir)
+
+        self._launch(session_id, db, unpack)
+
+    def start_from_drive(
+        self, session_id: int, folder_id: str, db: DatabaseManager
+    ) -> None:
+        """Kick off the scan of a session read from its Google Drive folder."""
+
+        async def download(raw_dir: Path) -> None:
+            await fetch_from_drive(db, session_id, folder_id, raw_dir)
+
+        self._launch(session_id, db, download)
 
     def is_running(self, session_id: int) -> bool:
         return session_id in self._tasks
 
-    async def _run(self, session_id: int, zip_path: str, db: DatabaseManager) -> None:
-        """Run one session scan end to end. Never raises."""
-        raw_dir = Path(zip_path).parent / "raw"
+    def _launch(self, session_id: int, db: DatabaseManager, gather) -> None:
+        task = asyncio.create_task(self._run(session_id, db, gather))
+        self._tasks[session_id] = task
+        task.add_done_callback(lambda _t: self._tasks.pop(session_id, None))
+
+    async def _run(self, session_id: int, db: DatabaseManager, gather) -> None:
+        """Run one session scan end to end. Never raises.
+
+        ``gather`` puts the session's ``.RPP`` and media into ``raw_dir`` — by
+        unpacking an uploaded zip or by downloading from Drive — and owns the
+        first 10% of progress. Everything after it is the same scan.
+        """
+        raw_dir = session_dir(session_id) / "raw"
         try:
-            await _stage(db, session_id, STAGE_UNPACKING, 0)
-            await run_in_threadpool(unpack_session, zip_path, raw_dir)
+            await gather(raw_dir)
 
             project_file = _find_project(raw_dir)
             project = await run_in_threadpool(parse_project, project_file)
@@ -142,7 +166,7 @@ class SessionJobManager:
             # it again: the takes carry their own audio.
             await run_in_threadpool(shutil.rmtree, raw_dir, True)
             await db.clear_recording_session_raw_dir(session_id)
-            _remove_quietly(Path(zip_path))
+            _remove_quietly(upload_zip_path(session_id))
 
             await db.set_recording_session_status(
                 session_id, STATUS_COMPLETE, stage=None, progress=100
@@ -189,8 +213,99 @@ def unpack_session(zip_path: str | Path, raw_dir: Path) -> None:
                 shutil.copyfileobj(source, target, length=8 * 1024 * 1024)
 
 
+async def fetch_from_drive(
+    db: DatabaseManager, session_id: int, folder_id: str, raw_dir: Path
+) -> None:
+    """Download a session's project and the audio it references into ``raw_dir``.
+
+    The ``.RPP`` comes first because it says which files matter: a project
+    folder also holds peak caches, backups and renders, and a project that has
+    accumulated several nights references media from other folders that is
+    simply absent here — the same as a zip that did not carry it.
+    """
+    await _stage(db, session_id, STAGE_DOWNLOADING, 0)
+    client = await run_in_threadpool(drive_source.DriveClient)
+    files = await run_in_threadpool(drive_source.session_files, client, folder_id)
+
+    candidates = drive_source.project_candidates(files)
+    if not candidates:
+        raise RuntimeError("No Reaper project (.RPP) in this Drive folder")
+    project_path, media = await _choose_drive_project(
+        client, candidates, files, raw_dir.parent / "projects"
+    )
+    if not media:
+        raise RuntimeError(
+            "None of the audio this project uses is in its Drive folder"
+        )
+    total = sum(item.size or 0 for item in media)
+    if total > MAX_UNPACKED_BYTES:
+        raise RuntimeError(
+            f"Session is more than {MAX_UNPACKED_BYTES // 1024**3} GB of audio"
+        )
+
+    # Only the chosen project goes into raw_dir, so the scan cannot pick another.
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    project_path.replace(raw_dir / project_path.name)
+    shutil.rmtree(project_path.parent, ignore_errors=True)
+
+    logger.info(
+        "Session %s: downloading %d files (%.1f GB) from Drive for %s",
+        session_id, len(media), total / 1024**3, project_path.name,
+    )
+    # One file at a time so progress can be written between them; a night's
+    # tracks are a few hundred MB each, so the bar still moves steadily.
+    done = 0
+    for item in media:
+        await run_in_threadpool(client.download, item, raw_dir / item.name)
+        done += item.size or 0
+        await _stage(
+            db, session_id, STAGE_DOWNLOADING, int(10 * done / total) if total else 10
+        )
+
+
+async def _choose_drive_project(
+    client: "drive_source.DriveClient",
+    candidates: List["drive_source.DriveFile"],
+    files: List["drive_source.SessionFile"],
+    staging: Path,
+) -> tuple[Path, List["drive_source.DriveFile"]]:
+    """Pick which of a folder's projects to scan: the one with the most audio here.
+
+    A night sometimes has two projects side by side ("1. Warm Up.RPP" and
+    "2. Warm Up.RPP"). Each is a few MB, so all are read and the one that
+    references the most files actually present wins; a tie keeps the first by
+    name, which is what a zip upload would scan.
+    """
+    staging.mkdir(parents=True, exist_ok=True)
+    best: Optional[tuple[Path, List[drive_source.DriveFile]]] = None
+    any_recorded = False
+    for candidate in candidates:
+        path = staging / candidate.name
+        await run_in_threadpool(client.download, candidate, path)
+        project = await run_in_threadpool(parse_project, path)
+        referenced = {
+            item.source_name
+            for recording_pass in project.passes()
+            for item in recording_pass.items
+        }
+        any_recorded = any_recorded or bool(referenced)
+        media = drive_source.media_to_fetch(files, referenced)
+        if best is None or len(media) > len(best[1]):
+            best = (path, media)
+
+    if not any_recorded:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError(
+            "This folder's Reaper project has no recorded audio in it — it was "
+            "saved before anything was recorded, or the recording is elsewhere"
+        )
+    return best
+
+
 def _find_project(raw_dir: Path) -> Path:
-    projects = sorted(raw_dir.glob("*.RPP"))
+    projects = sorted(
+        path for path in raw_dir.iterdir() if path.suffix.lower() == ".rpp"
+    )
     if not projects:
         raise RuntimeError("No Reaper project (.RPP) in this upload")
     return projects[0]
@@ -402,6 +517,11 @@ async def _warm_peaks(setter, row_id: int, audio_path: str) -> None:
 def session_dir(session_id: int) -> Path:
     """Where one session's material lives. Writable (see docker-compose)."""
     return Path("/app/audio_library/sessions") / str(session_id)
+
+
+def upload_zip_path(session_id: int) -> Path:
+    """Where a browser upload is assembled from its chunks."""
+    return session_dir(session_id) / "upload.zip"
 
 
 def take_dir(session_id: int, take_id: int) -> Path:
