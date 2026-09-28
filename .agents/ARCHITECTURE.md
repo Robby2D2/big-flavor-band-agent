@@ -224,8 +224,11 @@ loading. It refuses to run when the text embedding model is missing, since stori
 and a zero-vector fallback across the catalog would silently destroy lyric search.
 
 Search modes: audio similarity, natural-language/text, lyric, tempo (BPM), and hybrid. `pgvector`
-provides the vector similarity; SQL search functions live in `database/sql/` and
-`database/update_search_functions.sql`.
+provides the vector similarity; SQL search functions live in `database/sql/` — `init/` for the schema
+as first created and `migrations/` for every change since, which is the **only** sanctioned way to
+change one. `database/update_search_functions.sql` and its two re-apply scripts were retired in issue
+#114: a hand-run file that re-created search functions could silently undo a migration, and this one
+did (it still carried the pre-migration-`20` declaration that broke audio-similarity search).
 
 > **Design split (KISS/SRP):** READ/search = RAG library (in-process, fast). WRITE/production =
 > MCP server (`src/production/big_flavor_mcp.py`, isolated process). The agent orchestrates both.

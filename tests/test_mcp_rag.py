@@ -133,30 +133,6 @@ async def test_rag_tools():
     else:
         print("\n⚠️  No indexed songs found in database")
     
-    # Test 5: Tempo-based search
-    print("\n" + "=" * 80)
-    print("Test 5: Search by Tempo")
-    print("=" * 80)
-    
-    print("\n🔍 Searching for songs around 120 BPM...")
-    
-    tempo_result = await server.search_by_tempo_and_similarity(
-        target_tempo=120.0,
-        tempo_tolerance=10.0,
-        limit=5
-    )
-    
-    if tempo_result.get('results'):
-        print(f"\n✅ Found {len(tempo_result['results'])} songs:\n")
-        for i, result in enumerate(tempo_result['results'], 1):
-            print(f"  {i}. {result.get('title', 'Unknown')} - {result.get('genre', 'Unknown')}")
-            tempo = result.get('tempo_bpm')
-            if tempo is not None:
-                print(f"     Tempo: {tempo:.1f} BPM")
-            print()
-    else:
-        print(f"\n⚠️  No songs found: {tempo_result.get('error', 'Unknown error')}")
-    
     # Cleanup
     if server.db_manager:
         await server.db_manager.close()

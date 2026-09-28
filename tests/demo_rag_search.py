@@ -150,69 +150,6 @@ async def demo_audio_similarity_search(rag: SongRAGSystem, audio_library: Path):
     print_results(results, f"Songs similar to '{reference.stem}'")
 
 
-async def demo_tempo_search(rag: SongRAGSystem):
-    """Demo: Find songs with specific tempo."""
-    print("\n" + "="*70)
-    print("  DEMO 2: Tempo-Based Search")
-    print("="*70)
-    
-    target_tempo = 120.0
-    tolerance = 15.0
-    
-    print(f"\nFinding songs around {target_tempo} BPM (±{tolerance})")
-    
-    results = await rag.search_by_tempo_and_audio(
-        target_tempo=target_tempo,
-        tempo_tolerance=tolerance,
-        limit=10
-    )
-    
-    print_results(results, f"Songs near {target_tempo} BPM")
-
-
-async def demo_tempo_with_audio_similarity(rag: SongRAGSystem, audio_library: Path):
-    """Demo: Find songs with similar tempo AND sound."""
-    print("\n" + "="*70)
-    print("  DEMO 3: Tempo + Audio Similarity Search")
-    print("="*70)
-    
-    # Find a reference song with known tempo
-    reference_songs = [
-        "Helpless.mp3",
-        "This Year.mp3"
-    ]
-    
-    reference = None
-    for song in reference_songs:
-        ref_path = audio_library / song
-        if ref_path.exists():
-            reference = ref_path
-            break
-    
-    if not reference:
-        print("Could not find reference song")
-        return
-    
-    print(f"\nReference song: {reference.name}")
-    print("Finding songs with similar tempo that also sound similar...")
-    
-    # First get the reference song's tempo
-    extractor = AudioEmbeddingExtractor(use_clap=False)  # Just for tempo
-    features = extractor.extract_librosa_features(str(reference))
-    ref_tempo = features.get('tempo', 120)
-    
-    print(f"Reference tempo: {ref_tempo:.1f} BPM")
-    
-    results = await rag.search_by_tempo_and_audio(
-        target_tempo=ref_tempo,
-        reference_audio_path=str(reference),
-        tempo_tolerance=10.0,
-        limit=10
-    )
-    
-    print_results(results, f"Songs like '{reference.stem}' (tempo + audio)")
-
-
 async def demo_feature_analysis(rag: SongRAGSystem, audio_library: Path):
     """Demo: Analyze and compare audio features."""
     print("\n" + "="*70)
@@ -401,8 +338,6 @@ async def main():
     # Run demos
     await demo_statistics(rag)
     await demo_audio_similarity_search(rag, audio_library)
-    await demo_tempo_search(rag)
-    await demo_tempo_with_audio_similarity(rag, audio_library)
     await demo_feature_analysis(rag, audio_library)
     await demo_batch_similarity(rag, audio_library)
     

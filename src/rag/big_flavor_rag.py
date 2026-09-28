@@ -40,8 +40,8 @@ logger = logging.getLogger("rag-system")
 
 # Embedding dimensions of the active models / pgvector schema. The text model is
 # all-MiniLM-L6-v2 (384 dims); audio is 37 librosa features + 512 CLAP = 549.
-# Placeholder/zero vectors for a missing embedding must match these so they stay
-# comparable against the stored vectors in hybrid search.
+# Placeholder/zero vectors for a missing embedding must match these, or pgvector
+# rejects the comparison against the stored column.
 TEXT_EMBEDDING_DIM = 384
 AUDIO_EMBEDDING_DIM = 549
 
@@ -503,91 +503,6 @@ class SongRAGSystem:
         results = [dict(row) for row in rows]
         return results
     
-    async def search_by_text(
-        self,
-        query_embedding: List[float],
-        content_types: Optional[List[str]] = None,
-        limit: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        Search songs by text embedding.
-        
-        Args:
-            query_embedding: Text embedding vector (384 dims, all-MiniLM-L6-v2)
-            content_types: Which content types to search
-            limit: Maximum number of results
-        
-        Returns:
-            List of matching songs
-        """
-        if content_types is None:
-            content_types = ['title', 'genre', 'description', 'tags']
-        
-        async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM search_similar_songs_by_text($1, $2, $3)
-                """,
-                str(query_embedding),  # Convert to string for pgvector
-                limit,
-                content_types
-            )
-        
-        results = [dict(row) for row in rows]
-        return results
-    
-    async def search_hybrid(
-        self,
-        audio_embedding: Optional[List[float]] = None,
-        text_embedding: Optional[List[float]] = None,
-        audio_weight: float = 0.6,
-        text_weight: float = 0.4,
-        limit: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        Hybrid search combining audio and text similarity.
-        
-        Args:
-            audio_embedding: Audio embedding vector (549 dims)
-            text_embedding: Text embedding vector (384 dims, all-MiniLM-L6-v2)
-            audio_weight: Weight for audio similarity (0-1)
-            text_weight: Weight for text similarity (0-1)
-            limit: Maximum number of results
-        
-        Returns:
-            List of songs with combined scores
-        """
-        if audio_embedding is None and text_embedding is None:
-            raise ValueError("Must provide at least one embedding")
-        
-        # Use zero vectors if one is missing. Dimensions must match the active
-        # models / pgvector schema or the DB comparison errors / mismatches.
-        if audio_embedding is None:
-            audio_embedding = [0.0] * AUDIO_EMBEDDING_DIM
-            audio_weight = 0.0
-            text_weight = 1.0
-
-        if text_embedding is None:
-            text_embedding = [0.0] * TEXT_EMBEDDING_DIM
-            text_weight = 0.0
-            audio_weight = 1.0
-        
-        async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM search_songs_hybrid($1, $2, $3, $4, $5)
-                """,
-                str(audio_embedding),  # Convert to string for pgvector
-                str(text_embedding),  # Convert to string for pgvector
-                audio_weight,
-                text_weight,
-                limit
-            )
-        
-        results = [dict(row) for row in rows]
-        logger.info(f"Hybrid search found {len(results)} results")
-        return results
-    
     async def search_by_tempo_range(
         self,
         min_tempo: Optional[float] = None,
@@ -942,45 +857,6 @@ class SongRAGSystem:
         except Exception as e:
             logger.error(f"Error in search_lyrics_by_keyword: {e}", exc_info=True)
             return []
-    
-    async def search_by_tempo_and_audio(
-        self,
-        target_tempo: float,
-        reference_audio_path: Optional[str] = None,
-        tempo_tolerance: float = 10.0,
-        limit: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        Find songs with similar tempo and optionally similar audio characteristics.
-        
-        Args:
-            target_tempo: Target BPM
-            reference_audio_path: Optional audio file to match sonically
-            tempo_tolerance: BPM tolerance (±)
-            limit: Maximum number of results
-        
-        Returns:
-            List of matching songs
-        """
-        query_embedding = None
-        
-        if reference_audio_path:
-            features = self.embedding_extractor.extract_all_features(reference_audio_path)
-            query_embedding = features['combined_embedding']
-        
-        async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM search_by_tempo_and_audio($1, $2, $3, $4)
-                """,
-                target_tempo,
-                tempo_tolerance,
-                str(query_embedding) if query_embedding is not None else None,  # Convert to string
-                limit
-            )
-        
-        results = [dict(row) for row in rows]
-        return results
     
     async def find_song_by_title(
         self,
