@@ -37,6 +37,32 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-27 — v0.20.0 tagged: minor bump, and migration 21 is a manual step in production
+Released **v0.20.0** (9 commits past `v0.19.1`): issues #107 (every playable file has a catalog row;
+74 orphans recovered, plus the librosa/numpy scalar fix that had silently stopped all new indexing),
+#108 (SESS-12 six-word take names), #111 (audio similarity actually uses CLAP; CAT-11/CAT-12,
+migrations 19+20, 1,415 songs re-indexed), #109 (SESS-13/14/15 take grouping, migration 21).
+
+- **Minor, not patch: #109 is new user-facing capability and four requirements landed.** Every commit
+  was prefixed `fix:`, so the prefix alone would have argued for a patch — the *scope* is what decides.
+  Four new requirement IDs across a range is the reliable tell that it is not a fix-only release.
+- **`deploy-production.sh`/`.ps1` do not run migrations — they only print "Set up the database with
+  migrations" as a manual step.** Verified by grep this sweep. Migration `21-create-session-take-groups.sql`
+  ships in v0.20.0 unapplied in production, so the release notes name the exact file. This is the same
+  shape as the migration `18` (`recording_sessions`) incident; until the deploy scripts apply schema,
+  **every release with a migration must name the files by path.**
+- **Check `streaming/radio.liq` against the range instead of copying v0.19.1's warning forward.** It is
+  *not* in `v0.19.1..v0.20.0`, so the forced no-cache Liquidsoap rebuild does not apply here. A carried-over
+  warning trains humans to ignore the real ones.
+- **Migration 22 is *not* in this release** — it belongs to PR #116 (issue #114), open and unmerged. An
+  unmerged-but-QA-approved PR is outside the release; the tag range, not the issue tracker, is the boundary.
+- Recorded honestly in the notes: no human has viewed the session-review UI or the radio page in a
+  browser across any of the four changes; #109's rule is tuned on a single nine-take session with
+  `MIN_DISTINCTIVE_WORDS = 4` carrying a one-word margin; and #111's re-index changed what "similar"
+  means (old vectors were 475/512 zeros, so all pairs scored 0.994-1.000) with the band not yet weighing in.
+
+---
+
 ### 2026-09-27 — Session takes are grouped by song, on a rule tuned against one nine-take session (issue #109)
 Review showed one card per detected take with no song identity, so the band's several attempts at one
 song read as strangers — and since a take's headline is six words of its own transcript (SESS-12), two
