@@ -171,43 +171,53 @@ export default function TakeCard({
           {take.rec_pass !== null ? ` · pass ${take.rec_pass}` : ''}
         </span>
 
-        {take.song_version_id !== null ? (
-          // Once a take is a catalog version it belongs to that song; moving it
-          // would leave the version behind in the wrong one.
+        {take.song_version_id !== null && (
           <span className="rounded bg-confirm/15 px-2 py-1 text-xs text-confirm">
             In catalog
           </span>
-        ) : (
-          <>
-            <select
-              aria-label="Which song this take is"
-              value={take.group_id ?? ON_ITS_OWN}
-              onChange={(event) => {
-                const value = event.target.value;
-                onMove(
-                  take,
-                  value === NEW_SONG ? 'new' : value === ON_ITS_OWN ? null : Number(value)
-                );
-              }}
-              className="max-w-[12rem] rounded border border-raised bg-well px-2 py-1 text-xs"
-            >
-              {songs.map((song) => (
-                <option key={song.id} value={song.id}>
-                  {song.label}
-                </option>
-              ))}
-              <option value={ON_ITS_OWN}>On its own</option>
-              <option value={NEW_SONG}>New song…</option>
-            </select>
+        )}
 
-            <button
-              type="button"
-              onClick={() => onToggleExcluded(take)}
-              className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised"
-            >
-              {take.excluded ? 'Restore' : 'Discard'}
-            </button>
-          </>
+        <select
+          aria-label="Which song this take is"
+          value={take.group_id ?? ON_ITS_OWN}
+          onChange={(event) => {
+            const value = event.target.value;
+            // Moving a produced take takes its version back out of the catalog
+            // song, along with any edits made to it there (SESS-18).
+            if (
+              take.song_version_id !== null &&
+              !window.confirm(
+                'This take is already a version in the catalog. Moving it removes that version from the song — produce the song it moves to, to bring it back in. Move it?'
+              )
+            ) {
+              return;
+            }
+            onMove(
+              take,
+              value === NEW_SONG ? 'new' : value === ON_ITS_OWN ? null : Number(value)
+            );
+          }}
+          className="max-w-[12rem] rounded border border-raised bg-well px-2 py-1 text-xs"
+        >
+          {songs.map((song) => (
+            <option key={song.id} value={song.id}>
+              {song.label}
+            </option>
+          ))}
+          <option value={ON_ITS_OWN}>On its own</option>
+          <option value={NEW_SONG}>New song…</option>
+        </select>
+
+        {take.song_version_id === null && (
+          // A produced take is discarded from its song on the produce page, by
+          // deleting its version there.
+          <button
+            type="button"
+            onClick={() => onToggleExcluded(take)}
+            className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised"
+          >
+            {take.excluded ? 'Restore' : 'Discard'}
+          </button>
         )}
       </div>
 

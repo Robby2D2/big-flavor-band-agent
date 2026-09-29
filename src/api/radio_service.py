@@ -65,6 +65,11 @@ def set_published_version_path(song_id: int, audio_path: str) -> None:
     """Record/replace the published-version override for one song."""
     _published_version_paths[song_id] = audio_path
 
+
+def clear_published_version_path(song_id: int) -> None:
+    """Drop one song's published-version override, when its default is removed."""
+    _published_version_paths.pop(song_id, None)
+
 # How often the background loop asks the stream what it is playing, and how often
 # (in ticks) it runs the heavier agent/search queue top-up off the request path.
 RADIO_TICK_INTERVAL = 1.0  # seconds

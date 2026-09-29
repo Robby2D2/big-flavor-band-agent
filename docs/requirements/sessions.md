@@ -84,7 +84,11 @@ and the choice the keeper stood in for is the default version.
 
 **SESS-18** — A producer MUST be able to move any take into any song of its session, out on its own,
 or into a new song of its own — including a take the grouping guess left alone. No move may lose a
-take (**SESS-14**). A take that has already become a catalog version stays with that song.
+take (**SESS-14**). This includes a take that has already become a catalog version: moving it MUST
+remove that version from the song it went to — without choosing a new default (**SESS-15**) — and
+stage the take again, so producing its new song brings it in.
+*Amended 2026-09-28:* this used to say a produced take stays with its song. The owner ruled that a
+grouping mistake found after producing must still be fixable from review.
 
 **SESS-19** — Producing a song group is the human import **SESS-10** requires. It MUST create one
 **new** catalog song whose versions are the group's takes that were not discarded, and it MUST NOT

@@ -19,9 +19,10 @@ Two things shape the surface:
   and play it.
 
 Detection is fallible, so a take stays staged until a human says otherwise.
-Review is only about grouping takes into songs; the one route that writes to the
+Review is only about grouping takes into songs; the one route that adds to the
 catalog is ``POST .../groups/{id}/produce``, which a producer clicks to turn a
-group into a song (``session_import``).
+group into a song (``session_import``). Moving a take that was already produced
+takes its version back out of that song, so it can be produced into its new one.
 """
 import logging
 import re
@@ -317,7 +318,8 @@ async def update_take(
 
     Grouping is a guess (SESS-05); moving a take is how a producer overrules it
     (SESS-18). The take keeps everything else — its audio, its channels, its
-    discard state — and the audio is never deleted.
+    discard state — and the audio is never deleted. A take that was already
+    produced leaves its catalog song as it moves, and is staged again.
     """
     take = await db.get_session_take(take_id)
     if take is None:
@@ -326,6 +328,7 @@ async def update_take(
 
     if "group_id" in fields and body.group_id != take.get("group_id"):
         await _check_movable(take, body.group_id, db)
+        await session_import.release_take(db, take)
         take = await db.set_session_take_group_id(take_id, body.group_id) or take
 
     if "excluded" in fields and body.excluded is not None:
@@ -355,10 +358,10 @@ async def create_group(
     for take in takes:
         if take is None or take["session_id"] != session_id:
             raise HTTPException(status_code=400, detail="Take is not in this session")
-        _check_not_produced(take)
 
     group = await db.create_session_take_group(session_id)
     for take in takes:
+        await session_import.release_take(db, take)
         await db.set_session_take_group_id(take["id"], group["id"])
     return _group_payload(group)
 
@@ -488,20 +491,10 @@ async def stem_preview(
 
 # --- helpers --------------------------------------------------------------
 
-def _check_not_produced(take: Dict[str, Any]) -> None:
-    """A take that became a catalog version stays with the song it went to."""
-    if take.get("song_version_id") is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="This take is already a version of a catalog song",
-        )
-
-
 async def _check_movable(
     take: Dict[str, Any], group_id: Optional[int], db: DatabaseManager
 ) -> None:
     """A take may move to a song of its own session, or out on its own."""
-    _check_not_produced(take)
     if group_id is None:
         return
     group = await db.get_session_take_group(group_id)

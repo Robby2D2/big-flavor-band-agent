@@ -4,7 +4,8 @@ Against a fake DatabaseManager and a tmp audio library — no live DB, no audio
 decode. The contracts:
 
   - moving a take between songs, out on its own, or into a new song (SESS-18),
-    and never moving one that already became a catalog version,
+    and a take that already became a catalog version leaving that song as it
+    moves, staged to be produced into its new one,
   - producing a group makes one **new** song in the session id range whose
     versions are the group's kept takes, with **no default** (SESS-15, SESS-19),
   - producing again returns the same song and adds only takes that joined since,
@@ -139,6 +140,19 @@ class FakeDB:
             group["song_id"] = song_id
         return group["song_id"]
 
+    async def release_session_take_version(self, take_id):
+        version_id = self.takes[take_id]["song_version_id"]
+        if version_id is None:
+            return None
+        stem_sets = [
+            self.stem_sets.pop(sid) for sid in [
+                s["id"] for s in self.stem_sets.values()
+                if s["source_version_id"] == version_id
+            ]
+        ]
+        self.takes[take_id]["song_version_id"] = None
+        return {"version": self.versions.pop(version_id, None), "stem_sets": stem_sets}
+
     async def set_session_take_song_version(self, take_id, version_id):
         self.takes[take_id]["song_version_id"] = version_id
         return await self.get_session_take(take_id)
@@ -212,6 +226,9 @@ def session_client(tmp_path, monkeypatch):
     monkeypatch.setattr(radio_service, "AUDIO_LIBRARY_DIR", audio_library)
     # Instrument tagging is a background DSP job with nothing to say here.
     monkeypatch.setattr(produce, "_tag_in_background", lambda rows, db: None)
+    # Playback copies are ffmpeg work behind the response, likewise.
+    monkeypatch.setattr(produce, "_warm_previews_in_background", lambda rows: None)
+    monkeypatch.setattr(produce, "warm_version_preview_in_background", lambda path: None)
 
     db = FakeDB()
     backend_api.app.dependency_overrides[get_db] = lambda: db
@@ -416,10 +433,16 @@ def test_a_take_cannot_move_to_another_sessions_song(session_client, monkeypatch
     assert db.takes[take]["group_id"] is None
 
 
-def test_a_produced_take_stays_with_its_song(session_client, monkeypatch):
+def test_a_produced_take_moves_out_of_its_catalog_song(session_client, monkeypatch):
     client, db, tmp_path = session_client
-    _, group, (first, *_) = _seed_song(db, tmp_path)
-    _produce(client, monkeypatch, group)
+    _, group, (first, second, _) = _seed_song(db, tmp_path)
+    song_id = _produce(client, monkeypatch, group).json()["song_id"]
+    version = db.versions[db.takes[first]["song_version_id"]]
+    stem_set = next(
+        s for s in db.stem_sets.values() if s["source_version_id"] == version["id"]
+    )
+    stem_dir = produce._stem_set_output_dir(song_id, stem_set["id"])
+    assert stem_dir.exists()
 
     resp = client.patch(
         f"/api/produce/sessions/takes/{first}",
@@ -427,8 +450,65 @@ def test_a_produced_take_stays_with_its_song(session_client, monkeypatch):
         headers=_editor_headers(monkeypatch),
     )
 
-    assert resp.status_code == 409
-    assert db.takes[first]["group_id"] == group
+    assert resp.status_code == 200
+    assert db.takes[first]["group_id"] is None
+    assert db.takes[first]["song_version_id"] is None
+    # Its version, copied audio and channels leave the song it went to...
+    assert version["id"] not in db.versions
+    assert not Path(version["audio_path"]).exists()
+    assert stem_set["id"] not in db.stem_sets
+    assert not stem_dir.exists()
+    # ...its sibling stays, and the take's own session audio is untouched.
+    assert db.takes[second]["song_version_id"] in db.versions
+    assert Path(db.takes[first]["mix_path"]).exists()
+
+
+def test_a_moved_produced_take_joins_its_new_song_when_produced(
+    session_client, monkeypatch
+):
+    client, db, tmp_path = session_client
+    session, group, (first, *_) = _seed_song(db, tmp_path)
+    old_song = _produce(client, monkeypatch, group).json()["song_id"]
+
+    resp = client.post(
+        f"/api/produce/sessions/{session}/groups",
+        json={"take_ids": [first]},
+        headers=_editor_headers(monkeypatch),
+    )
+    assert resp.status_code == 200
+    new_group = resp.json()["id"]
+
+    new_song = _produce(client, monkeypatch, new_group, title="another song").json()[
+        "song_id"
+    ]
+
+    assert new_song != old_song
+    version = db.versions[db.takes[first]["song_version_id"]]
+    assert version["song_id"] == new_song
+    assert [v["song_id"] for v in db.versions.values()].count(old_song) == 1
+
+
+def test_moving_a_produced_default_leaves_its_song_with_none(
+    session_client, monkeypatch
+):
+    client, db, tmp_path = session_client
+    _, group, (first, *_) = _seed_song(db, tmp_path)
+    song_id = _produce(client, monkeypatch, group).json()["song_id"]
+    version = db.versions[db.takes[first]["song_version_id"]]
+    version["is_published"] = True
+    radio_service.set_published_version_path(song_id, version["audio_path"])
+
+    client.patch(
+        f"/api/produce/sessions/takes/{first}",
+        json={"group_id": None},
+        headers=_editor_headers(monkeypatch),
+    )
+
+    # The product never picks a replacement default (SESS-15).
+    assert not any(
+        v["is_published"] for v in db.versions.values() if v["song_id"] == song_id
+    )
+    assert song_id not in radio_service._published_version_paths
 
 
 def test_discarding_still_works_alone(session_client, monkeypatch):

@@ -1435,6 +1435,41 @@ class DatabaseManager:
             row = await conn.fetchrow(query, take_id, version_id)
         return dict(row) if row else None
 
+    async def release_session_take_version(
+        self, take_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Take a produced take's version back out of its catalog song.
+
+        Deletes the version and the stem sets registered from it, and leaves the
+        take staged again (``song_version_id`` NULL) so producing whichever song
+        it moves to brings it back in. Returns ``{"version", "stem_sets"}`` — the
+        deleted rows, whose files the caller removes — or None if the take had no
+        version.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                version_id = await conn.fetchval(
+                    "SELECT song_version_id FROM session_takes WHERE id = $1 FOR UPDATE",
+                    take_id,
+                )
+                if version_id is None:
+                    return None
+                stem_sets = await conn.fetch(
+                    "DELETE FROM song_stem_sets WHERE source_version_id = $1 RETURNING *",
+                    version_id,
+                )
+                version = await conn.fetchrow(
+                    "DELETE FROM song_versions WHERE id = $1 RETURNING *", version_id
+                )
+                await conn.execute(
+                    "UPDATE session_takes SET song_version_id = NULL WHERE id = $1",
+                    take_id,
+                )
+        return {
+            "version": dict(version) if version else None,
+            "stem_sets": [dict(row) for row in stem_sets],
+        }
+
     async def set_session_take_waveform_peaks(
         self, take_id: int, peaks: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:

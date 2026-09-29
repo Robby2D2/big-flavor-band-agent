@@ -37,6 +37,15 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-28 — A produced take can still move to another song (SESS-18 amended)
+Owner asked to regroup takes after a song was already opened in the producer. Moving a produced take
+(PATCH `takes/{id}` or "New song…") now calls `session_import.release_take`: one transaction
+(`db.release_session_take_version`) deletes its version and the stem sets made from it and clears
+`song_version_id`, then the copied audio/stem dirs are removed. If it was the default, the song is
+left with **none** (SESS-15 — never auto-pick) and its radio override dropped. The take is staged, so
+producing its new song brings it in. Review UI confirms before moving an "In catalog" take; Discard
+stays hidden for those (delete the version on the produce page instead).
+
 ### 2026-09-28 — Fixes render once; a task panel counts and cancels every long job (PROD-19)
 The owner asked for real progress after Start analysis, a play button that works while fixes render,
 one player instead of two, cancellable tasks, and a fix for fixes "rendering twice". The backend log

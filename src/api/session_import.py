@@ -12,6 +12,9 @@ producing a group is the explicit step that brings one into the catalog:
   skipped, so a take moved into the group later arrives on the next click.
 * **The catalog owns its own copy.** Audio is copied under ``produced/`` because
   deleting a session removes everything rendered for it.
+* **A produced take can still move** (SESS-18). Moving it takes its version back
+  out of the song it went to (``release_take``) and stages it again, so it
+  arrives in its new song the next time that song is produced.
 """
 import logging
 import shutil
@@ -21,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from fastapi.concurrency import run_in_threadpool
 
 from database import DatabaseManager
+from src.api import radio_service
 from src.api.routers import produce
 
 logger = logging.getLogger("backend-api")
@@ -85,6 +89,38 @@ async def produce_group(
     return {"song_id": song_id, "added_versions": added}
 
 
+async def release_take(db: DatabaseManager, take: Dict[str, Any]) -> None:
+    """Take a produced take's version back out of its catalog song.
+
+    The version's copied audio and channels go with it. If it was the song's
+    default, the song is left with none rather than one chosen for the producer
+    (SESS-15), which keeps it out of listeners' sight until they pick (SESS-20).
+    The take's own audio in the session is never touched (SESS-14).
+    """
+    if take.get("song_version_id") is None:
+        return
+    released = await db.release_session_take_version(take["id"])
+    if released is None:
+        return
+
+    for stem_set in released["stem_sets"]:
+        await run_in_threadpool(
+            shutil.rmtree,
+            produce._stem_set_output_dir(stem_set["song_id"], stem_set["id"]),
+            True,
+        )
+    version = released["version"]
+    if version is None:
+        return
+    await run_in_threadpool(produce._remove_file, version["audio_path"])
+    if version.get("is_published"):
+        radio_service.clear_published_version_path(version["song_id"])
+    logger.info(
+        "Take %s released from song %s (version %s)",
+        take["id"], version["song_id"], version["id"],
+    )
+
+
 async def _take_to_version(
     db: DatabaseManager, song_id: int, take: Dict[str, Any], position: int
 ) -> Optional[int]:
@@ -118,6 +154,8 @@ async def _take_to_version(
     await db.rename_song_version(
         version["id"], take_version_name(position, duration)
     )
+    # The stems' copies are warmed by _keep_stems; the full mix needs its own.
+    produce.warm_version_preview_in_background(destination)
 
     parts = [
         {
