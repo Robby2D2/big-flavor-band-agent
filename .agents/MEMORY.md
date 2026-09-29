@@ -37,6 +37,19 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-09-28 — Playback copies are warmed when a stem set is kept; the transport shows load progress
+A 14-min session take's console sat on a disabled Play for ~20s+: `_keep_stems` (session produce and
+fix-queue saves) copies stems to **new paths**, so no `.opus` preview existed and the first open ran
+one ffmpeg encode per stem, then downloaded + fully decoded ~47 MB. Now `_keep_stems` warms the set's
+previews behind the response (`_warm_previews_in_background`, via the shared `_in_background` task
+set that tagging also uses), and `_take_to_version` warms the version's full-mix copy.
+`audio_preview.build_preview` holds a **per-output lock**, so a console fetch arriving mid-warm waits
+for that encode instead of running a second ffmpeg into the same `.part` file. Frontend:
+`decodeAudio(url, onProgress)` streams the body for byte progress, and `TransportBar` shows
+"Loading audio N% · x of y parts ready" → "Decoding audio …" until every audible row has decoded.
+Play is still whole-file Web Audio decode, so very long takes wait seconds even when cached — an
+`<audio>`-streamed start would be the next step if that bites.
+
 ### 2026-09-28 — A produced take can still move to another song (SESS-18 amended)
 Owner asked to regroup takes after a song was already opened in the producer. Moving a produced take
 (PATCH `takes/{id}` or "New song…") now calls `session_import.release_take`: one transaction

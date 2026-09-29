@@ -27,7 +27,7 @@ import time
 from datetime import date, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -1873,23 +1873,56 @@ async def _cached_downmix(parts: List[Dict[str, str]], run_dir: Path) -> Path:
     return downmix_path
 
 
-# Background tagging tasks, held so the event loop's only reference to a running
-# task is not the one we just dropped. Every other job runner here keeps one —
-# StemJobManager says why in as many words: "so a job isn't garbage-collected
-# while it runs". This one is suspended across ~18s of threadpool work, which is
-# a long time to be collectable.
-_TAGGING_TASKS: "set[asyncio.Task]" = set()
+# Background tasks (tagging, playback copies), held so the event loop's only
+# reference to a running task is not the one we just dropped. Every other job
+# runner here keeps one — StemJobManager says why in as many words: "so a job
+# isn't garbage-collected while it runs". These are suspended across many
+# seconds of threadpool work, which is a long time to be collectable.
+_BACKGROUND_TASKS: "set[asyncio.Task]" = set()
+
+
+def _in_background(coro: Awaitable[None]) -> None:
+    """Run ``coro`` behind the response, keeping a strong reference to it."""
+    task = asyncio.ensure_future(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 def _tag_in_background(rows: List[Dict[str, Any]], db: DatabaseManager) -> None:
-    """Run instrument tagging behind the response, keeping a strong reference."""
+    """Run instrument tagging behind the response."""
     # Imported here rather than at module scope, like every other stem_jobs use
     # in this router — the router loads without the optional DSP stack installed.
     from src.api.stem_jobs import tag_stems
 
-    task = asyncio.create_task(tag_stems(rows, db))
-    _TAGGING_TASKS.add(task)
-    task.add_done_callback(_TAGGING_TASKS.discard)
+    _in_background(tag_stems(rows, db))
+
+
+def _warm_previews_in_background(rows: List[Dict[str, Any]]) -> None:
+    """Transcode a new set's playback copies before the console asks for them.
+
+    A kept set's stems are fresh copies at new paths, so no earlier preview
+    covers them — left to the console, a long take's first open waits on one
+    ffmpeg encode per stem before play can light up.
+    """
+    from src.api.stem_jobs import warm_stem_previews
+
+    _in_background(warm_stem_previews(rows))
+
+
+def warm_version_preview_in_background(audio_path: Path) -> None:
+    """Transcode a version's full-mix playback copy behind the response. Best-effort."""
+
+    async def warm() -> None:
+        try:
+            await run_in_threadpool(
+                audio_preview.build_preview,
+                str(audio_path),
+                str(audio_preview.version_preview_path(audio_path, _produced_dir())),
+            )
+        except Exception:
+            logger.exception("Playback copy failed for version audio %s", audio_path)
+
+    _in_background(warm())
 
 
 async def _keep_rendered_stems(
@@ -1978,6 +2011,7 @@ async def _keep_stems(
         # stems, so they land behind the set rather than on the request the
         # producer is waiting on — the same order a real separation uses, and
         # the 2026-08 decision that put tagging after the set is complete.
+        _warm_previews_in_background(rows)
         _tag_in_background(rows, db)
         logger.info(
             "Kept %d %s stems as set %s for version %s",

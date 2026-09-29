@@ -102,6 +102,12 @@ export default function AudioProcessingTab({
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
 
+  // How far each row's playback audio has downloaded, for the transport's
+  // "Loading audio" line. Dropped once the row decodes.
+  const [audioProgress, setAudioProgress] = useState<
+    Record<number, { loaded: number; total: number | null }>
+  >({});
+
   const fetchedPeakUrls = useRef<Map<number, string>>(new Map());
   const decodedUrls = useRef<Map<number, string>>(new Map());
 
@@ -218,15 +224,32 @@ export default function AudioProcessingTab({
         // produce a buffer, or a cancelled run leaves the row permanently
         // "already fetched" and playback never becomes ready.
         decodedUrls.current.set(t.id, t.audio);
+        // A stem arrives in hundreds of chunks; re-render per percent, not per chunk.
+        let shown = -1;
+        const onProgress = (loaded: number, total: number | null) => {
+          const step = total ? Math.floor((loaded / total) * 100) : Math.floor(loaded / 1_000_000);
+          if (cancelled || step === shown) return;
+          shown = step;
+          setAudioProgress((prev) => ({ ...prev, [t.id]: { loaded, total } }));
+        };
+        const forget = () =>
+          setAudioProgress((prev) => {
+            const next = { ...prev };
+            delete next[t.id];
+            return next;
+          });
         try {
-          const buffer = await decodeAudio(t.audio);
+          const buffer = await decodeAudio(t.audio, onProgress);
           if (cancelled) {
             decodedUrls.current.delete(t.id);
+            forget();
             return;
           }
           setBuffers((prev) => ({ ...prev, [t.id]: buffer }));
+          forget();
         } catch (err) {
           decodedUrls.current.delete(t.id);
+          forget();
           if (!cancelled) setPlaybackError((err as Error).message);
         }
       })
@@ -307,6 +330,31 @@ export default function AudioProcessingTab({
   // play() silently does nothing with no decoded buffers, so the transport has
   // to stay disabled until at least one has landed.
   const playbackReady = Object.keys(buffers).length > 0;
+
+  /** Where the rows' playback audio is, until every row that plays has decoded. */
+  const audioLoading = useMemo(() => {
+    const wanted = targets.filter((t) => t.id !== FULL_MIX_STEM_ID || fullMixAudible);
+    const pending = wanted.filter((t) => !buffers[t.id]);
+    if (pending.length === 0) return null;
+    // A byte fraction only means something when every pending row has a size.
+    let loaded = 0;
+    let total = 0;
+    let sized = true;
+    for (const t of pending) {
+      const p = audioProgress[t.id];
+      if (!p?.total) {
+        sized = false;
+      } else {
+        loaded += p.loaded;
+        total += p.total;
+      }
+    }
+    return {
+      ready: wanted.length - pending.length,
+      total: wanted.length,
+      fraction: sized && total > 0 ? loaded / total : null,
+    };
+  }, [targets, fullMixAudible, buffers, audioProgress]);
   const playingRef = useRef(false);
   useEffect(() => {
     playingRef.current = playback.playing;
@@ -708,6 +756,7 @@ export default function AudioProcessingTab({
                 peaks={fullMixPeaks}
                 peaksLoading={!fullMixPeaks && peaksLoadingIds.has(FULL_MIX_STEM_ID)}
                 playbackReady={playbackReady}
+                audioLoading={audioLoading}
                 playing={playback.playing}
                 playhead={playback.playhead}
                 maxDuration={playback.maxDuration}

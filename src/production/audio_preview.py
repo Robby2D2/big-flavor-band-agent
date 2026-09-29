@@ -22,6 +22,7 @@ blocking, so callers run it off the event loop.
 import logging
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 logger = logging.getLogger("backend-api")
@@ -45,6 +46,18 @@ PREVIEW_TIMEOUT_S = 300
 # Re-encoding an already-lossy file would cost a generation of quality to save
 # little: the catalog originals are ~4 MB MP3s, against ~44 MB stem WAVs.
 ALREADY_COMPRESSED = {".mp3", ".m4a", ".aac", ".ogg", ".opus", ".webm"}
+
+# One lock per output file. Previews are warmed in the background as soon as a
+# stem set exists, so the console's first fetch often arrives mid-encode; the
+# lock makes that request wait for the encode already running instead of
+# starting a second ffmpeg into the same ".part" file.
+_output_locks: "dict[str, threading.Lock]" = {}
+_output_locks_guard = threading.Lock()
+
+
+def _lock_for(output: Path) -> threading.Lock:
+    with _output_locks_guard:
+        return _output_locks.setdefault(str(output), threading.Lock())
 
 
 def stem_preview_path(stem_path: Path) -> Path:
@@ -85,6 +98,15 @@ def build_preview(source_path: str, output_path: str) -> str:
     if output.exists():
         return str(output)
 
+    with _lock_for(output):
+        # Whoever held the lock may have just finished this very file.
+        if output.exists():
+            return str(output)
+        _encode(source, output)
+    return str(output)
+
+
+def _encode(source: Path, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     # Encode to a temp name in the same directory and rename on success, so a
     # crashed or concurrent encode can never leave a truncated file that later
@@ -126,4 +148,3 @@ def build_preview(source_path: str, output_path: str) -> str:
         raise
 
     os.replace(partial, output)
-    return str(output)

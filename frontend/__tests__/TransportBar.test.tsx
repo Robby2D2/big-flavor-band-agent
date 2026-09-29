@@ -10,6 +10,7 @@ const props = {
   peaks: null,
   peaksLoading: false,
   playbackReady: true,
+  audioLoading: null,
   playing: false,
   playhead: 0,
   maxDuration: 120,
@@ -54,5 +55,35 @@ describe('TransportBar', () => {
     render(<TransportBar {...props} playbackReady={false} />);
 
     expect(screen.getByRole('button', { name: 'Preparing playback' })).toBeDisabled();
+  });
+
+  it('shows how much audio has downloaded while it waits', () => {
+    render(
+      <TransportBar
+        {...props}
+        playbackReady={false}
+        audioLoading={{ ready: 0, total: 6, fraction: 0.425 }}
+      />
+    );
+
+    expect(screen.getByTestId('transport-hearing')).toHaveTextContent(
+      'Loading audio 42% · 0 of 6 parts ready'
+    );
+  });
+
+  it('says it is decoding once every byte is in', () => {
+    render(<TransportBar {...props} audioLoading={{ ready: 2, total: 6, fraction: 1 }} />);
+
+    expect(screen.getByTestId('transport-hearing')).toHaveTextContent(
+      'Decoding audio · 2 of 6 parts ready'
+    );
+  });
+
+  it('counts parts alone when the server sent no sizes', () => {
+    render(<TransportBar {...props} audioLoading={{ ready: 2, total: 6, fraction: null }} />);
+
+    expect(screen.getByTestId('transport-hearing')).toHaveTextContent(
+      'Loading audio · 2 of 6 parts ready'
+    );
   });
 });

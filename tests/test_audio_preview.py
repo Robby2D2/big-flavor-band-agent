@@ -101,6 +101,43 @@ def test_wav_is_transcoded_once_then_reused(tmp_path, monkeypatch):
     assert len(calls) == 1, "an existing preview must not be re-encoded"
 
 
+def test_a_request_during_a_background_encode_waits_for_it(tmp_path, monkeypatch):
+    """Previews are warmed as soon as a set exists, so the console often asks mid-encode.
+
+    The second caller must wait for the running encode, not start another ffmpeg
+    into the same ".part" file.
+    """
+    import threading
+    import time
+
+    calls = []
+    started = threading.Event()
+
+    def slow_run(cmd, **kwargs):
+        calls.append(cmd)
+        started.set()
+        time.sleep(0.2)
+        Path(cmd[-1]).write_bytes(b"fake-opus-bytes")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", slow_run)
+    source = tmp_path / "vocals.wav"
+    _write_wav(source)
+    out = audio_preview.stem_preview_path(source)
+
+    results = []
+    warm = threading.Thread(
+        target=lambda: results.append(audio_preview.build_preview(str(source), str(out)))
+    )
+    warm.start()
+    started.wait(timeout=2)
+    results.append(audio_preview.build_preview(str(source), str(out)))
+    warm.join()
+
+    assert results == [str(out), str(out)]
+    assert len(calls) == 1
+
+
 def test_encode_uses_the_configured_codec_and_leaves_no_part_file(tmp_path, monkeypatch):
     calls = []
     _fake_ffmpeg(monkeypatch, calls=calls)

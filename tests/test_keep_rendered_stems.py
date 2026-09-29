@@ -64,6 +64,15 @@ def produced_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def warmed(monkeypatch):
+    """The rows handed to background preview warming; tagging is left out entirely."""
+    rows = []
+    monkeypatch.setattr(produce, "_warm_previews_in_background", rows.extend)
+    monkeypatch.setattr(produce, "_tag_in_background", lambda rows, db: None)
+    return rows
+
+
 def _part(tmp_path: Path, name: str, body: bytes) -> dict:
     path = tmp_path / f"{name}_source.wav"
     path.write_bytes(body)
@@ -96,6 +105,23 @@ async def test_every_part_is_copied_not_referenced(produced_dir, tmp_path):
         assert copied != Path(dict((p["name"], p["path"]) for p in parts)[row["name"]])
     # The originals survive — copying must not move them.
     assert all(Path(p["path"]).exists() for p in parts)
+
+
+@pytest.mark.asyncio
+async def test_kept_stems_get_their_playback_copies_warmed(produced_dir, tmp_path, warmed):
+    """The copies sit at new paths no earlier preview covers.
+
+    Left to the console, a long take's first open would wait on one ffmpeg
+    encode per stem before play could light up.
+    """
+    db = FakeDB()
+    parts = [_part(tmp_path, "vocals", b"a"), _part(tmp_path, "bass", b"b")]
+
+    await produce._keep_rendered_stems(
+        song_id=7, version_id=42, parts=parts, had_master_fixes=False, model=None, db=db
+    )
+
+    assert sorted(r["path"] for r in warmed) == sorted(r["path"] for r in db.stems.values())
 
 
 @pytest.mark.asyncio

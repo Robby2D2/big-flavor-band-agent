@@ -27,14 +27,47 @@ export function getAudioContext(): AudioContext {
   return sharedContext;
 }
 
-/** Fetch and decode an audio URL into an AudioBuffer on the shared context. */
-export async function decodeAudio(url: string): Promise<AudioBuffer> {
+/** Bytes downloaded so far; `total` is null when the server sent no length. */
+export type DownloadProgress = (loaded: number, total: number | null) => void;
+
+/**
+ * Fetch and decode an audio URL into an AudioBuffer on the shared context.
+ *
+ * `onProgress` follows the download: a long take's stems are tens of MB, and
+ * decoding can't start until the last byte lands, so without it the console
+ * can only say "preparing" for however long that takes.
+ */
+export async function decodeAudio(url: string, onProgress?: DownloadProgress): Promise<AudioBuffer> {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to load audio (${response.status})`);
   }
-  const raw = await response.arrayBuffer();
+  const raw =
+    onProgress && response.body ? await readWithProgress(response, onProgress) : await response.arrayBuffer();
   return getAudioContext().decodeAudioData(raw);
+}
+
+async function readWithProgress(response: Response, onProgress: DownloadProgress): Promise<ArrayBuffer> {
+  const length = Number(response.headers.get('content-length'));
+  const total = Number.isFinite(length) && length > 0 ? length : null;
+  const reader = response.body!.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  onProgress(0, total);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    onProgress(loaded, total);
+  }
+  const joined = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return joined.buffer;
 }
 
 export interface Peaks {

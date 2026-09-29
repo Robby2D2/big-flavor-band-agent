@@ -12,6 +12,11 @@ interface TransportBarProps {
   peaksLoading: boolean;
   /** Whether any playback audio has decoded yet — play needs one. */
   playbackReady: boolean;
+  /**
+   * Rows' playback audio still arriving: how many have decoded, and how much of
+   * the rest has downloaded (null when the server gave no sizes).
+   */
+  audioLoading: { ready: number; total: number; fraction: number | null } | null;
   playing: boolean;
   playhead: number;
   maxDuration: number;
@@ -42,6 +47,7 @@ export default function TransportBar({
   peaks,
   peaksLoading,
   playbackReady,
+  audioLoading,
   playing,
   playhead,
   maxDuration,
@@ -56,7 +62,18 @@ export default function TransportBar({
   const waiting = maxDuration > 0 && !playbackReady;
 
   let hearing: { text: string; tone: string } | null = null;
-  if (audition && !auditionRendering) {
+  if (audioLoading && !(audition && !auditionRendering)) {
+    const parts = `${audioLoading.ready} of ${audioLoading.total} parts ready`;
+    hearing = {
+      text:
+        audioLoading.fraction === null
+          ? `Loading audio · ${parts}`
+          : audioLoading.fraction < 1
+            ? `Loading audio ${Math.floor(audioLoading.fraction * 100)}% · ${parts}`
+            : `Decoding audio · ${parts}`,
+      tone: 'text-text/55',
+    };
+  } else if (audition && !auditionRendering) {
     hearing = { text: `Auditioning ${audition.fixTitle} on ${audition.rowName}, fixes on`, tone: 'text-signal' };
   } else if (unrenderedRows.length > 0) {
     hearing = {
