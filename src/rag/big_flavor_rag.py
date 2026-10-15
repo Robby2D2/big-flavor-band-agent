@@ -817,31 +817,42 @@ class SongRAGSystem:
             
             # Create case-insensitive LIKE pattern
             keyword_pattern = f"%{keyword}%"
-            
+
+            # Most relevant first: songs titled with the keyword, then songs
+            # that use it most often. This used to be ORDER BY title, so a
+            # common word filled the limit with whatever sorted early — "river"
+            # returned ten takes of "25th of December" and no "Down by the River".
             query = f"""
-                SELECT DISTINCT
-                    s.id,
-                    s.title,
-                    s.genre,
-                    s.audio_url,
-                    s.mood,
-                    s.energy,
-                    s.tempo_bpm,
-                    s.key,
-                    s.duration_seconds,
-                    ae.audio_path,
-                    te.content as lyrics
-                FROM songs s
-                JOIN text_embeddings te ON s.id = te.song_id
-                LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
-                WHERE te.content_type = 'lyrics' AND {LISTED_SONG_SQL}
-                AND te.content ILIKE $1
-                ORDER BY s.title
+                SELECT * FROM (
+                    SELECT DISTINCT
+                        s.id,
+                        s.title,
+                        s.genre,
+                        s.audio_url,
+                        s.mood,
+                        s.energy,
+                        s.tempo_bpm,
+                        s.key,
+                        s.duration_seconds,
+                        ae.audio_path,
+                        te.content as lyrics
+                    FROM songs s
+                    JOIN text_embeddings te ON s.id = te.song_id
+                    LEFT JOIN audio_embeddings ae ON s.id = ae.song_id
+                    WHERE te.content_type = 'lyrics' AND {LISTED_SONG_SQL}
+                    AND te.content ILIKE $1
+                ) matches
+                ORDER BY
+                    matches.title ILIKE $1 DESC,
+                    (LENGTH(matches.lyrics)
+                        - LENGTH(REPLACE(LOWER(matches.lyrics), LOWER($3::text), '')))
+                        / NULLIF(LENGTH($3::text), 0) DESC NULLS LAST,
+                    matches.title
                 LIMIT $2
             """
-            
+
             async with self.db.pool.acquire() as conn:
-                rows = await conn.fetch(query, keyword_pattern, limit)
+                rows = await conn.fetch(query, keyword_pattern, limit, keyword)
             
             results = [dict(row) for row in rows]
             logger.info(f"✓ Keyword search found {len(results)} results for '{keyword}' in lyrics")

@@ -5,6 +5,49 @@ These are the entries that built the `/produce` per-tool API and the stem consol
 
 ---
 
+*The entries below moved here from [MEMORY.md](../MEMORY.md) in the 2026-10-15 prune.*
+
+### 2026-09-28 — Playback copies are warmed when a stem set is kept; the transport shows load progress
+A 14-min session take's console sat on a disabled Play for ~20s+: `_keep_stems` (session produce and
+fix-queue saves) copies stems to **new paths**, so no `.opus` preview existed and the first open ran
+one ffmpeg encode per stem, then downloaded + fully decoded ~47 MB. Now `_keep_stems` warms the set's
+previews behind the response (`_warm_previews_in_background`, via the shared `_in_background` task
+set that tagging also uses), and `_take_to_version` warms the version's full-mix copy.
+`audio_preview.build_preview` holds a **per-output lock**, so a console fetch arriving mid-warm waits
+for that encode instead of running a second ffmpeg into the same `.part` file. Frontend:
+`decodeAudio(url, onProgress)` streams the body for byte progress, and `TransportBar` shows
+"Loading audio N% · x of y parts ready" → "Decoding audio …" until every audible row has decoded.
+Play is still whole-file Web Audio decode, so very long takes wait seconds even when cached — an
+`<audio>`-streamed start would be the next step if that bites.
+
+### 2026-09-28 — Fixes render once; a task panel counts and cancels every long job (PROD-19)
+The owner asked for real progress after Start analysis, a play button that works while fixes render,
+one player instead of two, cancellable tasks, and a fix for fixes "rendering twice". The backend log
+showed **three** renders of one 21-fix queue: warm render, then play re-rendering every stem via
+`preview-chain`, then a full-mix play evicting the one-slot render cache so Save rendered it all again.
+
+- **Root fix: one chain cache** (`accept_jobs.chain_cache`) shared by the warm render, stem and
+  full-mix previews, plus 8 whole-queue renders per song instead of 1. Live on Super Remodel: play
+  after analysis fetched 7 stems in 0.04s with zero tool calls; a repeat preview was `reused`.
+- **Cancel**: renders stop at the next step (verified live: cancelled at 2/8, re-render resumed at
+  2/8); separation is marked cancelled at once and Demucs's output discarded when it returns (unit
+  tested only — not run live); analysis aborts from the browser, keeping fully measured rows.
+- **UI**: `TaskPanel` + `lib/processingTasks.ts`; `TransportBar` sticky above the console; the
+  version panel's player and the "New mix (not saved)" row are removed; Save during the warm render
+  attaches to it ("Save when rendered").
+- New requirement **PROD-19**. No migration: `song_stem_sets.status` is a plain string.
+- Dropped from the plan: a separate `rendered-stems` lookup endpoint — `preview-chain` answers from
+  the cache, so it already is one.
+- Follow-up the same day, from the owner's screenshots: "Rendering fixes to play" after "Fixes
+  rendered" was the browser downloading full-size WAVs (45.8 MB a stem), not rendering — now Opus
+  playback copies (2.6 MB) made as the render's last stage, and shown as part of that one task.
+  Chains keep only their final file; `scripts/prune_render_files.py --apply` freed 17.1 GB.
+  Save and lyric extraction 404'd on session songs (no catalog MP3) — fixed in
+  `_seed_original` / `_resolve_clean_source_path`.
+- **This stack serves the live site from the working tree** (dev server + mounted source), so
+  restarting containers on a feature branch puts that branch live. Worth remembering before
+  restarting anything mid-branch.
+
 *The seven 2026-09-16 → 2026-09-21 entries below moved here from [MEMORY.md](../MEMORY.md) in the 2026-09-27 prune.*
 
 ### 2026-09-21 — A save keeps the stems it just rendered, and separating is its own button

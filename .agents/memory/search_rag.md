@@ -41,6 +41,80 @@ The frontend deliberately shows **raw structured results**, not the agent's pros
 
 ---
 
+## Later entries (moved from MEMORY.md, 2026-10-15)
+
+*The entries below moved here from [MEMORY.md](../MEMORY.md) in the 2026-10-15 prune.*
+
+### 2026-09-28 — Three broken search functions retired rather than repaired (issue #114)
+`search_by_tempo_and_audio`, `search_songs_hybrid` and `search_similar_songs_by_text` had raised on
+*every* call since migration `04` (`song_id VARCHAR(50)` against an integer; the two text-side ones also
+referenced `te.text_embedding`, gone since text embeddings moved to all-MiniLM-L6-v2). The owner's call
+was **delete, don't fix** — "if it turns out we need them in the future, we can always add them back
+in". Migration `22` drops all three by signature; their three uncalled `SongRAGSystem` methods
+(`search_by_text`, `search_hybrid`, `search_by_tempo_and_audio`) are gone, as are
+`database/update_search_functions.sql`, `database/apply_search_update.py` and
+`tests/update_search_functions.ps1`.
+
+- **Absence of a caller is the whole justification, so it is the thing to verify — not the test run.**
+  Every SRCH-02 mode is served by a *different*, working path (`search_by_text_description`,
+  `search_lyrics_by_keyword`, `search_by_tempo_range`, `search_text_with_tempo`,
+  `search_similar_songs_by_audio`), which is why deleting these breaks nothing. Confirmed by measuring
+  all five endpoints plus `/api/songs/{id}/related` live after the drop, not by reading the code.
+- **The trap is name collisions, and there were three layers of them.** `src/api/routers/search.py`
+  has *route handlers* named `search_by_text` and `search_hybrid`; `src/agent/big_flavor_agent.py`,
+  `src/api/research_jobs.py` and `src/rag/deep_search.py` carry an agent *tool* called `search_hybrid`
+  that dispatches to `_perform_hybrid_search`; and `tests/rag_mcp_server.py` has its own `search_hybrid`
+  composing working methods. All four are live and all four stay. **Delete by call graph, never by name.**
+- **A hand-run SQL file that re-creates functions can silently undo a migration, and this one would
+  have.** `update_search_functions.sql` still carried the pre-migration-`20` `song_id VARCHAR(50)`
+  declaration for `search_similar_songs_by_audio`, so re-applying it would have re-broken the mode PR
+  #113 had just fixed. Retiring the file *is* the fix; migrations are the only path.
+- **A dead function is worse than dead code**: it looks available, and the first caller discovers it
+  is not. Nothing reported any of this for ten months (the same blind spot as **CAT-12**). A smoke
+  check that every remaining search function answers was deliberately left to its own issue.
+- `tests/test_rag_hybrid_dimensions.py` went with `search_hybrid` — all three of its tests covered only
+  that method's placeholder-vector behavior, so no coverage of anything that still exists was lost
+  (746 → 743 passing, same 13 pre-existing failures).
+- **Migrations `21` and `22` are both unapplied in production.** `22` is applied on the dev stack.
+
+### 2026-09-27 — Audio similarity had never used CLAP, and the "one-word fix" was three (issue #111)
+`clap_embedding` was NULL for all 1,415 rows back to 2025-11-09, so every `combined_embedding` was the
+librosa fallback and "find me more like this" ranked on recording texture. Reported in #107, fixed
+here. **Measured on the live stack before writing anything, and the issue's premise was too small** —
+full detail in [ARCHITECTURE.md](ARCHITECTURE.md); the three findings are:
+
+- `clap_processor(audios=)` → `audio=` is only the first break. transformers 5's
+  `get_audio_features()` returns a `BaseModelOutputWithPooling`, not a tensor, so the kwarg fix alone
+  died on `'BaseModelOutputWithPooling' object has no attribute 'cpu'`. The embedding is its
+  `pooler_output`. **Distrust a one-word fix to dependency drift** — a rename rarely moves one thing.
+- **A working CLAP vector did not fit the column.** The combined representation is 37 librosa dims +
+  512 CLAP = **549**; `init/03` said so and migration `04` re-created the table at `vector(512)`,
+  unnoticed for ten months because CLAP never produced a vector to store. Shipping only the kwarg fix
+  would have failed *every* insert. Migration `19` restores 549, guarded on `atttypmod` so a re-run
+  cannot wipe the rebuilt vectors.
+- **The report was the third bug and the reason this lasted.** `index_audio_file` stored a CLAP-less
+  row and returned `True`, so a batch said `{'total': 74, 'success': 74, 'failed_files': []}` with zero
+  CLAP embeddings in it — #107's lesson one level up: there a blanket `except` turned an error into
+  missing data, here the *caller* turned missing data into a success. New **CAT-12** forbids it, and
+  the guard sits at the one seam so the scrapers, batch indexer and produce approval all inherit it.
+
+**Mixed embedding spaces are now prevented structurally, not by discipline** (new **CAT-11**): a
+fallback vector is 512 wide and a CLAP one 549, so they cannot share the column, and a not-yet-rebuilt
+row is NULL, which the search functions' `>=` threshold drops. The rebuild therefore compared a
+growing *subset*, every comparison CLAP-vs-CLAP — never an error, never two spaces. The rejected
+alternative (staging column + atomic cutover) keeps coverage whole but leaves `index_audio_file` not
+knowing which column is live, breaking the incremental path (**CAT-08**) for the same window.
+
+`scripts/reindex_audio_embeddings.py` **updates rows and never inserts them**: `audio_embeddings` is
+unique on `audio_path` and 1,341 rows still held a host-written Windows relative path that cannot open
+in the container, so upserting on a freshly resolved path would have created a second row per song and
+returned each twice (**CAT-04**/**CAT-07**). Resumable by construction (a row with both halves is
+done), and it refuses to run where CLAP is unavailable.
+
+**How bad the fallback was:** 475 of its 512 dims are zeros, so the whole catalog sat in a
+37-dimensional cone and every pair scored **0.994-1.000** similar. Ranking was noise in the fourth
+decimal.
+
 ## Later entries (moved from MEMORY.md, 2026-09-18)
 
 ### 2026-09-15 — Search accuracy was never the LLM's fault
