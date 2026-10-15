@@ -223,7 +223,7 @@ The radio uses Icecast + Liquidsoap for synchronized audio streaming:
 - **Icecast**: broadcasts at `/stream` (proxied by nginx).
 - **Shared volume**: `./streaming/playlist` is mounted into both backend and liquidsoap.
 
-**Two critical configuration facts (do not regress):**
+**Three critical configuration facts (do not regress):**
 1. The air chain **must** be made safe **exactly once, around the whole `fallback`** — never around
    its children:
    ```liquidsoap
@@ -240,6 +240,11 @@ The radio uses Icecast + Liquidsoap for synchronized audio streaming:
 2. Playlist paths must match Liquidsoap's mount points: the backend writes `/app/audio_library/…`
    and **converts** it to `/audio_library/…` for the Liquidsoap container — see
    `write_playlist_file()` in `backend_api.py`.
+3. **Pause stops the Icecast output** (`air.stop()` via harbor `POST /stop`; `POST /start` resumes),
+   which is why `output.icecast` carries `fallible=true` — Liquidsoap 2.2 refuses to stop an
+   infallible output. Don't remove it; the air chain under it is still `mksafe`'d. While paused,
+   `/stream` is gone from Icecast *on purpose*. The backend's stored `is_playing` is the wish, and
+   `radio_background_loop()` re-applies it each tick from `/on-air`'s `running` field.
 
 ---
 

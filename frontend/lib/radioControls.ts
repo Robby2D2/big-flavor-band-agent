@@ -20,7 +20,10 @@ export interface QueueEntryOwnership {
   added_by_me?: boolean;
 }
 
-/** Whether a role may change what is on the air: skip, play/pause, remove anything. */
+/**
+ * Whether a role may change what is on the air for everyone: skip, pause, remove
+ * anything. Starting a paused radio is open to every signed-in user (ACCT-15).
+ */
 export function isEditorRole(role: string | null | undefined): boolean {
   return role === 'editor' || role === 'admin';
 }

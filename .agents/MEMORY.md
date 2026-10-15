@@ -37,6 +37,24 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-15 — Pausing the radio actually stops it; the stray top player is gone
+
+- Pause used to relabel a stream that kept encoding (the page read PAUSED with the clock still
+  moving). It now stops Liquidsoap's Icecast output over harbor `/stop` (`/start` resumes
+  mid-track); measured ~3.7% → ~0.3% CPU. `fallible=true` on `output.icecast` is required: 2.2
+  raises "Source is infallible and cannot be stopped" otherwise.
+- The backend's `is_playing` is the wish and the radio loop re-applies it each tick, so a pause
+  survives a Liquidsoap restart. Top-up (LLM) is skipped while paused. RAD-02/03/04/07 amended.
+- Radio page: the bare `<audio controls>` above the panel is gone (the panel button drives a hidden
+  `<audio>`); tune-in is disabled while paused and a tuned-in listener is dropped when it pauses.
+- **Who may:** pause stays editor+; **resume is open to any signed-in user** (human ruling,
+  2026-10-15, ACCT-15 amended): starting is cheap, reversible, and only happens when someone wants
+  to listen. A listener's tune-in on a paused radio calls `/api/radio/play` then connects, retrying
+  for ~8 s while the Icecast mount comes back. The play BFF route now forwards the caller's real
+  role instead of a constant `'editor'`.
+- Tested against a throwaway Liquidsoap container on a `/stream-test` mount, not the live one.
+  Tests: `tests/test_radio_pause.py`.
+
 ### 2026-10-15 — The radio page shows how many people are listening (RAD-14)
 
 - The count is **Icecast's**, not ours: `radio_background_loop()` reads `/status-json.xsl` every 3

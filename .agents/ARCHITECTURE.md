@@ -914,6 +914,20 @@ invariants the code depends on (regressions here silently break the stream):
 - Playlist paths are rewritten `/app/audio_library/…` → `/audio_library/…` to match Liquidsoap's
   mount (`write_playlist_file()` in `backend_api.py`).
 
+**Pause stops the broadcast** (RAD-07, 2026-10-15). Pause/Resume used to flip `is_playing` while
+Liquidsoap kept decoding and encoding. Now the output is named (`air = output.icecast(fallible=true,
+...)`) and harbor exposes `POST /stop` / `POST /start`; `/on-air` reports `running`. The endpoints
+call `set_stream_running()` first and 503 if the stream doesn't answer (RAD-09). The stored
+`is_playing` is the wish: each tick `stream_running_mismatch()` compares it with `running` and
+re-applies it, so a Liquidsoap restart (which comes up broadcasting) is stopped again within a
+second (RAD-04). A stopped output stops pulling the source, so the track position freezes and
+resume continues mid-track; measured ~3.7% → ~0.3% CPU, and the `/stream` mount disappears from
+Icecast while paused. The queue top-up (an LLM call) is skipped while paused, and
+`reconcile_with_stream()`'s idle-resume only fires for a running stream, since a stopped one still
+reports the track it stopped on. Pause is editor+; resume is any signed-in user (ACCT-15), so a
+listener pressing play on a paused radio starts it (`startAndTuneIn()` on the radio page) and then
+connects, retrying while the mount comes back.
+
 **Two listener counts, and only one is shown** (RAD-14, 2026-10-15). `radio_listeners` is
 *page presence*: every 3 s poll of `/api/radio/state` upserts the tab's `listener_id`, so it counts
 open radio pages whether or not anyone pressed play — reported as `active_listeners`, observability

@@ -13,13 +13,16 @@ it keeps playing.
 same point at the same time. It is not a per-user player.
 
 **RAD-02** — The stream MUST NOT fall to silence while there are playable songs available to it
-(OKR **KR3.1**). If the queue empties, it falls back to catalog music, never to dead air.
+(OKR **KR3.1**). If the queue empties, it falls back to catalog music, never to dead air. The one
+exception is an editor's deliberate pause (**RAD-07**): a paused radio is off the air by choice.
 
 **RAD-03** — A listener MUST be able to start listening from the radio page with no setup beyond
-pressing play.
+pressing play. If the radio is paused, pressing play MUST start it and tune them in — any signed-in
+user may start a paused radio (**ACCT-15**) — and the page MUST say it is paused until then.
 
 **RAD-04** — Radio state — the current song, the queue, play/pause, and position — MUST survive a
-backend restart without a human intervening to recover it (OKR **KR3.3**).
+backend restart without a human intervening to recover it (OKR **KR3.3**). A pause MUST also hold
+across a restart of the stream itself.
 
 **RAD-05** — The radio page MUST show what is playing now — including when the stream is playing
 fallback catalog music — and what is queued next, and MUST keep that display in agreement with the
@@ -37,8 +40,12 @@ MUST show no count rather than a number that may be wrong (**PLAT-07**).
 radio page.
 
 **RAD-07** — An **editor** or **admin** MUST be able to **skip** the current song, **remove any
-queued song**, and **play/pause**. A **listener** MUST be able to remove a queued song they added
+queued song**, and **pause** the radio; **resuming** is open to any signed-in user (**ACCT-15**,
+**RAD-03**). A **listener** MUST be able to remove a queued song they added
 themselves (**ACCT-05**), and adding to the queue stays open to any signed-in user (**RAD-06**).
+**Pause MUST stop the broadcast itself** — no audio is produced while paused, so a pause saves the
+stream's resources — and resume MUST pick up where it stopped. A pause that only relabels a stream
+which keeps playing does not meet this.
 
 **RAD-08** — A queue action MUST be reflected in the live stream within a few seconds (OKR
 **KR3.2**), and in the on-screen queue immediately.

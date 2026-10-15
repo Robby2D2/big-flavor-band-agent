@@ -38,10 +38,12 @@ invites.
 **ACCT-09** — A user who reaches a surface their role may not use MUST be told plainly, not shown a
 broken or empty page.
 
-**ACCT-15** — Skipping the current song, pausing or resuming the stream, and removing a queued song
-the user did not add themselves MUST be restricted to **editor** and **admin**, MUST NOT be offered
-to a listener, and MUST be refused where the action is carried out rather than only hidden in the
-interface.
+**ACCT-15** — Skipping the current song, pausing the stream, and removing a queued song the user
+did not add themselves MUST be restricted to **editor** and **admin**, MUST NOT be offered to a
+listener, and MUST be refused where the action is carried out rather than only hidden in the
+interface. **Starting** a paused stream is open to any signed-in user: it is what tuning in to a
+paused radio needs (**RAD-03**), and it only ever turns the radio on — stopping it for everyone is
+the editor-only half.
 
 ---
 

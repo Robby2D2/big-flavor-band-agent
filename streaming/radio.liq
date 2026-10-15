@@ -90,44 +90,15 @@ radio = normalize(radio)
 on_air = ref([])
 radio = source.on_track(radio, fun (m) -> on_air := m)
 
-harbor.http.register.simple(
-  port=8080,
-  method="GET",
-  "/on-air",
-  fun (_) ->
-    begin
-      m = on_air()
-      http.response(
-        content_type="application/json",
-        data=json.stringify(
-          compact=true,
-          {
-            filename = m["filename"],
-            title = m["title"],
-            source = m["bigflavor_source"],
-            elapsed = source.elapsed(radio),
-            remaining = source.remaining(radio)
-          }
-        )
-      )
-    end
-)
-
-# Skipping has to move the audio, not just the label the backend shows.
-harbor.http.register.simple(
-  port=8080,
-  method="POST",
-  "/skip",
-  fun (_) ->
-    begin
-      source.skip(radio)
-      http.response(content_type="application/json", data='{"skipped":true}')
-    end
-)
-
-# Output to Icecast
-output.icecast(
+# Output to Icecast. Named so an editor's pause can stop it outright (RAD-07): a
+# stopped output stops pulling audio, so nothing is decoded or encoded and the
+# /stream mount goes away until it is started again. That is the only way a pause
+# saves anything -- relabelling a stream that keeps encoding does not.
+# fallible=true is only what lets Liquidsoap 2.2 stop an output at all ("Source is
+# infallible and cannot be stopped"); the air chain under it is still mksafe'd.
+air = output.icecast(
   %mp3(bitrate=192),
+  fallible=true,
   host="icecast",
   port=8000,
   password="bigflavor_source",
@@ -146,3 +117,64 @@ settings.server.telnet.port := 1234
 
 # Log startup
 log("BigFlavor Radio started!")
+
+harbor.http.register.simple(
+  port=8080,
+  method="GET",
+  "/on-air",
+  fun (_) ->
+    begin
+      m = on_air()
+      http.response(
+        content_type="application/json",
+        data=json.stringify(
+          compact=true,
+          {
+            filename = m["filename"],
+            title = m["title"],
+            source = m["bigflavor_source"],
+            elapsed = source.elapsed(radio),
+            remaining = source.remaining(radio),
+            running = air.is_started()
+          }
+        )
+      )
+    end
+)
+
+# Skipping has to move the audio, not just the label the backend shows.
+harbor.http.register.simple(
+  port=8080,
+  method="POST",
+  "/skip",
+  fun (_) ->
+    begin
+      source.skip(radio)
+      http.response(content_type="application/json", data='{"skipped":true}')
+    end
+)
+
+# Pause and resume the broadcast itself. The backend holds which one is wanted and
+# re-applies it every tick, so a pause survives this container restarting (RAD-04)
+# -- a fresh start comes up broadcasting and is stopped again within a second.
+harbor.http.register.simple(
+  port=8080,
+  method="POST",
+  "/stop",
+  fun (_) ->
+    begin
+      air.stop()
+      http.response(content_type="application/json", data='{"running":false}')
+    end
+)
+
+harbor.http.register.simple(
+  port=8080,
+  method="POST",
+  "/start",
+  fun (_) ->
+    begin
+      air.start()
+      http.response(content_type="application/json", data='{"running":true}')
+    end
+)

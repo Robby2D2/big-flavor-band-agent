@@ -31,6 +31,11 @@ interface RadioState {
   stream_listeners?: number | null;
 }
 
+/** How long after starting a paused radio a "paused" poll is taken as stale. */
+const START_GRACE_MS = 10_000;
+/** Tries to connect to the stream, a second apart, while its mount comes back. */
+const TUNE_IN_ATTEMPTS = 8;
+
 /** An in-page result for a queue action — RAD-09 needs failures visible, not alerted. */
 interface Notice {
   kind: 'error' | 'ok';
@@ -46,7 +51,11 @@ export default function RadioPage() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [request, setRequest] = useState('');
   const [adding, setAdding] = useState(false);
+  const [starting, setStarting] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  // When this page last started a paused radio, so a poll already in flight that
+  // still says "paused" does not drop the audio it just started.
+  const startedAtRef = useRef(0);
   const lastSongIdRef = useRef<number | null>(null);
 
   // The session's real role, read for display only: it decides which controls are
@@ -255,11 +264,11 @@ export default function RadioPage() {
 
   const isEditor = isEditorRole(userRole);
 
-  // The radio is an always-on broadcast: treat it as LIVE whenever the backend
-  // reports playback OR the listener is actively tuned in (hearing audio). This
-  // prevents the status pill from reading PAUSED while a stream is audibly
-  // playing (issue #79).
-  const isLive = Boolean(radioState?.is_playing) || isListening;
+  // A pause stops the broadcast itself now (RAD-07), so is_playing is the truth:
+  // while paused there is no stream to hear. Before that, a pause only relabelled
+  // a stream that kept playing, which is why tuning in used to count as LIVE
+  // (issue #79).
+  const isLive = Boolean(radioState?.is_playing);
 
   // What is on the air, as the stream itself reported it (issue #101).
   const nowPlaying = describeNowPlaying(radioState);
@@ -272,20 +281,86 @@ export default function RadioPage() {
       ? `${listenerCount} ${listenerCount === 1 ? 'person' : 'people'} listening`
       : null;
 
+  // The station pausing takes this listener's audio with it: the stream they were
+  // connected to has gone, so the page stops rather than showing them as tuned in.
+  useEffect(() => {
+    const justStarted = Date.now() - startedAtRef.current < START_GRACE_MS;
+    if (radioState && !radioState.is_playing && isListening && !justStarted && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      setIsListening(false);
+    }
+  }, [radioState, isListening]);
+
+  // Connect to the Icecast stream. Right after a start the mount is not back yet —
+  // Liquidsoap takes a moment to reconnect — so a failed load is retried briefly.
+  // A browser refusing to play at all (autoplay policy) is not retried.
+  const tuneIn = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = volume;
+
+    for (let attempt = 1; attempt <= TUNE_IN_ATTEMPTS; attempt++) {
+      audio.src = '/stream';
+      try {
+        await audio.play();
+        setIsListening(true);
+        return;
+      } catch (error) {
+        const blocked = error instanceof DOMException && error.name === 'NotAllowedError';
+        if (blocked || attempt === TUNE_IN_ATTEMPTS) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    setNotice({
+      kind: 'error',
+      text: "Couldn't start playing the stream in your browser — press play to try again.",
+    });
+  };
+
+  // A paused radio is started by whoever presses play: starting is open to every
+  // signed-in user, and stopping stays editor+ (RAD-03, ACCT-15).
+  const startAndTuneIn = async () => {
+    setNotice(null);
+    setStarting(true);
+    try {
+      const response = await fetch('/api/radio/play', { method: 'POST' });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        setNotice({
+          kind: 'error',
+          text: queueActionError(
+            response.status,
+            body,
+            'Could not start the radio — the stream did not respond.'
+          ),
+        });
+        return;
+      }
+
+      startedAtRef.current = Date.now();
+      setRadioState((previous) => (previous ? { ...previous, is_playing: true } : previous));
+      await tuneIn();
+      await fetchRadioState();
+    } catch (error) {
+      console.error('Error starting the radio:', error);
+      setNotice({ kind: 'error', text: 'Could not start the radio — the stream did not respond.' });
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const toggleListening = () => {
-    if (!audioRef.current) return;
+    if (!audioRef.current || starting) return;
 
     if (isListening) {
       audioRef.current.pause();
       audioRef.current.src = '';
       setIsListening(false);
+    } else if (isLive) {
+      void tuneIn();
     } else {
-      // Use the Icecast stream URL
-      const audio = audioRef.current;
-      audio.src = '/stream';
-      audio.volume = volume;
-      audio.play();
-      setIsListening(true);
+      void startAndTuneIn();
     }
   };
 
@@ -315,13 +390,9 @@ export default function RadioPage() {
       />
 
       <main className="container mx-auto px-4 py-8">
-        {/* Audio element */}
-        <audio
-          ref={audioRef}
-          preload="none"
-          controls
-          style={{ display: 'block', margin: '20px auto', width: '100%', maxWidth: '600px' }}
-        />
+        {/* Plays the stream; the panel's tune-in button and volume drive it, so it
+            has no controls of its own. */}
+        <audio ref={audioRef} preload="none" />
 
         {/* What just happened to the queue, said on the page rather than in a browser
             alert that leaves nothing behind to read (RAD-09, PLAT-07). */}
@@ -428,7 +499,11 @@ export default function RadioPage() {
               {/* Play/Stop Button */}
               <button
                 onClick={toggleListening}
-                className={`flex items-center justify-center w-14 h-14 rounded-full transition-colors ${
+                disabled={starting}
+                aria-label={
+                  isListening ? 'Stop listening' : isLive ? 'Tune in' : 'Start the radio and tune in'
+                }
+                className={`flex items-center justify-center w-14 h-14 rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                   isListening
                     ? 'bg-red-600 hover:bg-red-700 text-white'
                     : 'bg-green-600 hover:bg-green-700 text-white'
@@ -447,7 +522,13 @@ export default function RadioPage() {
 
               <div className="flex-1 min-w-[8rem]">
                 <span className="text-sm font-medium text-text/70">
-                  {isListening ? 'Listening...' : 'Click to tune in'}
+                  {starting
+                    ? 'Starting the radio...'
+                    : isListening
+                      ? 'Listening...'
+                      : isLive
+                        ? 'Click to tune in'
+                        : 'The radio is paused — press play to start it'}
                 </span>
               </div>
 

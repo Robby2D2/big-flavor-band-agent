@@ -308,6 +308,36 @@ async def skip_on_air() -> bool:
         return False
 
 
+async def set_stream_running(running: bool) -> bool:
+    """Start or stop the broadcast itself. False when the stream can't be reached.
+
+    Stopping the Icecast output is what makes a pause save anything: nothing is
+    decoded or encoded while it is stopped, and it resumes mid-track (RAD-07).
+    """
+    action = "start" if running else "stop"
+    try:
+        async with httpx.AsyncClient(timeout=ON_AIR_TIMEOUT_SECONDS) as client:
+            response = await client.post(f"{LIQUIDSOAP_HARBOR_URL}/{action}")
+            response.raise_for_status()
+        return True
+    except Exception:
+        logger.warning("Could not %s the stream at %s", action, LIQUIDSOAP_HARBOR_URL, exc_info=True)
+        return False
+
+
+def stream_running_mismatch(state: Dict[str, Any], on_air: Dict[str, Any]) -> bool:
+    """Whether the stream is broadcasting when the radio is paused, or the reverse.
+
+    The stored ``is_playing`` is the wish and the stream is reconciled to it, so a
+    pause survives Liquidsoap restarting — it comes up broadcasting (RAD-04). A
+    stream that does not report ``running`` cannot be checked, so is left alone.
+    """
+    running = on_air.get("running")
+    if not isinstance(running, bool):
+        return False
+    return running != bool(state.get("is_playing"))
+
+
 def listeners_from_icestats(payload: Any) -> Optional[int]:
     """How many clients are tuned in to the stream mount, from Icecast's status JSON.
 
@@ -474,10 +504,10 @@ def reconcile_with_stream(
 
     state["current_song"] = song
     state["current_song_source"] = source
-    if was_idle:
+    if was_idle and on_air.get("running", True):
         # Audio is on the air and nothing was playing: the broadcast is live
-        # (issue #79). An explicit pause keeps current_song set, so this cannot
-        # resume one.
+        # (issue #79). A stopped stream still reports the track it stopped on, so
+        # only a running one counts — otherwise this would undo a pause.
         state["is_playing"] = True
 
     return queue_changed
@@ -556,11 +586,22 @@ async def radio_background_loop():
                         on_air, state["queue"], state["current_song"]
                     )
                     playlist_dirty = reconcile_with_stream(state, on_air, song, source)
+                    if stream_running_mismatch(state, on_air):
+                        wanted = bool(state["is_playing"])
+                        logger.info(
+                            "Stream is %s but the radio is %s — %s it",
+                            "broadcasting" if on_air["running"] else "stopped",
+                            "playing" if wanted else "paused",
+                            "starting" if wanted else "stopping",
+                        )
+                        await set_stream_running(wanted)
 
                 if tick % RADIO_LISTENERS_EVERY_TICKS == 0:
                     state["stream_listeners"] = await fetch_stream_listeners()
 
-                if tick % RADIO_TOPUP_EVERY_TICKS == 0:
+                # A paused radio plays nothing, so it needs no more songs — and the
+                # top-up asks the LLM, which is the cost a pause is meant to save.
+                if state["is_playing"] and tick % RADIO_TOPUP_EVERY_TICKS == 0:
                     queued_before = len(state["queue"])
                     await auto_populate_queue(state)
                     playlist_dirty = playlist_dirty or len(state["queue"]) != queued_before

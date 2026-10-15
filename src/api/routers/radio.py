@@ -4,8 +4,9 @@ Thin wrappers over the process-external radio state (RadioStateStore, issue #2)
 and the playback helpers in ``src/api/radio_service.py``. What is playing is
 reconciled against the stream by the background loop (issue #101), and the queue
 top-up is owned by it too (issue #5), so GET /api/radio/state and the /stream
-endpoints are side-effect-free reads. Skip and play/pause require the editor role
-(issue #1); removing a queued song is allowed to whoever added it and to editors
+endpoints are side-effect-free reads. Skip and pause require the editor role
+(issue #1); resuming is open to any signed-in user, since starting the station is
+what tuning in to a paused radio needs (RAD-03, ACCT-15); removing a queued song is allowed to whoever added it and to editors
 above that (issue #102), so it is authorized against the queue's own attribution
 rather than on rank alone. Raw exceptions propagate to the centralized error
 handlers (issue #9).
@@ -30,6 +31,7 @@ from src.api.radio_service import (
     auto_populate_queue,
     may_remove_from_queue,
     queue_entry_for_display,
+    set_stream_running,
     skip_on_air,
     write_playlist_file,
     _find_audio_file,
@@ -216,13 +218,22 @@ async def remove_from_queue(
 @router.post("/api/radio/play")
 async def play_radio(
     store: RadioStateStore = Depends(get_radio_store),
-    _role: str = Depends(require_role("editor")),
+    _role: str = Depends(require_role("listener")),
 ):
-    """Start/resume radio playback (editor/admin only).
+    """Resume the broadcast (any signed-in user).
 
-    The stream is always broadcasting; this clears the paused flag so the page
-    reads LIVE again. What is playing still comes from the stream.
+    Starting is open to everyone because it is what tuning in to a paused radio
+    needs, it is cheap, and it only happens when someone wants to listen; stopping
+    takes the radio away from everyone else, so pause stays editor+ (ACCT-15).
+    Restarts the stream's output, which picks up mid-track where the pause left it.
+    If the stream cannot be reached the resume failed, and says so (RAD-09).
     """
+    if not await set_stream_running(True):
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reach the stream to resume the radio",
+        )
+
     state = await store.load_state()
 
     state["is_playing"] = True
@@ -237,7 +248,19 @@ async def pause_radio(
     store: RadioStateStore = Depends(get_radio_store),
     _role: str = Depends(require_role("editor")),
 ):
-    """Pause radio playback (editor/admin only)."""
+    """Pause the broadcast (editor/admin only).
+
+    Stops the stream's output outright — nothing is decoded or encoded and
+    /stream goes away until it is resumed — so a pause saves the resources it
+    looks like it should (RAD-07). The background loop holds the stream to this
+    across a Liquidsoap restart (RAD-04).
+    """
+    if not await set_stream_running(False):
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reach the stream to pause the radio",
+        )
+
     state = await store.load_state()
 
     state["is_playing"] = False
