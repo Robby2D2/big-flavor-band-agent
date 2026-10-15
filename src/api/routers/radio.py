@@ -63,8 +63,9 @@ async def get_radio_state(
 
     # NOTE: playback is intentionally NOT paused when the listener count
     # drops to zero — the radio is a continuous broadcast driven by
-    # radio_background_loop() (issue #5). active_listeners is reported for
-    # observability only.
+    # radio_background_loop() (issue #5). active_listeners counts open radio
+    # pages and is reported for observability only; the count shown to users is
+    # stream_listeners, the people actually connected to the stream (RAD-14).
     active_listeners = await store.count_active_listeners()
 
     # Each entry says whether *this* caller added it, so the page knows which
@@ -88,6 +89,10 @@ async def get_radio_state(
         # The length the stream reports for the track on air, for songs the catalog
         # has no duration for (CAT-02).
         "stream_duration": state.get("stream_duration"),
+        # How many people are tuned in to the stream, as Icecast counts them; None
+        # when Icecast cannot be asked, so the page shows nothing rather than a 0
+        # that may be wrong (RAD-14).
+        "stream_listeners": state.get("stream_listeners"),
     }
 
 

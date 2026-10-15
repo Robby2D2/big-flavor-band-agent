@@ -914,6 +914,14 @@ invariants the code depends on (regressions here silently break the stream):
 - Playlist paths are rewritten `/app/audio_library/…` → `/audio_library/…` to match Liquidsoap's
   mount (`write_playlist_file()` in `backend_api.py`).
 
+**Two listener counts, and only one is shown** (RAD-14, 2026-10-15). `radio_listeners` is
+*page presence*: every 3 s poll of `/api/radio/state` upserts the tab's `listener_id`, so it counts
+open radio pages whether or not anyone pressed play — reported as `active_listeners`, observability
+only. The number on the radio page is `stream_listeners`: `radio_background_loop()` reads Icecast's
+`/status-json.xsl` every `RADIO_LISTENERS_EVERY_TICKS` (3) ticks and takes `listeners` on the
+`/stream` mount (`listeners_from_icestats()`), so it counts real audio connections, external players
+included. `None` when Icecast can't be asked, and the page then shows no count.
+
 ### The stream says what is playing (2026-09-26, issue #101)
 
 There were **two clocks**. `update_radio_position()` added wall-clock time to a position every tick

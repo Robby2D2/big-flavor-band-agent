@@ -25,6 +25,10 @@ backend restart without a human intervening to recover it (OKR **KR3.3**).
 fallback catalog music — and what is queued next, and MUST keep that display in agreement with the
 audio actually on the air as the stream advances.
 
+**RAD-14** — The radio page MUST show how many people are listening, counted as clients connected
+to the stream — not people who merely have the page open. When that count cannot be read, the page
+MUST show no count rather than a number that may be wrong (**PLAT-07**).
+
 ---
 
 ## Queue and transport

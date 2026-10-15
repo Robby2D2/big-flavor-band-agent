@@ -37,6 +37,17 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-15 — The radio page shows how many people are listening (RAD-14)
+
+- The count is **Icecast's**, not ours: `radio_background_loop()` reads `/status-json.xsl` every 3
+  ticks into `state["stream_listeners"]`; `/api/radio/state` returns it and the page shows "N people
+  listening" beside the LIVE pill. The existing `active_listeners` (from `radio_listeners`) counts
+  *open radio pages* — every poll registers — so it was the wrong number for "actively listening"
+  and is left as observability only.
+- Unknown is `None`, never 0 (PLAT-07); no source connected *is* 0. Parser handles Icecast's
+  dict-vs-list `source` shape. Tests: `tests/test_radio_listeners.py`. Verified live: a client on
+  `icecast:8000/stream` moved the API count 0 → 1 → 0.
+
 ### 2026-09-28 — Playback copies are warmed when a stem set is kept; the transport shows load progress
 A 14-min session take's console sat on a disabled Play for ~20s+: `_keep_stems` (session produce and
 fix-queue saves) copies stems to **new paths**, so no `.opus` preview existed and the first open ran

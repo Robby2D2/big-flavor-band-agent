@@ -27,6 +27,8 @@ interface RadioState {
   stream_known?: boolean;
   current_song_source?: string | null;
   stream_duration?: number | null;
+  /** People connected to the stream, as Icecast counts them; null when unknown (RAD-14). */
+  stream_listeners?: number | null;
 }
 
 /** An in-page result for a queue action — RAD-09 needs failures visible, not alerted. */
@@ -262,6 +264,14 @@ export default function RadioPage() {
   // What is on the air, as the stream itself reported it (issue #101).
   const nowPlaying = describeNowPlaying(radioState);
 
+  // Who is tuned in — clients on the stream, not open radio pages (RAD-14). An
+  // unknown count shows nothing rather than a 0 that may be wrong.
+  const listenerCount = radioState?.stream_listeners;
+  const listenerLabel =
+    typeof listenerCount === 'number'
+      ? `${listenerCount} ${listenerCount === 1 ? 'person' : 'people'} listening`
+      : null;
+
   const toggleListening = () => {
     if (!audioRef.current) return;
 
@@ -341,11 +351,18 @@ export default function RadioPage() {
             <h2 className="text-2xl font-bold text-text">
               Now Playing
             </h2>
-            <div className="flex items-center gap-2">
-              <div className={`w-3 h-3 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
-              <span className="text-sm text-text/55">
-                {isLive ? 'LIVE' : 'PAUSED'}
-              </span>
+            <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+              {listenerLabel && (
+                <span className="text-sm text-text/55" aria-live="polite">
+                  {listenerLabel}
+                </span>
+              )}
+              <div className="flex items-center gap-2">
+                <div className={`w-3 h-3 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+                <span className="text-sm text-text/55">
+                  {isLive ? 'LIVE' : 'PAUSED'}
+                </span>
+              </div>
             </div>
           </div>
 

@@ -31,6 +31,9 @@ DEFAULT_STATE: Dict[str, Any] = {
     "stream_known": False,
     "current_song_source": None,
     "stream_duration": None,
+    # How many clients Icecast says are connected to the stream — people actually
+    # listening. None while Icecast cannot be asked.
+    "stream_listeners": None,
 }
 
 
