@@ -37,6 +37,17 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-15 — The radio page shows the on-air song's lyrics
+
+- A **Lyrics** toggle in Now Playing opens `components/RadioLyrics.tsx`, which reads the existing
+  listener-scoped `/api/songs/{id}/lyrics/timed` and reuses `LyricsFollower` when timings are
+  followable; otherwise it shows the plain text, or "No lyrics for this song." No backend change.
+- The radio has no local clock, only the 3 s polled `position`: `RadioLyrics` re-anchors on each
+  poll and runs the clock forward with rAF between polls (held while `is_playing` is false). Lines
+  are not seekable — the stream is shared (RAD-01). The polled position is the server's, so the
+  highlight can run a few seconds ahead of what a listener hears through Icecast's buffer.
+- Tests: `frontend/__tests__/RadioLyrics.test.tsx`.
+
 ### 2026-10-15 — Pausing the radio actually stops it; the stray top player is gone
 
 - Pause used to relabel a stream that kept encoding (the page read PAUSED with the clock still

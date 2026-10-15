@@ -2,6 +2,7 @@
 
 import { useCallback, useState, useEffect, useRef } from 'react';
 import Header from '@/components/Header';
+import RadioLyrics from '@/components/RadioLyrics';
 import { describeNowPlaying } from '@/lib/nowPlaying';
 import { canRemoveQueueEntry, isEditorRole, queueActionError } from '@/lib/radioControls';
 import { useAuth } from '@/lib/useAuth';
@@ -52,6 +53,7 @@ export default function RadioPage() {
   const [request, setRequest] = useState('');
   const [adding, setAdding] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [showLyrics, setShowLyrics] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   // When this page last started a paused radio, so a poll already in flight that
   // still says "paused" does not drop the audio it just started.
@@ -458,6 +460,17 @@ export default function RadioPage() {
                   {formatTime(nowPlaying.position)}
                   {nowPlaying.duration !== null && ` / ${formatTime(nowPlaying.duration)}`}
                 </span>
+                <button
+                  onClick={() => setShowLyrics((v) => !v)}
+                  aria-pressed={showLyrics}
+                  className={`text-xs px-3 py-1 rounded-full border ${
+                    showLyrics
+                      ? 'border-green-500 text-green-400'
+                      : 'border-white/20 text-text/55 hover:text-text'
+                  }`}
+                >
+                  Lyrics
+                </button>
                 {/* Changing what everyone hears is editor+ (ACCT-15); a listener is not
                     shown a control that would only be refused (ACCT-08). */}
                 {isEditor && (
@@ -483,6 +496,15 @@ export default function RadioPage() {
                   <div
                     className="bg-blue-600 h-2 rounded-full transition-all"
                     style={{ width: `${nowPlaying.progress * 100}%` }}
+                  />
+                </div>
+              )}
+              {showLyrics && (
+                <div className="mt-4 pt-2 border-t border-white/8">
+                  <RadioLyrics
+                    songId={nowPlaying.song.id}
+                    position={nowPlaying.position}
+                    playing={Boolean(radioState?.is_playing)}
                   />
                 </div>
               )}
