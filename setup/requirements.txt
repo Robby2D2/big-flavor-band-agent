@@ -35,6 +35,7 @@ asyncpg>=0.29.0  # PostgreSQL async driver
 
 # Lyrics extraction dependencies
 faster-whisper>=0.10.0  # Fast speech-to-text transcription (optimized Whisper)
+av<19  # PyAV 19 dropped av.open(metadata_errors=...), which faster-whisper 1.2.x passes
 demucs  # Music source separation (vocal isolation)
 
 # Web scraping dependencies

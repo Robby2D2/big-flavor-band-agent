@@ -35,6 +35,9 @@ pyloudnorm>=0.1.1  # ITU-R BS.1770 integrated loudness (LUFS) measurement
 
 # Speech and Audio Processing
 faster-whisper>=0.10.0
+# PyAV 19 dropped av.open(metadata_errors=...), which faster-whisper 1.2.x still
+# passes when decoding audio — every transcription failed with a TypeError.
+av<19
 
 # Adaptive / non-stationary noise reduction (issue #66) — time-varying spectral
 # gate that removes intermittent noise (talking, a door, a thump) a single fixed
