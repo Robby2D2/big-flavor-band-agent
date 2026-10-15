@@ -106,8 +106,8 @@ chmod +x deploy-production.sh
 
 **Or manually:**
 ```bash
-docker-compose --env-file .env.production build
-docker-compose --env-file .env.production up -d
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production build
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d
 ```
 
 ### 5. Verify Deployment

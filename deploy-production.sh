@@ -8,6 +8,11 @@ echo "BigFlavor Band Agent - Production Deploy"
 echo "=========================================="
 echo ""
 
+# docker-compose.yml alone is the hot-reload dev stack (`next dev`, dev DB
+# password); docker-compose.prod.yml layers the production build on top.
+# Every docker-compose call below must pass both files.
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.prod.yml)
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -113,15 +118,15 @@ echo ""
 echo "=========================================="
 echo "Building Docker images..."
 echo "=========================================="
-docker-compose --env-file .env.production build
+docker-compose "${COMPOSE_FILES[@]}" --env-file .env.production build
 
 echo ""
 echo "=========================================="
 echo "Starting services..."
 echo "=========================================="
-docker-compose --env-file .env.production up -d || {
+docker-compose "${COMPOSE_FILES[@]}" --env-file .env.production up -d || {
     echo -e "${RED}ERROR: docker-compose up failed${NC}"
-    echo "Check logs with: docker-compose logs"
+    echo "Check logs with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs"
     exit 1
 }
 
@@ -174,7 +179,7 @@ fi
 # running. A loose substring match can't catch that (some other, unrelated
 # service already being healthy satisfies it), so verify each service's
 # real state and nudge anything that never started.
-mapfile -t SERVICES < <(docker-compose config --services)
+mapfile -t SERVICES < <(docker-compose "${COMPOSE_FILES[@]}" --env-file .env.production config --services)
 
 RETRIES=30
 COUNT=0
@@ -186,7 +191,7 @@ while [ $COUNT -lt $RETRIES ]; do
     STATUS_LINES=()
     for svc in "${SERVICES[@]}"; do
         [ -z "$svc" ] && continue
-        cid=$(docker-compose ps -q "$svc" | head -n1)
+        cid=$(docker-compose "${COMPOSE_FILES[@]}" ps -q "$svc" | head -n1)
         if [ -z "$cid" ]; then
             STATUS_LINES+=("$svc : no container")
             ALL_UP=0
@@ -218,7 +223,7 @@ echo ""
 echo "=========================================="
 echo "Deployment Status"
 echo "=========================================="
-docker-compose ps
+docker-compose "${COMPOSE_FILES[@]}" ps
 
 if [ $ALL_UP -ne 1 ]; then
     echo ""
@@ -226,7 +231,7 @@ if [ $ALL_UP -ne 1 ]; then
     for line in "${STATUS_LINES[@]}"; do
         echo -e "  ${YELLOW}${line}${NC}"
     done
-    echo "Check logs with: docker-compose logs -f <service>"
+    echo "Check logs with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs -f <service>"
     exit 1
 fi
 
@@ -239,9 +244,9 @@ echo "Your application is now running on:"
 echo "  http://localhost (or your server IP)"
 echo ""
 echo "Useful commands:"
-echo "  View logs:           docker-compose logs -f"
-echo "  Stop services:       docker-compose down"
-echo "  Restart service:     docker-compose restart [service]"
+echo "  View logs:           docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs -f"
+echo "  Stop services:       docker-compose -f docker-compose.yml -f docker-compose.prod.yml down"
+echo "  Restart service:     docker restart bigflavor-<service>"
 echo "  View this guide:     cat docs/DOCKER_DEPLOYMENT.md"
 echo ""
 echo "Check service health:"

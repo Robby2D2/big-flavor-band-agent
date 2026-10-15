@@ -49,10 +49,10 @@ Required variables:
 
 ```bash
 # Build all services
-docker-compose --env-file .env.production build
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production build
 
 # Start in detached mode
-docker-compose --env-file .env.production up -d
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.production up -d
 
 # Check status
 docker-compose ps

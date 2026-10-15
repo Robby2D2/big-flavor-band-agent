@@ -5,6 +5,11 @@ Write-Host "BigFlavor Band Agent - Production Deploy" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# docker-compose.yml alone is the hot-reload dev stack (`next dev`, dev DB
+# password); docker-compose.prod.yml layers the production build on top.
+# Every docker-compose call below must pass both files.
+$composeFiles = @('-f', 'docker-compose.yml', '-f', 'docker-compose.prod.yml')
+
 # Check if .env.production exists
 if (-not (Test-Path ".env.production")) {
     Write-Host "ERROR: .env.production file not found!" -ForegroundColor Red
@@ -111,16 +116,16 @@ Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Building Docker images..." -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
-docker-compose --env-file .env.production build
+docker-compose @composeFiles --env-file .env.production build
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Starting services..." -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
-docker-compose --env-file .env.production up -d
+docker-compose @composeFiles --env-file .env.production up -d
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: docker-compose up failed (exit code $LASTEXITCODE)" -ForegroundColor Red
-    Write-Host "Check logs with: docker-compose logs" -ForegroundColor Yellow
+    Write-Host "Check logs with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs" -ForegroundColor Yellow
     exit 1
 }
 
@@ -174,7 +179,7 @@ if ($llmProvider -eq "ollama") {
 # substring match can't catch that (some other, unrelated service already
 # being healthy satisfies it), so verify each service's real state and
 # nudge anything that never started.
-$services = (docker-compose config --services) | Where-Object { $_.Trim() -ne '' }
+$services = (docker-compose @composeFiles --env-file .env.production config --services) | Where-Object { $_.Trim() -ne '' }
 
 $retries = 30
 $count = 0
@@ -185,7 +190,7 @@ while ($count -lt $retries) {
     $allUp = $true
     $statusLines = @()
     foreach ($svc in $services) {
-        $cid = (docker-compose ps -q $svc | Select-Object -First 1)
+        $cid = (docker-compose @composeFiles ps -q $svc | Select-Object -First 1)
         if (-not $cid) {
             $statusLines += "$svc : no container"
             $allUp = $false
@@ -215,13 +220,13 @@ Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Deployment Status" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
-docker-compose ps
+docker-compose @composeFiles ps
 
 if (-not $allUp) {
     Write-Host ""
     Write-Host "ERROR: Not all services came up running/healthy:" -ForegroundColor Red
     foreach ($line in $statusLines) { Write-Host "  $line" -ForegroundColor Yellow }
-    Write-Host "Check logs with: docker-compose logs -f <service>" -ForegroundColor Yellow
+    Write-Host "Check logs with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs -f <service>" -ForegroundColor Yellow
     exit 1
 }
 
@@ -234,9 +239,9 @@ Write-Host "Your application is now running on:" -ForegroundColor Cyan
 Write-Host "  http://localhost (or your server IP)" -ForegroundColor White
 Write-Host ""
 Write-Host "Useful commands:" -ForegroundColor Cyan
-Write-Host "  View logs:           docker-compose logs -f"
-Write-Host "  Stop services:       docker-compose down"
-Write-Host "  Restart service:     docker-compose restart [service]"
+Write-Host "  View logs:           docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs -f"
+Write-Host "  Stop services:       docker-compose -f docker-compose.yml -f docker-compose.prod.yml down"
+Write-Host "  Restart service:     docker restart bigflavor-<service>"
 Write-Host "  View this guide:     cat docs/DOCKER_DEPLOYMENT.md"
 Write-Host ""
 Write-Host "Check service health:" -ForegroundColor Cyan

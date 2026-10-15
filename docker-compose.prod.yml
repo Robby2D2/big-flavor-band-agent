@@ -1,0 +1,31 @@
+# docker-compose.prod.yml — production overrides, layered on docker-compose.yml.
+#
+# deploy-production.ps1 / deploy-production.sh apply it for you. By hand:
+#
+#   docker-compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# The base file is the hot-reload dev stack: the frontend runs `next dev` (which
+# shows the Next.js dev-tools "N" badge to every visitor and compiles pages on
+# demand) and the backend allows the dev database password. This file swaps in
+# the optimized Next.js build and the backend's production DB rules.
+#
+# Note: a plain `docker-compose up -d` (without this file) recreates the
+# frontend as the dev server again.
+
+services:
+  backend:
+    environment:
+      # Require a real DB_PASSWORD (POSTGRES_PASSWORD from .env.production)
+      # instead of falling back to the dev default — see database/database.py.
+      - APP_ENV=production
+
+  frontend:
+    build:
+      context: ./frontend
+      # Multi-stage `next build` → standalone `node server.js`.
+      dockerfile: ../Dockerfile.frontend
+    environment:
+      - NODE_ENV=production
+    # The built image carries its own compiled app; the dev source mounts would
+    # shadow it. Frontend changes ship by redeploying (rebuilding this image).
+    volumes: !reset []

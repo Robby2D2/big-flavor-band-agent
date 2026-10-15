@@ -255,7 +255,11 @@ production. The release-manager agent treats a release as "merged work on `main`
 tags it, and produces a deploy summary; a human runs the actual deploy.
 
 - **Production deploy:** `deploy-production.sh` (Linux/CI) or `deploy-production.ps1` (Windows),
-  driven by `docker-compose` with the production env. Full procedure in
+  driven by `docker-compose` with the production env **and `docker-compose.prod.yml` layered on
+  `docker-compose.yml`** (optimized `next build` frontend from `Dockerfile.frontend`, no source
+  mounts, `APP_ENV=production`). The base file alone is the dev stack (`next dev`, which shows the
+  Next.js dev-tools badge to visitors), so a bare `docker-compose up -d` reverts the frontend to dev;
+  frontend changes go live by redeploying, not `docker restart`. Full procedure in
   [`docs/DOCKER_DEPLOYMENT.md`](docs/DOCKER_DEPLOYMENT.md) and
   [`docs/PRODUCTION_QUICK_START.md`](docs/PRODUCTION_QUICK_START.md).
 - **Environment:** copy `.env.production.example` → production env; secrets (Anthropic key, Google
