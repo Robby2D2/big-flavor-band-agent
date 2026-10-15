@@ -69,6 +69,28 @@ async def test_auto_populate_fills_queue_when_low(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_auto_populate_does_not_requeue_a_queued_song(monkeypatch):
+    """A queued entry differs from a fresh search hit (added_by, normalized
+    duration), so the top-up must match on id or the song is queued twice."""
+    class FakeAgent:
+        async def search_songs(self, message, limit=10):
+            return {
+                "response": "ok",
+                "songs": [{"id": 10, "title": "Song 10", "duration_seconds": 180}, _song(11)],
+            }
+
+    async def fake_get_agent():
+        return FakeAgent()
+
+    monkeypatch.setattr(radio_service, "get_agent", fake_get_agent)
+
+    state = _state(queue=[{**_song(10), "added_by": "user-1"}])
+    await backend_api.auto_populate_queue(state)
+
+    assert [s["id"] for s in state["queue"]] == [10, 11]
+
+
+@pytest.mark.asyncio
 async def test_auto_populate_skips_when_queue_full(monkeypatch):
     called = False
 

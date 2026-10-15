@@ -74,6 +74,9 @@ def clear_published_version_path(song_id: int) -> None:
 # (in ticks) it runs the heavier agent/search queue top-up off the request path.
 RADIO_TICK_INTERVAL = 1.0  # seconds
 RADIO_TOPUP_EVERY_TICKS = 5
+# How often (in ticks) the loop asks Icecast how many people are tuned in. A count
+# a few seconds stale is fine, and it keeps a slow Icecast off most ticks.
+RADIO_LISTENERS_EVERY_TICKS = 3
 
 # Where the stream answers "what is on the air" and "skip this track" — the harbor
 # listener in streaming/radio.liq, on the Docker network only. Configurable so a
@@ -83,6 +86,12 @@ LIQUIDSOAP_HARBOR_URL = os.environ.get("LIQUIDSOAP_HARBOR_URL", "http://liquidso
 # The stream is on the same Docker network and answers from memory, so a slow
 # reply means something is wrong; a tick must not queue up behind it.
 ON_AIR_TIMEOUT_SECONDS = 2.0
+
+# Icecast's status page, which counts the clients actually connected to the stream
+# — people hearing audio, not people with the radio page open. Docker network
+# only; configurable for the same reason as the harbor URL.
+ICECAST_STATUS_URL = os.environ.get("ICECAST_STATUS_URL", "http://icecast:8000/status-json.xsl")
+STREAM_MOUNT = "/stream"
 
 
 # --- Playlist writing -----------------------------------------------------
@@ -299,6 +308,43 @@ async def skip_on_air() -> bool:
         return False
 
 
+def listeners_from_icestats(payload: Any) -> Optional[int]:
+    """How many clients are tuned in to the stream mount, from Icecast's status JSON.
+
+    ``icestats.source`` is a dict for one mount, a list for several, and absent
+    while no source is connected — in which case nobody can be hearing the stream,
+    so that is 0. None means the payload could not be read as a count at all.
+    """
+    try:
+        icestats = payload["icestats"]
+    except (TypeError, KeyError):
+        return None
+    sources = icestats.get("source")
+    if sources is None:
+        return 0
+    if isinstance(sources, dict):
+        sources = [sources]
+    for source in sources:
+        if str(source.get("listenurl", "")).endswith(STREAM_MOUNT):
+            try:
+                return int(source.get("listeners", 0))
+            except (TypeError, ValueError):
+                return None
+    return 0
+
+
+async def fetch_stream_listeners() -> Optional[int]:
+    """Ask Icecast how many people are listening. None when it cannot be asked."""
+    try:
+        async with httpx.AsyncClient(timeout=ON_AIR_TIMEOUT_SECONDS) as client:
+            response = await client.get(ICECAST_STATUS_URL)
+            response.raise_for_status()
+            return listeners_from_icestats(response.json())
+    except Exception as exc:
+        logger.debug("Could not read the listener count from Icecast: %s", exc)
+        return None
+
+
 def _as_float(value: Any) -> Optional[float]:
     try:
         return float(value)
@@ -462,9 +508,14 @@ async def auto_populate_queue(state: Dict[str, Any]):
             agent_instance = await get_agent()
             result = await agent_instance.search_songs("Find me some great songs to keep the vibe going", limit=10)
 
-            # Add songs to queue
+            # Add songs to queue. Matched by id, not by dict equality: a queued
+            # entry carries fields a fresh search hit lacks (a normalized
+            # duration, who added it), so the same song never compares equal and
+            # would be queued twice.
+            queued_ids = {s.get("id") for s in state["queue"]}
             for song in result["songs"]:
-                if song not in state["queue"]:
+                if song.get("id") not in queued_ids:
+                    queued_ids.add(song.get("id"))
                     # Normalize field names: duration_seconds -> duration
                     if "duration_seconds" in song and "duration" not in song:
                         song["duration"] = song["duration_seconds"]
@@ -505,6 +556,9 @@ async def radio_background_loop():
                         on_air, state["queue"], state["current_song"]
                     )
                     playlist_dirty = reconcile_with_stream(state, on_air, song, source)
+
+                if tick % RADIO_LISTENERS_EVERY_TICKS == 0:
+                    state["stream_listeners"] = await fetch_stream_listeners()
 
                 if tick % RADIO_TOPUP_EVERY_TICKS == 0:
                     queued_before = len(state["queue"])
