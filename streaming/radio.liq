@@ -36,10 +36,17 @@ def is_catalog_song(r) =
   string.match(pattern="^/audio_library/[0-9]+_[^/]*[.]mp3$", request.uri(r))
 end
 
+# Rescanned once a day. A rescan walks every file under /audio_library -- ~1.3 s
+# for 2366 files on the Docker Desktop bind mount, measured 2026-10-15 -- and it
+# used to run every 60 s, paused or not, finding nothing: no app path adds a
+# top-level "{song_id}_*.mp3" (produced session songs live under produced/, which
+# is_catalog_song skips), and the newest one dates from 2025-11-10. A file copied in
+# by hand is picked up by the next daily scan, or at once by restarting this
+# container; queueing it never waited on this, the queue is its own playlist.
 fallback_music = playlist(
   check_next=is_catalog_song,
   mode="randomize",
-  reload=60,
+  reload=86400,
   "/audio_library"
 )
 
