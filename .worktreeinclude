@@ -1,0 +1,7 @@
+# Gitignored files Claude Code copies into each new worktree (`claude --worktree`).
+# Same syntax as .gitignore. Keep this to small config/secrets only — never
+# audio_library/ (32 GB), venv/, or frontend/node_modules/.
+.env
+frontend/.env.local
+.claude/settings.local.json
+secrets/
