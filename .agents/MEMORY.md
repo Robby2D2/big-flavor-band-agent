@@ -15,6 +15,24 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-19 — Fix ON/OFF is an instant A/B (PROD-21)
+
+Toggling a fix used to wait on a server render of the new chain. Then it did a full stop and
+restart (`play(from)`), because the console held only one take per row (`fixedBuffers`). Now:
+- `AudioProcessingTab` keeps a `takes` Map keyed `takeKey(row, chainSignature)` (`lib/fixTakes.ts`).
+  It is LRU-capped at `MAX_TAKES = 10`, never evicts a take that is playing, and is cleared when the
+  version changes (the full-mix row is id -1 on every version).
+- `loadTake()` dedups in-flight renders, so a toggle onto a take that is already pre-rendering joins it.
+- After `NEIGHBOUR_DELAY_MS`, the selected row's one-toggle-away chains (`neighbourChains`) render
+  one at a time. This doesn't run while the whole-queue render does. `previewStemChain(stemId, chain?)`
+  now takes an explicit chain.
+- `useStemPlayback` swaps a row whose buffer changes mid-play in place. The new source starts at the
+  same offset on the same clock, with a 15 ms crossfade (`Voice` = src → fade → row gain). End of
+  song is detected by the rAF tick, not `onended` (a swap stops sources early). Callers no longer
+  re-`play()` to pick up a landed render.
+
+---
+
 ### 2026-10-16 — Lyric extraction picks its vocal tracks (PROD-20)
 
 Lyric extraction used `get_vocals_stem_path()` (now removed). It had two bugs:

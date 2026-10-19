@@ -18,7 +18,22 @@ export interface StemPlaybackControl {
  * Transport is media-player shaped: play/pause keeps the playhead where it is
  * and `seek` moves it, restarting every source at the new offset so the stems
  * stay sample-synced across a scrub.
+ *
+ * A row whose buffer changes mid-play — a fix toggled ON/OFF, a render landing —
+ * is swapped in place: the new buffer starts at the same sample on the same
+ * clock and crossfades over a few ms, so an A/B toggle is heard at once with
+ * no gap or restart.
  */
+
+/** Long enough to hide the click of a cut, short enough to hear as instant. */
+const SWAP_FADE_SECONDS = 0.015;
+
+interface Voice {
+  src: AudioBufferSourceNode;
+  /** Per-source fade, under the row's gain, so a swap can crossfade. */
+  fade: GainNode;
+  buffer: AudioBuffer;
+}
 export function useStemPlayback(
   stems: { id: number; name: string }[],
   buffers: Record<number, AudioBuffer>,
@@ -32,8 +47,11 @@ export function useStemPlayback(
   const [playing, setPlaying] = useState(false);
   const [playhead, setPlayhead] = useState(0);
 
-  const sourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const voicesRef = useRef<Map<number, Voice>>(new Map());
+  // Swapped-out sources still fading; stopped with the rest on a teardown.
+  const retiringRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const gainsRef = useRef<Map<number, GainNode>>(new Map());
+  const longestDurRef = useRef(0);
   /** ctx.currentTime that corresponds to playhead 0 (start time minus offset). */
   const originRef = useRef(0);
   const rafRef = useRef<number | null>(null);
@@ -71,7 +89,11 @@ export function useStemPlayback(
 
   /** Tear the graph down without touching the playhead (pause/seek/stop share it). */
   const teardown = useCallback(() => {
-    for (const src of sourcesRef.current) {
+    const sources = [
+      ...Array.from(voicesRef.current.values()).map((v) => v.src),
+      ...Array.from(retiringRef.current),
+    ];
+    for (const src of sources) {
       try {
         src.onended = null;
         src.stop();
@@ -79,7 +101,8 @@ export function useStemPlayback(
         // already stopped
       }
     }
-    sourcesRef.current = [];
+    voicesRef.current.clear();
+    retiringRef.current.clear();
     gainsRef.current.clear();
     if (rafRef.current != null) {
       cancelAnimationFrame(rafRef.current);
@@ -120,39 +143,32 @@ export function useStemPlayback(
       const offset = requested >= maxDuration - 0.05 ? 0 : Math.max(0, requested);
 
       const startAt = ctx.currentTime + 0.05;
-      const sources: AudioBufferSourceNode[] = [];
-      let longest: AudioBufferSourceNode | null = null;
       let longestDur = 0;
 
       for (const stem of stems) {
         const buffer = buffers[stem.id];
         if (!buffer || offset >= buffer.duration) continue;
-        const src = ctx.createBufferSource();
-        src.buffer = buffer;
         const gain = ctx.createGain();
         gain.gain.value = effectiveGain(stem.id);
-        src.connect(gain).connect(ctx.destination);
-        src.start(startAt, offset);
-        sources.push(src);
+        gain.connect(ctx.destination);
         gainsRef.current.set(stem.id, gain);
-        if (buffer.duration > longestDur) {
-          longestDur = buffer.duration;
-          longest = src;
-        }
+        voicesRef.current.set(stem.id, startVoice(ctx, buffer, gain, startAt, offset, false));
+        longestDur = Math.max(longestDur, buffer.duration);
       }
 
-      if (!sources.length) return;
-      sourcesRef.current = sources;
+      if (!voicesRef.current.size) return;
       originRef.current = startAt - offset;
-      if (longest) longest.onended = () => stop();
+      longestDurRef.current = longestDur;
       playingRef.current = true;
       setPlaying(true);
       movePlayhead(offset);
 
+      // The end of the song is found here rather than by a source's `onended`,
+      // which a swap would fire early when it stops the source it replaces.
       const tick = () => {
         const t = ctx.currentTime - originRef.current;
-        movePlayhead(Math.min(longestDur, Math.max(0, t)));
-        if (t >= longestDur) {
+        movePlayhead(Math.min(longestDurRef.current, Math.max(0, t)));
+        if (t >= longestDurRef.current) {
           stop();
           return;
         }
@@ -162,6 +178,37 @@ export function useStemPlayback(
     },
     [stems, buffers, maxDuration, effectiveGain, teardown, stop, movePlayhead]
   );
+
+  // Swap in any row whose buffer changed while playing, at the playhead.
+  useEffect(() => {
+    if (!playingRef.current) return;
+    const ctx = getAudioContext();
+    const at = ctx.currentTime + 0.01;
+    const offset = at - originRef.current;
+    for (const stem of stems) {
+      const buffer = buffers[stem.id];
+      const voice = voicesRef.current.get(stem.id);
+      if (voice?.buffer === buffer) continue;
+      if (voice) {
+        retire(voice, at, retiringRef.current);
+        voicesRef.current.delete(stem.id);
+      }
+      if (!buffer || offset >= buffer.duration) continue;
+      let gain = gainsRef.current.get(stem.id);
+      if (!gain) {
+        // A row whose audio landed after play started gets its channel now.
+        gain = ctx.createGain();
+        gain.gain.value = effectiveGain(stem.id);
+        gain.connect(ctx.destination);
+        gainsRef.current.set(stem.id, gain);
+      }
+      voicesRef.current.set(stem.id, startVoice(ctx, buffer, gain, at, offset, true));
+      longestDurRef.current = Math.max(longestDurRef.current, buffer.duration);
+    }
+    // Only a change of buffers is a swap; mute/solo/gain are applied above
+    // without touching the sources.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buffers]);
 
   /** Jump to a position; resumes from there if a playback pass is running. */
   const seek = useCallback(
@@ -184,4 +231,39 @@ export function useStemPlayback(
   useEffect(() => () => teardown(), [teardown]);
 
   return { playing, playhead, maxDuration, play, pause, stop, seek, toggle };
+}
+
+/** Start one row's source at `offset` into its buffer, optionally fading in. */
+function startVoice(
+  ctx: AudioContext,
+  buffer: AudioBuffer,
+  gain: GainNode,
+  at: number,
+  offset: number,
+  fadeIn: boolean
+): Voice {
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const fade = ctx.createGain();
+  if (fadeIn) {
+    fade.gain.setValueAtTime(0, at);
+    fade.gain.linearRampToValueAtTime(1, at + SWAP_FADE_SECONDS);
+  }
+  src.connect(fade).connect(gain);
+  src.start(at, offset);
+  return { src, fade, buffer };
+}
+
+/** Fade a swapped-out source to silence and stop it once it is inaudible. */
+function retire(voice: Voice, at: number, retiring: Set<AudioBufferSourceNode>) {
+  const { src, fade } = voice;
+  src.onended = () => retiring.delete(src);
+  fade.gain.setValueAtTime(1, at);
+  fade.gain.linearRampToValueAtTime(0, at + SWAP_FADE_SECONDS);
+  try {
+    src.stop(at + SWAP_FADE_SECONDS);
+  } catch {
+    // already stopped
+  }
+  retiring.add(src);
 }

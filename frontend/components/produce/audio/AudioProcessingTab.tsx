@@ -12,6 +12,7 @@ import type { AcceptJob } from '@/hooks/useAcceptJob';
 import { buildTasks, TaskId } from '@/lib/processingTasks';
 import { decodeAudio, fetchPeaks, Region, WaveformPeaks } from '../audioEngine';
 import { mapWithConcurrency } from '@/lib/concurrency';
+import { addTake, chainSignature, ChainStep, neighbourChains, takeKey } from '@/lib/fixTakes';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
 import VersionDetails, { VersionDetail } from './VersionDetails';
@@ -33,6 +34,17 @@ import TransportBar from './TransportBar';
  * proxy's read timeout and come back as an error page instead of audio.
  */
 const RENDER_CONCURRENCY = 2;
+
+/**
+ * How many rendered takes to keep decoded across all rows. A decoded stem is
+ * tens of MB, so this is a memory budget: enough for every row's current take
+ * plus the selected row's one-toggle-away takes, which is what makes ON/OFF
+ * instant. Takes that are playing are never evicted.
+ */
+const MAX_TAKES = 10;
+
+/** Settle time before rendering the selected row's neighbouring takes, so a slider drag doesn't start one per step. */
+const NEIGHBOUR_DELAY_MS = 800;
 
 interface AudioProcessingTabProps {
   songId: number;
@@ -274,9 +286,20 @@ export default function AudioProcessingTab({
   // render matches the row's enabled fixes, otherwise the raw audio. The
   // transport is the only player on the page, so "with fixes" is what you
   // simply hear once it is ready — and the bar says when it is not.
-  const [fixedBuffers, setFixedBuffers] = useState<
-    Record<number, { signature: string; buffer: AudioBuffer }>
-  >({});
+  // Several takes per row, keyed by row + chain (`takeKey`), so toggling back
+  // to a state already heard — or one rendered ahead — swaps in at once.
+  const [takes, setTakes] = useState<Map<string, AudioBuffer>>(new Map());
+  const takesRef = useRef(takes);
+  takesRef.current = takes;
+  // Renders on their way, shared so a toggle that lands on a take already
+  // being rendered ahead waits for it instead of rendering it twice.
+  const pendingTakesRef = useRef<Map<string, Promise<AudioBuffer>>>(new Map());
+  // The full-mix row has the same id on every version, so its takes would
+  // otherwise outlive the version they were rendered from.
+  useEffect(() => {
+    setTakes(new Map());
+    pendingTakesRef.current.clear();
+  }, [sourceVersionId]);
   // Hear it waits for its own fix; the transport's play button never waits.
   const [auditionRendering, setAuditionRendering] = useState(false);
   // Rows rendering in the background so they can play with their fixes, and
@@ -301,25 +324,34 @@ export default function AudioProcessingTab({
   const fixSignature = useMemo(() => {
     const signatures: Record<number, string> = {};
     for (const stem of consoleStems) {
-      const enabled = fixesForStem(stem.id)
-        .filter((f) => f.enabled)
-        .map((f) => ({ tool: f.tool, params: f.currentParams }));
-      signatures[stem.id] = enabled.length ? JSON.stringify(enabled) : '';
+      signatures[stem.id] = chainSignature(fixesForStem(stem.id));
     }
     return signatures;
   }, [consoleStems, fixesForStem]);
 
+  /** The takes the rows should be playing right now — never evicted. */
+  const currentTakeKeys = useMemo(
+    () =>
+      new Set(
+        Object.entries(fixSignature)
+          .filter(([, signature]) => signature)
+          .map(([id, signature]) => takeKey(Number(id), signature))
+      ),
+    [fixSignature]
+  );
+  const currentTakeKeysRef = useRef(currentTakeKeys);
+  currentTakeKeysRef.current = currentTakeKeys;
+
   const effectiveBuffers = useMemo(() => {
     const merged: Record<number, AudioBuffer> = { ...buffers };
-    for (const [id, rendered] of Object.entries(fixedBuffers)) {
-      // A stale take (the chain changed since it was rendered) falls back to the
-      // raw audio rather than playing something the queue no longer describes.
-      if (rendered.signature && rendered.signature === fixSignature[Number(id)]) {
-        merged[Number(id)] = rendered.buffer;
-      }
+    for (const [id, signature] of Object.entries(fixSignature)) {
+      // A row whose chain has no take yet falls back to the raw audio rather
+      // than playing something the queue no longer describes.
+      const take = signature ? takes.get(takeKey(Number(id), signature)) : undefined;
+      if (take) merged[Number(id)] = take;
     }
     return merged;
-  }, [buffers, fixedBuffers, fixSignature]);
+  }, [buffers, takes, fixSignature]);
 
   const playback = useStemPlayback(
     queue.consoleStems,
@@ -374,7 +406,7 @@ export default function AudioProcessingTab({
       const signature = fixSignature[stem.id];
       if (!signature) return false; // no enabled fixes — the raw audio is correct
       if (onlyAudible && !isAudible(stem.id)) return false;
-      return fixedBuffers[stem.id]?.signature !== signature;
+      return !takes.has(takeKey(stem.id, signature));
     });
 
   const unrenderedRows = staleRows(true);
@@ -389,17 +421,40 @@ export default function AudioProcessingTab({
    * already did comes straight back — this is where "fixes render once" pays
    * off for playback.
    */
+  /**
+   * Render one take and decode it, or join the render already on its way.
+   * `chain` is omitted for the row's current chain.
+   */
+  const loadTake = (rowId: number, signature: string, chain?: ChainStep[]) => {
+    const key = takeKey(rowId, signature);
+    const pending = pendingTakesRef.current.get(key);
+    if (pending) return pending;
+    const load = (async () => {
+      const path = await queue.previewStemChain(rowId, chain);
+      // The compressed playback copy, not the rendered WAV: ~1.5 MB a stem
+      // instead of ~23 MB, which is what made loading take minutes.
+      return decodeAudio(`/api/produce/clean/playback?path=${encodeURIComponent(path)}`);
+    })();
+    pendingTakesRef.current.set(key, load);
+    const forget = () => pendingTakesRef.current.delete(key);
+    void load.then(forget, forget);
+    return load;
+  };
+
+  const commitTakes = (rendered: (readonly [string, AudioBuffer])[]) =>
+    setTakes((prev) =>
+      rendered.reduce(
+        (acc, [key, buffer]) => addTake(acc, key, buffer, currentTakeKeysRef.current, MAX_TAKES),
+        prev
+      )
+    );
+
   const renderRows = (rows: StemInfo[], onEach?: () => void) =>
     mapWithConcurrency(rows, RENDER_CONCURRENCY, async (stem) => {
       const signature = fixSignature[stem.id];
-      const path = await queue.previewStemChain(stem.id);
-      // The compressed playback copy, not the rendered WAV: ~1.5 MB a stem
-      // instead of ~23 MB, which is what made loading take minutes.
-      const buffer = await decodeAudio(
-        `/api/produce/clean/playback?path=${encodeURIComponent(path)}`
-      );
+      const buffer = await loadTake(stem.id, signature);
       onEach?.();
-      return [stem.id, { signature, buffer }] as const;
+      return [takeKey(stem.id, signature), buffer] as const;
     });
 
   const playWhenRenderedRef = useRef<{ from?: number } | null>(null);
@@ -408,7 +463,7 @@ export default function AudioProcessingTab({
    * Bring rows' fixed audio in behind the transport, without holding it up.
    *
    * Playback carries on with the original audio meanwhile, and when a render
-   * lands mid-play it swaps in at the playhead. Nothing starts while the
+   * lands mid-play the transport swaps it in at the playhead by itself. Nothing starts while the
    * whole-queue render is running: it is rendering these same chains, and
    * asking for them again is how fixes used to render twice — the completion
    * effect below picks them up from the cache instead.
@@ -433,8 +488,7 @@ export default function AudioProcessingTab({
         }
       });
       if (token !== renderTokenRef.current) return; // "Play without"
-      if (playingRef.current) playWhenRenderedRef.current = {};
-      setFixedBuffers((prev) => ({ ...prev, ...Object.fromEntries(rendered) }));
+      commitTakes(rendered);
     } catch (err) {
       if (token === renderTokenRef.current) {
         setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
@@ -453,7 +507,12 @@ export default function AudioProcessingTab({
     setPlaybackLoad(null);
   };
 
-  /** Hear it: render the auditioned row first — hearing that fix is the point. */
+  /**
+   * Hear it: render the auditioned row first — hearing that fix is the point.
+   *
+   * Already playing, nothing restarts: the transport swaps the row's new take
+   * in at the playhead, which is what makes ON/OFF an instant A/B.
+   */
   const renderRowThenPlay = async (rowId: number, from?: number) => {
     const rows = staleRows(false).filter((stem) => stem.id === rowId);
     if (rows.length > 0) {
@@ -464,15 +523,15 @@ export default function AudioProcessingTab({
         // Start playing from the effect below rather than here: `playback.play`
         // closes over the buffers of the render it came from, so calling it now
         // would play the pre-render audio we just replaced.
-        playWhenRenderedRef.current = { from };
-        setFixedBuffers((prev) => ({ ...prev, ...Object.fromEntries(rendered) }));
+        if (!playingRef.current) playWhenRenderedRef.current = { from };
+        commitTakes(rendered);
       } catch (err) {
         setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
-        void playback.play(from);
+        if (!playingRef.current) void playback.play(from);
       } finally {
         setAuditionRendering(false);
       }
-    } else {
+    } else if (!playingRef.current) {
       void playback.play(from);
     }
     void renderInBackground(staleRows(true).filter((stem) => stem.id !== rowId));
@@ -523,6 +582,36 @@ export default function AudioProcessingTab({
     void renderInBackground(staleRows(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playback.playing, audibleKey, enabledKey]);
+
+  // Render the selected row's takes one ON/OFF away, quietly and one at a
+  // time, so the next toggle swaps in at once instead of waiting on a render.
+  // Not while the whole-queue render runs: it is busy with the same CPU.
+  const selectedRowId = queue.selectedStemId;
+  const selectedSignature = selectedRowId != null ? fixSignature[selectedRowId] : undefined;
+  useEffect(() => {
+    if (selectedRowId == null || renderInProgress) return;
+    const token = renderTokenRef.current;
+    const timer = setTimeout(() => {
+      const wanted = neighbourChains(
+        fixesForStem(selectedRowId),
+        (f) => queue.missingParamsFor(f).length > 0
+      ).filter((n) => !takesRef.current.has(takeKey(selectedRowId, n.signature)));
+      void mapWithConcurrency(wanted, 1, async (n) => {
+        try {
+          const buffer = await loadTake(selectedRowId, n.signature, n.chain);
+          if (token === renderTokenRef.current) {
+            commitTakes([[takeKey(selectedRowId, n.signature), buffer]]);
+          }
+        } catch {
+          // Only a head start: a toggle onto this take renders it as usual.
+        }
+      });
+    }, NEIGHBOUR_DELAY_MS);
+    return () => clearTimeout(timer);
+    // `loadTake`/`commitTakes` are redefined every render and read refs; the
+    // row and its chain are what decide which takes are wanted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRowId, selectedSignature, renderInProgress]);
 
   /**
    * Which fix card started the transport.

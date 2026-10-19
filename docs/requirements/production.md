@@ -17,6 +17,11 @@ always a new version alongside the original.
 **PROD-02** — A producer MUST be able to **hear a change before committing it**. Every operation that
 alters audio has a preview or audition path.
 
+**PROD-21** — Turning a fix ON or OFF during playback MUST change what is heard at the playhead,
+without stopping or restarting playback, so the producer can A/B the fix. Once the take for the
+other state is rendered, the switch MUST be immediate. The takes one toggle away from the selected
+row are rendered ahead of time for this reason.
+
 **PROD-03** — A producer MUST be able to **discard** a proposed change and be left exactly where they
 started.
 

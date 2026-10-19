@@ -1234,8 +1234,12 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   }, [startAcceptRender]);
 
   const previewStemChain = useCallback(
-    async (stemId: number): Promise<string> => {
-      const chain = fixesForStem(stemId)
+    /**
+     * `chain` overrides the row's enabled fixes — how the console renders the
+     * takes one toggle away before the producer flips them.
+     */
+    async (stemId: number, chain?: { tool: string; params: Record<string, any> }[]): Promise<string> => {
+      chain ??= fixesForStem(stemId)
         .filter(isRunnable)
         .map((f) => ({ tool: f.tool, params: f.currentParams }));
       // The full mix has no stem file to run a chain over — its chain is the
