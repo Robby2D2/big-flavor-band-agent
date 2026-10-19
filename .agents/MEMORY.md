@@ -15,6 +15,29 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-16 — Lyric extraction picks its vocal tracks (PROD-20)
+
+Lyric extraction used `get_vocals_stem_path()` (now removed). It had two bugs:
+1. **Wrong mic.** It matched `st.name = 'vocals'` exactly. A session take names its stems by role
+   in track order (`vocals`, `vocals-2`, …, `session_render._unique_name`), so only the *first*
+   vocal mic was ever transcribed. On 1000001/1000002 that was "4 Kev Vox" (harmonica/accordion).
+   "8 Tom Vox", the actual singer, was ignored.
+2. **Wrong take.** It took the newest complete stem set of *any* version. Song 1000001's newest set
+   (48) belongs to version 104, while the audio being transcribed is the published version 95
+   (set 39), so the timings wouldn't line up with what plays.
+
+Now `lyrics_jobs.find_lyrics_stem_set()` takes the newest complete set whose `source_version_id`
+matches the version being transcribed. That version comes from the router's new
+`_default_source_version_id()`, which is also used by `_resolve_clean_source_path`. A catalog song
+(version None) falls back to its newest set. By default, every stem with "vocal" in `name` or
+`display_name` is used (`is_vocal_stem`); several stems are summed with
+`session_render.mix_audio_files` before Whisper. New `GET .../lyrics/vocal-tracks` lists the set's
+stems with `default` flags. `POST .../lyrics/extract` takes an optional `{stem_ids}`: omitted means
+the defaults, `[]` means the full mix via Demucs, and ids outside the set get a 400. LyricsPanel has
+a "From: …" multi-select dropdown next to Re-extract.
+
+---
+
 ### 2026-10-15 — Production deploy actually runs the production frontend
 
 `deploy-production.ps1`/`.sh` used the plain `docker-compose.yml`, which is the hot-reload dev stack:

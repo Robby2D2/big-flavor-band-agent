@@ -1,13 +1,18 @@
 """Tests for the lyric-extraction job runner (follow-along timings).
 
-Covers the two behaviours added alongside timed lyrics, without loading Whisper
-or Demucs (``_blocking_extract`` is stubbed throughout):
-  - transcription prefers isolated vocals — an already-separated ``vocals`` stem
-    is reused when it exists on disk, and never when the recorded file is gone,
+Covers the behaviours added alongside timed lyrics, without loading Whisper or
+Demucs (``_blocking_extract`` is stubbed except where mixing is under test):
+  - transcription prefers isolated vocals — already-separated vocal stems are
+    reused when they exist on disk, and never when the recorded file is gone,
+  - with several vocal stems (one per mic) every vocal-named one is used by
+    default, the editor can pick others, and they come from the stem set of the
+    version being transcribed rather than the newest set of any take,
   - the per-line timings Whisper returns are persisted, having previously been
     discarded in favour of the joined text.
 """
+import numpy as np
 import pytest
+import soundfile as sf
 
 from src.api import lyrics_jobs
 
@@ -22,12 +27,20 @@ class FakeRag:
 
 
 class FakeDB:
-    def __init__(self, vocals_path=None):
-        self._vocals_path = vocals_path
+    """Stem sets are ``{"id", "source_version_id", "status", "stems": [...]}``,
+    listed newest first like ``DatabaseManager.list_stem_sets``."""
+
+    def __init__(self, vocals_path=None, stem_sets=None):
+        if stem_sets is None and vocals_path is not None:
+            stem_sets = [_set(1, None, [_stem(10, "vocals", vocals_path)])]
+        self._stem_sets = stem_sets or []
         self.saved_timings = []
 
-    async def get_vocals_stem_path(self, song_id):
-        return self._vocals_path
+    async def list_stem_sets(self, song_id):
+        return [{k: v for k, v in s.items() if k != "stems"} for s in self._stem_sets]
+
+    async def list_stems(self, stem_set_id):
+        return next(s["stems"] for s in self._stem_sets if s["id"] == stem_set_id)
 
     async def save_lyric_timings(
         self, song_id, lines, source="whisper", model=None,
@@ -50,13 +63,33 @@ _RESULT = {
 }
 
 
+def _set(set_id, source_version_id, stems, status="complete"):
+    return {
+        "id": set_id, "source_version_id": source_version_id,
+        "status": status, "stems": stems,
+    }
+
+
+def _stem(stem_id, name, path, display_name=None):
+    return {"id": stem_id, "name": name, "path": str(path), "display_name": display_name}
+
+
+def _files(tmp_path, *names):
+    paths = []
+    for name in names:
+        path = tmp_path / name
+        path.write_bytes(b"audio")
+        paths.append(path)
+    return paths
+
+
 def _stub_extract(monkeypatch, calls, result=None):
     """Replace the Whisper/Demucs call with a recorder."""
-    def fake(audio_path, min_confidence=0.5, vocals_path=None, separate_vocals=True,
+    def fake(audio_path, min_confidence=0.5, vocals_paths=(), separate_vocals=True,
              word_timestamps=True, extractor=None):
         calls.append({
             "audio_path": audio_path,
-            "vocals_path": vocals_path,
+            "vocals_paths": list(vocals_paths),
             "separate_vocals": separate_vocals,
             "word_timestamps": word_timestamps,
             "extractor": extractor,
@@ -80,7 +113,7 @@ async def test_reuses_existing_vocals_stem(monkeypatch, tmp_path):
 
     assert manager.status(5)["status"] == lyrics_jobs.STATUS_COMPLETE
     # The stem was handed to the transcriber, so no Demucs run was needed.
-    assert calls[0]["vocals_path"] == str(stem)
+    assert calls[0]["vocals_paths"] == [str(stem)]
 
 
 @pytest.mark.asyncio
@@ -93,7 +126,7 @@ async def test_separates_when_recorded_stem_is_missing_on_disk(monkeypatch, tmp_
 
     await manager._run(5, "/audio/5.mp3", FakeRag(), db)
 
-    assert calls[0]["vocals_path"] is None
+    assert calls[0]["vocals_paths"] == []
     assert calls[0]["separate_vocals"] is True
 
 
@@ -105,8 +138,134 @@ async def test_separates_when_song_has_no_stems(monkeypatch):
 
     await manager._run(5, "/audio/5.mp3", FakeRag(), FakeDB(vocals_path=None))
 
-    assert calls[0]["vocals_path"] is None
+    assert calls[0]["vocals_paths"] == []
     assert calls[0]["separate_vocals"] is True
+
+
+# ---- several vocal stems (a session song: one stem per mic) ----
+
+
+@pytest.mark.asyncio
+async def test_default_uses_every_vocal_stem(monkeypatch, tmp_path):
+    """`vocals` is just the first mic in the session — often not the singer —
+    so the default is every vocal-named stem, not that one alone."""
+    kev, tom, guitar = _files(tmp_path, "vocals.flac", "vocals-2.flac", "guitar.flac")
+    db = FakeDB(stem_sets=[_set(1, 95, [
+        _stem(10, "guitar", guitar),
+        _stem(11, "vocals", kev, "4 Kev Vox"),
+        _stem(12, "vocals-2", tom, "8 Tom Vox"),
+    ])])
+    calls = []
+    _stub_extract(monkeypatch, calls)
+
+    await lyrics_jobs.extract_and_store(
+        1000001, "/take.wav", FakeRag(), db, source_version_id=95
+    )
+
+    assert calls[0]["vocals_paths"] == [str(kev), str(tom)]
+
+
+@pytest.mark.asyncio
+async def test_default_matches_vocal_in_the_producers_label(tmp_path):
+    """A stem the producer named "Lead vocal" counts even if Demucs called it other."""
+    (other,) = _files(tmp_path, "other.flac")
+    db = FakeDB(stem_sets=[_set(1, None, [_stem(10, "other", other, "Lead Vocal")])])
+
+    assert await lyrics_jobs.resolve_vocals_paths(5, db) == [str(other)]
+
+
+@pytest.mark.asyncio
+async def test_editor_choice_overrides_the_default(tmp_path):
+    kev, tom = _files(tmp_path, "vocals.flac", "vocals-2.flac")
+    db = FakeDB(stem_sets=[_set(1, 95, [
+        _stem(11, "vocals", kev), _stem(12, "vocals-2", tom),
+    ])])
+
+    paths = await lyrics_jobs.resolve_vocals_paths(1000001, db, 95, stem_ids=[12])
+
+    assert paths == [str(tom)]
+
+
+@pytest.mark.asyncio
+async def test_empty_choice_means_the_full_mix(monkeypatch, tmp_path):
+    (kev,) = _files(tmp_path, "vocals.flac")
+    db = FakeDB(stem_sets=[_set(1, 95, [_stem(11, "vocals", kev)])])
+    calls = []
+    _stub_extract(monkeypatch, calls)
+
+    await lyrics_jobs.extract_and_store(
+        1000001, "/take.wav", FakeRag(), db, source_version_id=95, stem_ids=[]
+    )
+
+    assert calls[0]["vocals_paths"] == []
+    assert calls[0]["separate_vocals"] is True
+
+
+@pytest.mark.asyncio
+async def test_stems_come_from_the_version_being_transcribed(tmp_path):
+    """The newest set may belong to another take; its timings wouldn't line up."""
+    published, other_take = _files(tmp_path, "pub.flac", "other.flac")
+    db = FakeDB(stem_sets=[
+        _set(48, 104, [_stem(20, "vocals", other_take)]),
+        _set(39, 95, [_stem(11, "vocals", published)]),
+    ])
+
+    assert await lyrics_jobs.resolve_vocals_paths(1000001, db, 95) == [str(published)]
+
+
+@pytest.mark.asyncio
+async def test_session_song_without_a_matching_set_separates(tmp_path):
+    (other_take,) = _files(tmp_path, "other.flac")
+    db = FakeDB(stem_sets=[_set(48, 104, [_stem(20, "vocals", other_take)])])
+
+    assert await lyrics_jobs.resolve_vocals_paths(1000001, db, 95) == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_song_falls_back_to_its_newest_set(tmp_path):
+    """Stems of a cleaned version still sit on the original's timeline."""
+    (cleaned,) = _files(tmp_path, "cleaned.flac")
+    db = FakeDB(stem_sets=[_set(3, 7, [_stem(30, "vocals", cleaned)])])
+
+    assert await lyrics_jobs.resolve_vocals_paths(5, db, None) == [str(cleaned)]
+
+
+@pytest.mark.asyncio
+async def test_incomplete_sets_are_ignored(tmp_path):
+    (stem,) = _files(tmp_path, "vocals.flac")
+    db = FakeDB(stem_sets=[_set(1, 95, [_stem(11, "vocals", stem)], status="running")])
+
+    assert await lyrics_jobs.resolve_vocals_paths(1000001, db, 95) == []
+
+
+def test_several_stems_are_mixed_into_one_transcription(tmp_path):
+    """Whisper hears both singers at once, never one mic at a time."""
+    rate = 16000
+    kev, tom = tmp_path / "vocals.wav", tmp_path / "vocals-2.wav"
+    sf.write(str(kev), np.full(rate, 0.25, dtype="float32"), rate)
+    sf.write(str(tom), np.full(rate, 0.5, dtype="float32"), rate)
+
+    heard = {}
+
+    class FakeExtractor:
+        def is_available(self):
+            return True
+
+        def extract_lyrics(self, path, separate_vocals, word_timestamps):
+            audio, sample_rate = sf.read(path)
+            heard.update(path=path, audio=audio, rate=sample_rate,
+                         separate=separate_vocals)
+            return {"lyrics": "Headed down south", "segments": []}
+
+    result = lyrics_jobs._blocking_extract(
+        "/take.wav", vocals_paths=[str(kev), str(tom)], extractor=FakeExtractor()
+    )
+
+    assert heard["path"] not in (str(kev), str(tom))
+    assert heard["rate"] == rate
+    assert heard["audio"][0] == pytest.approx(0.75, abs=1e-4)
+    assert heard["separate"] is False
+    assert result["audio_source"] == lyrics_jobs.AUDIO_SOURCE_VOCALS
 
 
 @pytest.mark.asyncio
@@ -140,7 +299,7 @@ async def test_runs_without_a_db_handle(monkeypatch):
 
     assert manager.status(5)["status"] == lyrics_jobs.STATUS_COMPLETE
     assert rag.stored == [(5, "lyrics", "Headed down south")]
-    assert calls[0]["vocals_path"] is None
+    assert calls[0]["vocals_paths"] == []
 
 
 @pytest.mark.asyncio

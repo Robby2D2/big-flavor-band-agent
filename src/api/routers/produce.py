@@ -185,27 +185,42 @@ async def _seed_original(song_id: int, db: DatabaseManager) -> None:
     await db.ensure_original_version(song_id, str(source_path))
 
 
+async def _default_source_version_id(
+    song_id: int, db: DatabaseManager
+) -> Optional[int]:
+    """The version a run starts from when none is named, or None for the original.
+
+    A catalog song starts from its original file, which is not a version. A
+    session song has no original — its takes are its versions — so it starts
+    from its published version, else its newest; with neither, 404.
+    """
+    if song_id < SESSION_SONG_ID_START:
+        return None
+    version = await db.get_published_version(song_id)
+    if version is None:
+        newest = await db.list_song_versions(song_id)
+        version = newest[0] if newest else None
+    if version is None:
+        raise HTTPException(status_code=404, detail="This song has no versions yet")
+    return version["id"]
+
+
 async def _resolve_clean_source_path(
     song_id: int, source_version_id: Optional[int], db: DatabaseManager
 ) -> Path:
     """Resolve the audio file a clean run should start from.
 
     With no ``source_version_id`` this is the catalog original (the existing
-    behaviour) — or, for a session song, which has none, its default version,
-    else its newest. With one, it is that version's audio file — so an
-    already-cleaned version can be re-cleaned with different options (issue
-    #49). The version must belong to the song and its file must exist, else 404.
+    behaviour) — or, for a session song, which has none, its default version
+    (see ``_default_source_version_id``). With one, it is that version's audio
+    file — so an already-cleaned version can be re-cleaned with different
+    options (issue #49). The version must belong to the song and its file must
+    exist, else 404.
     """
     if source_version_id is None:
-        if song_id < SESSION_SONG_ID_START:
+        source_version_id = await _default_source_version_id(song_id, db)
+        if source_version_id is None:
             return await run_in_threadpool(_resolve_source_path, song_id)
-        version = await db.get_published_version(song_id)
-        if version is None:
-            newest = await db.list_song_versions(song_id)
-            version = newest[0] if newest else None
-        if version is None:
-            raise HTTPException(status_code=404, detail="This song has no versions yet")
-        source_version_id = version["id"]
 
     version = await db.get_song_version(source_version_id)
     if version is None or version["song_id"] != song_id:
@@ -569,24 +584,75 @@ async def save_song_lyrics(
     }
 
 
+class LyricsExtractRequest(BaseModel):
+    """Which stems to transcribe; omitted means every vocal-named stem."""
+    #: Stem ids from ``.../lyrics/vocal-tracks``. An empty list transcribes the
+    #: full mix (Demucs separates it) instead of any stem.
+    stem_ids: Optional[List[int]] = None
+
+
+@router.get("/api/produce/songs/{song_id}/lyrics/vocal-tracks")
+async def list_lyrics_vocal_tracks(
+    song_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """The stems an editor can extract lyrics from, and which are picked by default.
+
+    They come from the stem set of the audio extraction would transcribe, so a
+    session song offers its published take's tracks — one per mic. ``default``
+    marks the stems used when the editor doesn't choose (names with "vocal").
+    No stems means extraction separates the full mix instead.
+    """
+    from src.api import lyrics_jobs
+
+    version_id = await _default_source_version_id(song_id, db)
+    found = await lyrics_jobs.find_lyrics_stem_set(song_id, db, version_id)
+    if found is None:
+        return {"song_id": song_id, "stem_set_id": None, "tracks": []}
+    return {
+        "song_id": song_id,
+        "stem_set_id": found["stem_set"]["id"],
+        "tracks": [
+            {**_stem_view(stem), "default": lyrics_jobs.is_vocal_stem(stem)}
+            for stem in found["stems"]
+        ],
+    }
+
+
 @router.post("/api/produce/songs/{song_id}/lyrics/extract")
 async def extract_song_lyrics(
     song_id: int,
+    request: Optional[LyricsExtractRequest] = None,
     db: DatabaseManager = Depends(get_db),
     rag: SongRAGSystem = Depends(get_rag),
     _role: str = Depends(require_role("editor")),
 ):
-    """Start a background Whisper transcription of the song's original audio.
+    """Start a background Whisper transcription of the song's audio.
 
     Returns immediately; poll the status endpoint. On success the extracted
     lyrics are stored + embedded (same path as a manual save) and the per-line
     timings are persisted for follow-along playback. Transcription runs on
-    isolated vocals (a reused stem when the song has one, else a Demucs run).
+    isolated vocals: the chosen stems (``stem_ids``, default every vocal-named
+    stem — mixed together when there are several), else a Demucs run.
     """
     from src.api import lyrics_jobs
 
-    source_path = await _resolve_clean_source_path(song_id, None, db)
-    started = lyrics_jobs.manager.start(song_id, str(source_path), rag, db)
+    version_id = await _default_source_version_id(song_id, db)
+    source_path = await _resolve_clean_source_path(song_id, version_id, db)
+    stem_ids = request.stem_ids if request else None
+    if stem_ids:
+        found = await lyrics_jobs.find_lyrics_stem_set(song_id, db, version_id)
+        offered = {stem["id"] for stem in found["stems"]} if found else set()
+        if not set(stem_ids) <= offered:
+            raise HTTPException(
+                status_code=400,
+                detail="Pick tracks from this song's own vocal-track list",
+            )
+    started = lyrics_jobs.manager.start(
+        song_id, str(source_path), rag, db,
+        source_version_id=version_id, stem_ids=stem_ids,
+    )
     if not started:
         return {"song_id": song_id, "status": "running", "message": "Extraction already in progress"}
     return {"song_id": song_id, "status": "running"}

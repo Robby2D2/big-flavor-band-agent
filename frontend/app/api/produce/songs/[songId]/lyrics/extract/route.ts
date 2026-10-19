@@ -4,18 +4,25 @@ import { backendAuthHeaders } from '@/lib/backend';
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8000';
 
-// Start a background Whisper transcription of the song's audio.
+// Start a background Whisper transcription of the song's audio. An optional
+// `{ stem_ids }` body picks which stems to transcribe; without one the backend
+// uses every vocal stem.
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ songId: string }> }
 ) {
   try {
     await requireAuth(UserRole.EDITOR);
     const { songId } = await params;
+    const body = await request.text();
 
     const response = await fetch(
       `${AGENT_API_URL}/api/produce/songs/${songId}/lyrics/extract`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json', ...backendAuthHeaders('editor') } }
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...backendAuthHeaders('editor') },
+        body: body || undefined,
+      }
     );
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {

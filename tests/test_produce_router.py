@@ -92,6 +92,18 @@ class FakeDB:
         self._next_id = 1
         self._lyrics = {}
         self._timings = {}
+        # Newest first, each {"id", "song_id", "source_version_id", "status", "stems"}.
+        self._stem_sets = []
+
+    async def list_stem_sets(self, song_id):
+        return [
+            {k: v for k, v in s.items() if k != "stems"}
+            for s in self._stem_sets
+            if s["song_id"] == song_id
+        ]
+
+    async def list_stems(self, stem_set_id):
+        return next(s["stems"] for s in self._stem_sets if s["id"] == stem_set_id)
 
     async def get_all_songs(self):
         return [{"id": 5, "title": "Test Track"}]
@@ -558,7 +570,7 @@ def test_extract_lyrics_starts_job_and_reports_status(produce_client, monkeypatc
     # Stub the manager so the test never loads Whisper.
     monkeypatch.setattr(
         lyrics_jobs.manager, "start",
-        lambda song_id, path, rag, db=None: (calls.append((song_id, path, db)), True)[1],
+        lambda song_id, path, rag, db=None, **kw: (calls.append((song_id, path, db, kw)), True)[1],
     )
 
     status0 = client.get(
@@ -574,6 +586,84 @@ def test_extract_lyrics_starts_job_and_reports_status(produce_client, monkeypatc
     assert calls[0][0] == 5 and calls[0][1].endswith(".mp3")
     # The job needs the DB handle to reuse a vocals stem and persist timings.
     assert calls[0][2] is not None
+    # No body: the job picks the default vocal stems itself.
+    assert calls[0][3] == {"source_version_id": None, "stem_ids": None}
+
+
+def _vocal_stem_set(db):
+    db._stem_sets.append({
+        "id": 39, "song_id": 5, "source_version_id": None, "status": "complete",
+        "stems": [
+            {"id": 11, "name": "vocals", "display_name": "4 Kev Vox", "path": "/s/v.flac"},
+            {"id": 12, "name": "vocals-2", "display_name": "8 Tom Vox", "path": "/s/v2.flac"},
+            {"id": 13, "name": "guitar", "display_name": None, "path": "/s/g.flac"},
+        ],
+    })
+
+
+def test_vocal_tracks_lists_stems_with_vocal_ones_defaulted(produce_client, monkeypatch):
+    client, _agent, _rag, db, _lib = produce_client
+    _vocal_stem_set(db)
+
+    resp = client.get(
+        "/api/produce/songs/5/lyrics/vocal-tracks", headers=_editor_headers(monkeypatch)
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stem_set_id"] == 39
+    assert {t["id"]: t["default"] for t in body["tracks"]} == {11: True, 12: True, 13: False}
+    assert body["tracks"][1]["display_name"] == "8 Tom Vox"
+
+
+def test_vocal_tracks_empty_without_stems(produce_client, monkeypatch):
+    client, *_ = produce_client
+    resp = client.get(
+        "/api/produce/songs/5/lyrics/vocal-tracks", headers=_editor_headers(monkeypatch)
+    )
+    assert resp.json() == {"song_id": 5, "stem_set_id": None, "tracks": []}
+
+
+def test_extract_lyrics_passes_the_chosen_stems(produce_client, monkeypatch):
+    client, _agent, _rag, db, _lib = produce_client
+    from src.api import lyrics_jobs
+
+    _vocal_stem_set(db)
+    calls = []
+    monkeypatch.setattr(
+        lyrics_jobs.manager, "start",
+        lambda song_id, path, rag, db=None, **kw: (calls.append(kw), True)[1],
+    )
+
+    resp = client.post(
+        "/api/produce/songs/5/lyrics/extract",
+        json={"stem_ids": [12]},
+        headers=_editor_headers(monkeypatch),
+    )
+
+    assert resp.status_code == 200
+    assert calls[0]["stem_ids"] == [12]
+
+
+def test_extract_lyrics_rejects_a_stem_from_elsewhere(produce_client, monkeypatch):
+    client, _agent, _rag, db, _lib = produce_client
+    from src.api import lyrics_jobs
+
+    _vocal_stem_set(db)
+    calls = []
+    monkeypatch.setattr(
+        lyrics_jobs.manager, "start",
+        lambda *a, **kw: (calls.append(kw), True)[1],
+    )
+
+    resp = client.post(
+        "/api/produce/songs/5/lyrics/extract",
+        json={"stem_ids": [999]},
+        headers=_editor_headers(monkeypatch),
+    )
+
+    assert resp.status_code == 400
+    assert calls == []
 
 
 # ---- timed lyrics (follow-along highlighting) ----

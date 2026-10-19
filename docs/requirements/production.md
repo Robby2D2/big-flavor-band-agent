@@ -79,6 +79,13 @@ corrected text (**CAT-06**).
 **PROD-18** — Automatic lyric extraction MUST be offered as a starting point a human can correct,
 never as a final answer that overwrites a human's edit without asking.
 
+**PROD-20** — Where a song has more than one track that could hold its vocals, the editor MUST be
+able to choose which track or tracks lyrics are extracted from. By default every track with "vocal"
+in its name MUST be used, never just the first. The tracks MUST come from the same take as the audio
+being transcribed, so its follow-along timings match what plays.
+*Why:* a session song has one track per mic, and extraction used to read only whichever vocal mic
+came first in the session — often the one nobody sang into.
+
 **PROD-19** — A long-running production operation — separating stems, measuring them, rendering
 fixes, saving a version — MUST be cancellable while it runs. Cancelling MUST leave the producer where
 they started: no partial version and no half-replaced stem set. Where work cannot actually stop (a

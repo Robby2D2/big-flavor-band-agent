@@ -15,6 +15,13 @@ import { LyricTimings } from '@/lib/lyricTimings';
 // during playback. An edit that changes the words invalidates them, so the
 // backend marks them stale and this panel surfaces that — the fix is a
 // re-extract, which is why it's called out next to that button.
+//
+// A session song has one stem per mic, so it can have several vocal tracks —
+// and the bucket named `vocals` is just whichever mic came first, often not the
+// singer. The "Transcribe" dropdown lists the song's stems (GET
+// .../lyrics/vocal-tracks) with every vocal-named one ticked by default; the
+// ticked ones are mixed and transcribed together. Nothing ticked means the full
+// mix, which the backend separates itself.
 // ---------------------------------------------------------------------------
 
 interface LyricsPanelProps {
@@ -22,6 +29,19 @@ interface LyricsPanelProps {
 }
 
 type ExtractStatus = 'idle' | 'running' | 'complete' | 'failed';
+
+interface VocalTrack {
+  id: number;
+  name: string;
+  display_name: string | null;
+  instruments: { label: string; score: number }[];
+  silent: boolean;
+  default: boolean;
+}
+
+function trackLabel(track: VocalTrack): string {
+  return track.display_name?.trim() || track.name;
+}
 
 export default function LyricsPanel({ songId }: LyricsPanelProps) {
   const [lyrics, setLyrics] = useState('');
@@ -32,9 +52,61 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [extractStatus, setExtractStatus] = useState<ExtractStatus>('idle');
+  const [tracks, setTracks] = useState<VocalTrack[]>([]);
+  const [selectedTracks, setSelectedTracks] = useState<Set<number>>(new Set());
+  const [trackMenuOpen, setTrackMenuOpen] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const trackMenuRef = useRef<HTMLDivElement | null>(null);
 
   const dirty = lyrics !== savedLyrics;
+
+  // The track list is a nicety: without it, extraction still runs on the
+  // backend's default picks, so a failed load just hides the dropdown.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/produce/songs/${songId}/lyrics/vocal-tracks`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const list: VocalTrack[] = data.tracks ?? [];
+        setTracks(list);
+        setSelectedTracks(new Set(list.filter((t) => t.default).map((t) => t.id)));
+      } catch {
+        // Leave the dropdown hidden.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [songId]);
+
+  useEffect(() => {
+    if (!trackMenuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (trackMenuRef.current && !trackMenuRef.current.contains(e.target as Node)) {
+        setTrackMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [trackMenuOpen]);
+
+  const toggleTrack = (id: number) => {
+    setSelectedTracks((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const chosenTracks = tracks.filter((t) => selectedTracks.has(t.id));
+  const trackSummary =
+    chosenTracks.length === 0
+      ? 'Full mix (auto-separated)'
+      : chosenTracks.map(trackLabel).join(' + ');
 
   const loadLyrics = useCallback(async () => {
     setLoading(true);
@@ -115,7 +187,13 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
     setError(null);
     setMessage(null);
     try {
-      const res = await fetch(`/api/produce/songs/${songId}/lyrics/extract`, { method: 'POST' });
+      // Only send a choice when there was one to make; otherwise the backend
+      // falls back to its own defaults.
+      const res = await fetch(`/api/produce/songs/${songId}/lyrics/extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: tracks.length > 0 ? JSON.stringify({ stem_ids: chosenTracks.map((t) => t.id) }) : undefined,
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to start extraction');
       setExtractStatus('running');
@@ -137,7 +215,7 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
       <div className="flex items-center justify-between mb-3">
         <p className="text-sm text-gray-600 dark:text-gray-400">
           View and edit the transcribed lyrics. Saving re-indexes them for lyric search.
-          Re-extract runs speech-to-text on the original audio.
+          Re-extract runs speech-to-text on the song&apos;s vocal tracks.
         </p>
       </div>
 
@@ -176,6 +254,60 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
         >
           {extractStatus === 'running' ? 'Transcribing…' : 'Re-extract from audio'}
         </button>
+        {tracks.length > 0 && (
+          <div ref={trackMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setTrackMenuOpen((open) => !open)}
+              disabled={busy}
+              aria-haspopup="listbox"
+              aria-expanded={trackMenuOpen}
+              title="Which tracks to transcribe"
+              className="text-sm px-3 py-2 max-w-xs truncate border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            >
+              From: {trackSummary} ▾
+            </button>
+            {trackMenuOpen && (
+              <div
+                role="listbox"
+                aria-multiselectable="true"
+                className="absolute z-20 mt-1 w-72 max-h-72 overflow-y-auto rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg py-1"
+              >
+                {tracks.map((track) => (
+                  <label
+                    key={track.id}
+                    className="flex items-start gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedTracks.has(track.id)}
+                      onChange={() => toggleTrack(track.id)}
+                      className="h-4 w-4 mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-gray-900 dark:text-white truncate">
+                        {trackLabel(track)}
+                        {track.display_name && (
+                          <span className="text-gray-500 dark:text-gray-400"> · {track.name}</span>
+                        )}
+                      </span>
+                      {(track.instruments.length > 0 || track.silent) && (
+                        <span className="block text-xs text-gray-500 dark:text-gray-400 truncate">
+                          {track.silent
+                            ? 'Silent'
+                            : track.instruments.slice(0, 3).map((i) => i.label).join(' · ')}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+                <p className="px-3 pt-1.5 pb-1 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 mt-1">
+                  Ticked tracks are mixed and transcribed together. Untick all to use the full mix.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
         {dirty && !busy && (
           <span className="text-xs text-amber-600 dark:text-amber-400">Unsaved changes</span>
         )}

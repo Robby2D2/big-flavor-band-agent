@@ -551,25 +551,6 @@ class DatabaseManager:
             row = await conn.fetchrow(query, song_id, status)
         return dict(row) if row else None
 
-    async def get_vocals_stem_path(self, song_id: int) -> Optional[str]:
-        """Path of the newest already-separated vocals stem for a song, if any.
-
-        Lyric transcription is markedly more accurate on isolated vocals than on
-        a full mix, and stem separation (issue #67) may already have produced
-        them — reusing that file skips a multi-minute Demucs run.
-        """
-        query = """
-            SELECT st.path
-            FROM song_stems st
-            JOIN song_stem_sets ss ON ss.id = st.stem_set_id
-            WHERE ss.song_id = $1 AND ss.status = 'complete' AND st.name = 'vocals'
-            ORDER BY ss.created_at DESC
-            LIMIT 1
-        """
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, song_id)
-        return row["path"] if row else None
-
     async def list_lyric_timing_coverage(self) -> List[Dict[str, Any]]:
         """Per-song timed-lyric coverage, for the backfill script and status reports.
 
