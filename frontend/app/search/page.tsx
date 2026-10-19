@@ -6,6 +6,8 @@ import SearchBar, { SearchParams } from '@/components/SearchBar';
 import SongList from '@/components/SongList';
 import DeepSearchProgress, { DeepSearchJob } from '@/components/DeepSearchProgress';
 import AudioPlayer from '@/components/AudioPlayer';
+import { isEditorRole } from '@/lib/radioControls';
+import { useAuth } from '@/lib/useAuth';
 
 interface SearchSummary {
   technique: string;
@@ -14,6 +16,7 @@ interface SearchSummary {
 }
 
 export default function SearchPage() {
+  const { user } = useAuth();
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -225,6 +228,7 @@ export default function SearchPage() {
                   onPlay={handlePlaySong}
                   onFindSimilar={handleFindSimilar}
                   query={lastQuery}
+                  canProduce={isEditorRole(user?.role)}
                 />
               )}
               {results.length === 0 && (

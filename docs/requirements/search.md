@@ -56,6 +56,10 @@ stream; the two are separate listening contexts.
 **SRCH-12** — A user MUST be able to ask **why** a given result matched, and get an explanation in
 terms of the query.
 
+**SRCH-19** — An editor or admin MUST be able to go straight from a result to that song's produce
+page. The option MUST NOT be offered to anyone else, since the produce surface is editor-gated
+(see [accounts.md](accounts.md)).
+
 ---
 
 ## In-depth search

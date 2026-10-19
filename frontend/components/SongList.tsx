@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 
 interface Song {
   id: number;
@@ -29,9 +30,11 @@ interface SongListProps {
   onFindSimilar?: (song: Song) => void;
   /** The search these songs answered — needed to explain why one matched. */
   query?: string;
+  /** Offer a jump to each song's produce page — editors and admins only (SRCH-19). */
+  canProduce?: boolean;
 }
 
-export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar, query }: SongListProps) {
+export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar, query, canProduce }: SongListProps) {
   const [addingToQueue, setAddingToQueue] = useState<number | null>(null);
   const [queueMessage, setQueueMessage] = useState<{ id: number; message: string } | null>(null);
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
@@ -301,6 +304,18 @@ export default function SongList({ songs, onPlay, onAddToQueue, onFindSimilar, q
                         )}
                         View Lyrics
                       </button>
+                      {canProduce && (
+                        <Link
+                          href={`/produce/${song.id}`}
+                          onClick={() => setOpenMenuId(null)}
+                          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 last:rounded-b-lg border-t border-gray-100 dark:border-gray-700"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                          </svg>
+                          Produce
+                        </Link>
+                      )}
                     </div>
                   )}
                 </div>
