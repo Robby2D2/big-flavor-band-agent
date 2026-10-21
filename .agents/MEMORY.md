@@ -15,6 +15,19 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-21 — Pitch correction no longer clicks at note edges
+
+`correct_pitch` per-note mode hard-pasted each shifted note over the original (`out[s:e] =
+pitch_shift(...)`): a waveform step, so a click at both edges of every corrected note. Measured on
+song 2304's vocal stem: 72 notes shifted in 20s → 32 new clicks. `_splice_shifted_note()` now
+shifts each note with one STFT frame (2048 samples) of real context and crops it back, then blends
+it in over 10ms raised-cosine fades (gains sum to 1, because shifted and original audio are nearly
+identical) inside the note's own span. Same clip → 0 new clicks. Regression test:
+`test_corrected_notes_are_spliced_in_without_clicks` (fails on the old code: jump 0.53 vs 0.16).
+Open finding, not fixed: `remove_artifacts.apply()` interpolates over the top-N% derivative samples
+and then Savitzky-Golays the *whole* channel. On a vocal it keeps 1% (sensitivity 0.5) to 7% (the
+floor) of high-frequency energy, so it muffles without adding clicks.
+
 ### 2026-10-19 — Fix ON/OFF is an instant A/B (PROD-21)
 
 Toggling a fix used to wait on a server render of the new chain. Then it did a full stop and

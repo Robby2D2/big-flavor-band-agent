@@ -26,6 +26,43 @@ except ImportError:
 
 logger = logging.getLogger("big-flavor-mcp")
 
+# Real audio either side of a note handed to the phase vocoder, so its edge
+# transient lands in context that is thrown away rather than inside the note.
+NOTE_CONTEXT_SAMPLES = 2048  # one librosa STFT frame
+# Crossfade between the shifted note and the original at each of its edges.
+NOTE_CROSSFADE_MS = 10.0
+
+
+def _splice_shifted_note(out, channel, s: int, e: int, shift: float, sr: int) -> None:
+    """Pitch-shift ``channel[s:e]`` by ``shift`` semitones and blend it into ``out``.
+
+    Pasting a shifted note straight over the original puts a waveform step at
+    both of its edges — the shifted signal's phase no longer lines up with the
+    audio it abuts — and that step is a click, one per edge of every corrected
+    note (a vocal with 72 notes shifted in 20s came back with 32 new clicks).
+    So the note is shifted with context either side and cropped back, then
+    crossfaded in over its own first and last few milliseconds.
+
+    The fade is raised-cosine with gains summing to one, not equal-power: the
+    shifted note is the same audio moved by a fraction of a semitone, so the two
+    are nearly identical and an equal-power fade would swell ~3 dB mid-ramp.
+    The fade stays inside ``[s, e)``, so a neighbouring note's samples are never
+    touched and back-to-back notes each meet the original at their shared edge.
+    """
+    import librosa
+    import numpy as np
+
+    lo = max(0, s - NOTE_CONTEXT_SAMPLES)
+    hi = min(len(channel), e + NOTE_CONTEXT_SAMPLES)
+    shifted = librosa.effects.pitch_shift(channel[lo:hi], sr=sr, n_steps=shift)[s - lo:e - lo]
+
+    fade = min(int(sr * NOTE_CROSSFADE_MS / 1000.0), (e - s) // 4)
+    if fade > 0:
+        ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, fade))
+        shifted[:fade] = channel[s:s + fade] * (1.0 - ramp) + shifted[:fade] * ramp
+        shifted[-fade:] = shifted[-fade:] * ramp[::-1] + channel[e - fade:e] * (1.0 - ramp[::-1])
+    out[s:e] = shifted
+
 
 def _apply_global_shift(
     y, sr, semitones, file_path, output_path, auto_tune_enabled,
@@ -287,9 +324,7 @@ class CorrectPitch(AudioTool):
                     shift = (target - note_midi) * strength + semitones
                     if abs(shift) < 0.01:
                         continue
-                    out[s:e] = librosa.effects.pitch_shift(
-                        channel[s:e], sr=sr, n_steps=shift
-                    )
+                    _splice_shifted_note(out, channel, s, e, shift, sr)
                 return out
 
             # Apply the per-note correction to the region, then splice it back

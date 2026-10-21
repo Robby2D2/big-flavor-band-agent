@@ -260,3 +260,37 @@ async def test_supplied_key_overrides_detection(server, tmp_path):
     assert result["status"] == "success", result
     assert result["key"] == "C major"
     assert result["key_source"] == "supplied"
+
+
+async def test_corrected_notes_are_spliced_in_without_clicks(server, tmp_path):
+    """Every shifted note blends into the audio around it — no waveform step.
+
+    A shifted note used to be pasted straight over the original, so both of its
+    edges jumped between two signals whose phase no longer lined up: a click at
+    each end of every corrected note. Here a legato line (no gaps, phase
+    continuous across note changes, so the input itself has no steps) has every
+    note sung sharp; a click would show up as a sample-to-sample jump far larger
+    than anything the input contains.
+    """
+    in_path = tmp_path / "legato.wav"
+    out_path = tmp_path / "out.wav"
+    midis = [60.3, 62.3, 64.3, 65.3, 67.3]
+    freq = np.repeat([midi_to_hz(m) for m in midis], int(NOTE_DUR * SR))
+    phase = 2 * np.pi * np.cumsum(freq) / SR
+    y = np.sin(phase) + 0.3 * np.sin(2 * phase) + 0.15 * np.sin(3 * phase)
+    y = (y / np.max(np.abs(y)) * 0.8).astype(np.float32)
+    sf.write(str(in_path), y, SR)
+
+    result = await server.correct_pitch(
+        str(in_path), semitones=0, auto_tune=True, chromatic=True, output_path=str(out_path)
+    )
+    assert result["status"] == "success", result
+    assert result["mode"] == "per_note", result
+    assert result["notes_corrected"] >= len(midis) - 1, result
+
+    out, _ = sf.read(str(out_path))
+    # Away from the file's own start/end, which pyin may leave out of a note.
+    edge = int(0.05 * SR)
+    input_jump = np.max(np.abs(np.diff(y[edge:-edge])))
+    output_jump = np.max(np.abs(np.diff(out[edge:-edge])))
+    assert output_jump < 1.5 * input_jump, (output_jump, input_jump)
