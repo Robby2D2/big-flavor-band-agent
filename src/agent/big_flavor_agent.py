@@ -569,7 +569,7 @@ class BigFlavorAgent:
                         },
                         "sensitivity": {
                             "type": "number",
-                            "description": "Detection sensitivity 0-1 (default: 0.5)"
+                            "description": "Detection sensitivity 0-1 (default: 0.5, which repairs exactly the clicks the analysis counts; higher catches quieter clicks). Only the click samples are rebuilt; the rest of the audio is untouched."
                         },
                         "output_path": {
                             "type": "string",

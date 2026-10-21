@@ -15,7 +15,7 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
-### 2026-10-21 — Pitch correction no longer clicks at note edges
+### 2026-10-21 — Vocal fixes: pitch correction stops clicking, click removal stops muffling
 
 `correct_pitch` per-note mode hard-pasted each shifted note over the original (`out[s:e] =
 pitch_shift(...)`): a waveform step, so a click at both edges of every corrected note. Measured on
@@ -24,9 +24,15 @@ shifts each note with one STFT frame (2048 samples) of real context and crops it
 it in over 10ms raised-cosine fades (gains sum to 1, because shifted and original audio are nearly
 identical) inside the note's own span. Same clip → 0 new clicks. Regression test:
 `test_corrected_notes_are_spliced_in_without_clicks` (fails on the old code: jump 0.53 vs 0.16).
-Open finding, not fixed: `remove_artifacts.apply()` interpolates over the top-N% derivative samples
-and then Savitzky-Golays the *whole* channel. On a vocal it keeps 1% (sensitivity 0.5) to 7% (the
-floor) of high-frequency energy, so it muffles without adding clicks.
+
+**Click removal repairs only the clicks.** `remove_artifacts.apply()` used to interpolate over the
+top-N% of every file's jumps, then Savitzky-Golay the whole channel. On the 2304 vocal that kept
+1% (sensitivity 0.5) to 7% (the old 0.005 floor) of the high end. Now `analysis.find_clicks()` is
+shared by `detect_clicks` and `apply()`, and `repair_clicks()` rebuilds only the flagged spans by
+forward/backward linear prediction. `sensitivity` → `click_ratio()` (0.5 = 8x = what the card
+counts). `CLICK_MIN_SENSITIVITY` is gone. 2304 vocal stem: 0.14% of samples changed, 86% of HF
+kept, 2.8s for 4.5 min. Its remaining "clicks" are 35-140 ms bursts (>20 ms, skipped on purpose)
+that are in the original MP3 too.
 
 ### 2026-10-19 — Fix ON/OFF is an instant A/B (PROD-21)
 

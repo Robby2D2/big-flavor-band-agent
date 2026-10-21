@@ -10,8 +10,8 @@ corners — no database, no LLM, no catalog file:
     confidence and the auto-tune params pre-filled,
   * a polyphonic source is refused rather than measured (pyin tracks one pitch),
   * a clean file reports no clicks, and one with an injected discontinuity
-    reports it with the gentlest sensitivity the param can express (its floor —
-    which is still a percentile of the whole file, not the events counted).
+    reports it with the sensitivity at which apply() repairs exactly those
+    clicks — and apply() then rebuilds only them, leaving the rest bit-identical.
 """
 
 import sys
@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.production.analysis import (  # noqa: E402
     CLICK_MIN_JUMP,
-    CLICK_MIN_SENSITIVITY,
+    CLICK_DEFAULT_SENSITIVITY,
     PITCH_OFF_TARGET_CENTS,
     detect_clicks,
     detect_pitch_issues,
@@ -215,15 +215,8 @@ def test_three_clicks_are_counted_separately():
     assert detect_clicks(y, SR)["count"] == 3, detect_clicks(y, SR)
 
 
-async def test_analyze_recommends_the_gentlest_sensitivity_the_param_allows(ctx, tmp_path):
-    """A handful of clicks bottoms the param out at its floor — and that is as
-    close to the measurement as `sensitivity` can get.
-
-    It is *not* a repair of the measured events: the floor is
-    ``percentile(99.9)``, the top 0.1% of the file's jumps. The point of the
-    recommendation is that it is two orders of magnitude gentler than the
-    declared 0.5 (the top 10% of every file), not that it is targeted.
-    """
+async def test_analyze_recommends_the_sensitivity_that_repairs_what_it_counted(ctx, tmp_path):
+    """At the recommended sensitivity apply() rebuilds exactly the counted clicks."""
     y = clean_music()
     y[int(2.0 * SR)] += 0.9
     path = write(tmp_path, "clicky.wav", y)
@@ -232,20 +225,79 @@ async def test_analyze_recommends_the_gentlest_sensitivity_the_param_allows(ctx,
     assert result["recommended"] is True, result
     assert result["findings"]["count"] >= 1, result
     assert result["confidence"] in ("high", "worth_a_listen"), result
-    assert result["params"]["sensitivity"] == CLICK_MIN_SENSITIVITY, result
+    assert result["params"]["sensitivity"] == CLICK_DEFAULT_SENSITIVITY, result
+
+    out = tmp_path / "out.wav"
+    repaired = await REGISTRY["remove_artifacts"].apply(
+        ctx, file_path=path, output_path=str(out), **result["params"]
+    )
+    assert repaired["artifacts_removed"] == result["findings"]["count"], repaired
 
 
-def test_recommended_sensitivity_never_falls_below_its_usable_floor():
-    """Sensitivity 0 cuts at percentile(100) and so flags nothing, which is why
-    the floor exists at all. A single click in six seconds maps to a raw value
-    well under it."""
+async def test_apply_leaves_clean_audio_bit_identical(ctx, tmp_path):
+    """No clicks, no change — not a muffled copy.
+
+    apply() used to interpolate over the top fraction of every file's jumps and
+    then smooth the whole channel; on a vocal that kept 1-7% of the high end.
+    """
+    t = np.arange(int(4.0 * SR)) / SR
+    rng = np.random.default_rng(3)
+    # Bright material with sharp-but-musical transients: a tone plus hiss.
+    y = (0.4 * np.sin(2 * np.pi * 440 * t) + 0.05 * rng.standard_normal(len(t))).astype(np.float32)
+    path = write(tmp_path, "bright.wav", y)
+    y, _ = sf.read(path, dtype="float32")  # as the tool sees it, after PCM_16
+    out = tmp_path / "out.wav"
+
+    result = await REGISTRY["remove_artifacts"].apply(
+        ctx, file_path=path, sensitivity=0.5, output_path=str(out)
+    )
+    assert result["status"] == "success", result
+    assert result["artifacts_removed"] == 0, result
+    y_out, _ = sf.read(str(out), dtype="float32")
+    assert np.array_equal(y_out, y)
+
+
+async def test_apply_rebuilds_the_click_and_touches_nothing_else(ctx, tmp_path):
+    clean = clean_music()
+    y = clean.copy()
+    at = (int(1.0 * SR), int(2.5 * SR), int(4.0 * SR))
+    for i in at:
+        y[i:i + 3] += np.array([0.9, -0.6, 0.3], dtype=np.float32)
+    path = write(tmp_path, "clicky.wav", y)
+    y, _ = sf.read(path, dtype="float32")  # as the tool sees it, after PCM_16
+    out = tmp_path / "out.wav"
+
+    result = await REGISTRY["remove_artifacts"].apply(
+        ctx, file_path=path, sensitivity=0.5, output_path=str(out)
+    )
+    assert result["artifacts_removed"] == 3, result
+    y_out, _ = sf.read(str(out), dtype="float32")
+
+    assert detect_clicks(y_out, SR)["count"] == 0
+    for i in at:
+        window = slice(i - 50, i + 50)
+        # Rebuilt close to the music that was there, not just flattened.
+        assert np.max(np.abs(y_out[window] - clean[window])) < 0.05
+    # Everything away from the clicks is bit-identical.
+    touched = np.zeros(len(y), dtype=bool)
+    for i in at:
+        touched[i - 50:i + 50] = True
+    assert np.array_equal(y_out[~touched], y[~touched])
+
+
+async def test_higher_sensitivity_catches_quieter_clicks(ctx, tmp_path):
     y = clean_music()
-    y[int(2.0 * SR)] += 0.9
-    measured = detect_clicks(y, SR)
-
-    raw = measured["flagged_ratio"] * 100.0 * 2.0 / 20.0
-    assert raw < CLICK_MIN_SENSITIVITY, measured
-    assert measured["recommended_sensitivity"] == CLICK_MIN_SENSITIVITY, measured
+    # This tone's 99th-percentile jump is ~0.027: 4x is ~0.11, 8x ~0.22.
+    y[int(2.0 * SR)] += 0.15  # a quieter click: over 4x the music's jumps, under 8x
+    path = write(tmp_path, "quiet.wav", y)
+    counts = {}
+    for sensitivity in (0.0, 1.0):
+        out = tmp_path / f"out{sensitivity}.wav"
+        result = await REGISTRY["remove_artifacts"].apply(
+            ctx, file_path=path, sensitivity=sensitivity, output_path=str(out)
+        )
+        counts[sensitivity] = result["artifacts_removed"]
+    assert counts[0.0] == 0 and counts[1.0] == 1, counts
 
 
 async def test_analyze_stays_quiet_on_clean_audio(ctx, tmp_path):

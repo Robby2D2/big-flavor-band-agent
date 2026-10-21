@@ -129,13 +129,13 @@ Detect and remove clicks, pops, and digital glitches from audio.
 **Use Case:** Clean up recording artifacts, cable pops, mic bumps, digital errors.
 
 **How It Works:**
-- Detects rapid amplitude changes (clicks/pops)
-- Interpolates smooth audio over artifact regions
-- Applies gentle smoothing
+- Detects sample-to-sample jumps far larger than the music's own (8x its 99th-percentile jump)
+- Rebuilds just those few samples from the audio either side (linear prediction)
+- Leaves everything else untouched; bursts longer than 20 ms are not treated as clicks
 
 **Parameters:**
 - `file_path`: Path to the audio file to clean
-- `sensitivity`: Detection sensitivity 0-1 (default: 0.5)
+- `sensitivity`: Detection sensitivity 0-1 (default: 0.5 = the clicks the analysis counts; higher catches quieter ones)
 - `output_path`: Output path for cleaned file
 
 **Example:**
@@ -244,9 +244,8 @@ await agent.chat("Polish this raw recording: remove silence, reduce noise, EQ, a
 - High-pass and low-pass filters
 
 **Artifact Removal:**
-- Derivative-based detection
-- Linear interpolation repair
-- Savitzky-Golay smoothing
+- Outlier-jump detection relative to the track's own transients
+- Forward/backward linear-prediction repair of the flagged spans only
 
 ---
 

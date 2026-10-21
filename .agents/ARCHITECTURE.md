@@ -429,18 +429,15 @@ whole-song `analyze_and_recommend_processing`, for auto-clean and the agent) mea
   own full-length pyin, so a refusal is the cheap path. The full-length pass still happens, because
   the correction needs f0 across everything it touches — it is the *gate* that moved, not the DSP.
 - **Clicks** use an *absolute* outlier rule: a sample-to-sample jump ≥8x the track's own
-  99th-percentile jump, grouped into events. This is deliberately **not** `apply()`'s threshold,
-  which is the `100 - sensitivity * 20` percentile and so flags a fixed fraction of every file by
-  construction — it can never answer "is this one clean?". `analyze()` maps its measured flagged
-  fraction back onto a `sensitivity` value, but **the param cannot express a targeted repair** and
-  the recommendation almost always lands on its floor, `CLICK_MIN_SENSITIVITY = 0.005`
-  (= `percentile(99.9)`, the top 0.1% of the file's jumps, widened by apply()'s 1 ms kernel and
-  then smoothed channel-wide regardless). Measured on the `other` stem that motivated this: 41
-  clicks counted, 10,927 samples over the threshold, **78,597 after the kernel widens them** —
-  0.7% of the channel. So a recommended card is the *gentlest setting the param has* — two orders
-  of magnitude better than the declared 0.5's top 10%, but still far more of the file than the
-  handful of events counted. Repairing only the measured clicks needs `apply()` to take sample
-  positions rather than a threshold; that is a deliberate follow-up, not part of #89.
+  99th-percentile jump, grouped into events (`find_clicks`). **`apply()` repairs exactly those
+  spans** and leaves every other sample bit-identical: each span (plus 0.5 ms of ring-out) is
+  rebuilt by forward + backward linear prediction (order 32) from the audio either side,
+  crossfaded across the gap, with a straight line as the fallback. Spans over 20 ms are bursts,
+  not clicks, and are left alone. `sensitivity` is the detection ratio, geometric around 8x
+  (`click_ratio`: 0 → 16x, 0.5 → 8x = what `analyze()` counts, 1 → 4x), so a recommended card
+  ships 0.5. Until 2026-10-21 `apply()` cut at the `100 - sensitivity * 20` percentile (a fixed
+  fraction of every file), linearly interpolated those samples, then Savitzky-Golay-smoothed the
+  whole channel. On a vocal that kept 1-7% of the high end, muffling every row it ran on.
 - **Which rows get measured** is a frontend decision (`isPitchAnalyzable` in
   `useProcessingQueue.ts`): the vocal stem, plus any stem **any** of whose tagger labels names a
   single-line instrument (it read only `instruments[0]` until issue #91, so a fiddle tagged second

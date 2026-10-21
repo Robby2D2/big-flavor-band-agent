@@ -665,41 +665,58 @@ def detect_pitch_issues(y, sr: int, key: Optional[str] = None) -> dict:
 # loud transients (its 99th-percentile jump) rather than a fixed level, with an
 # absolute floor so near-silence cannot manufacture one out of dither.
 #
-# Note this is *not* the rule ``remove_artifacts.apply()`` uses. That one cuts at
-# ``percentile(100 - sensitivity * 20)``, which flags a fixed *fraction* of every
-# file by construction and so can never answer "is this one clean?".
+# ``remove_artifacts.apply()`` repairs exactly what this finds (``find_clicks``),
+# so a card's "3 clicks detected" is the three spans that get rebuilt. It used to
+# cut at ``percentile(100 - sensitivity * 20)`` instead — a fixed *fraction* of
+# every file — which on a vocal meant interpolating over its sibilants.
 CLICK_RATIO = 8.0          # jump must stand this far above the 99th-percentile jump
 CLICK_MIN_JUMP = 0.02      # ...and be at least this large in absolute terms
 CLICK_GROUP_MS = 5.0       # jumps closer together than this are one click
 CLICK_HIGH_PER_MIN = 4.0   # a click a quarter-minute is a high-confidence card
-# The floor exists because sensitivity 0 cuts at percentile(100) — the single
-# largest jump in the file — and so flags nothing at all. 0.005 is therefore the
-# gentlest *usable* setting, not a measured one; see detect_clicks' docstring
-# for what it actually repairs.
-CLICK_MIN_SENSITIVITY = 0.005
+# The sensitivity at which apply() repairs exactly what detect_clicks counts.
+CLICK_DEFAULT_SENSITIVITY = 0.5
+
+
+def click_ratio(sensitivity: float) -> float:
+    """``remove_artifacts``'s ``sensitivity`` as a detection ratio.
+
+    Geometric around ``CLICK_RATIO``: 0 → 16x (only blatant clicks), 0.5 → 8x
+    (what ``detect_clicks`` counts), 1 → 4x (quieter clicks, more risk of
+    touching a sharp transient).
+    """
+    s = min(1.0, max(0.0, float(sensitivity)))
+    return CLICK_RATIO * 2.0 ** (1.0 - 2.0 * s)
+
+
+def find_clicks(y, sr: int, ratio: float = CLICK_RATIO):
+    """Locate clicks in a mono signal: ``(jumps, baseline, flagged, spans)``.
+
+    ``flagged`` are the indices of jumps (``y[i] -> y[i+1]``) over threshold;
+    ``spans`` groups them into clicks, each ``(first, last)`` flagged jump index,
+    jumps closer than ``CLICK_GROUP_MS`` being one click.
+    """
+    import numpy as np
+
+    jumps = np.abs(np.diff(y))
+    baseline = float(np.percentile(jumps, 99.0))
+    threshold = max(baseline * ratio, CLICK_MIN_JUMP)
+    flagged = np.flatnonzero(jumps > threshold)
+    if flagged.size == 0:
+        return jumps, baseline, flagged, []
+    gap = max(1, int(sr * CLICK_GROUP_MS / 1000.0))
+    breaks = np.flatnonzero(np.diff(flagged) > gap)
+    starts = np.concatenate([[flagged[0]], flagged[breaks + 1]])
+    ends = np.concatenate([flagged[breaks], [flagged[-1]]])
+    return jumps, baseline, flagged, list(zip(starts.tolist(), ends.tolist()))
 
 
 def detect_clicks(y, sr: int) -> dict:
     """Count clicks/pops: isolated sample-to-sample jumps far outside the music.
 
-    ``recommended_sensitivity`` maps the measured flagged fraction back onto
-    ``remove_artifacts``'s own ``sensitivity`` param, whose threshold is the
-    ``100 - sensitivity * 20`` percentile of the file's own jumps. That param
-    cannot express a targeted repair: it always cuts at a *fraction of the
-    file*, never at the events measured here. The mapping therefore only gets
-    ``apply()`` as close to the measurement as the param allows, and in practice
-    it bottoms out at ``CLICK_MIN_SENSITIVITY``, which is ``percentile(99.9)`` —
-    the top 0.1% of the file's jumps, each widened by apply()'s 1 ms kernel and
-    linearly interpolated, before its unconditional Savitzky-Golay pass over the
-    whole channel. Measured on the 4-minute 44.1 kHz ``other`` stem behind this
-    work: 41 clicks counted here, 10,927 samples over that threshold, 78,597
-    after the kernel widens them — 0.7% of the channel. The value is still two
-    orders of magnitude gentler than the declared 0.5 (the top 10% of every
-    file), but read it as "the gentlest setting this param has", not as
-    "repairs exactly what was measured".
+    ``recommended_sensitivity`` is ``CLICK_DEFAULT_SENSITIVITY`` whenever there
+    is anything to repair: at that setting ``remove_artifacts.apply()`` rebuilds
+    exactly the spans counted here and nothing else.
     """
-    import numpy as np
-
     duration = len(y) / sr if sr else 0.0
     empty = {
         "count": 0,
@@ -713,29 +730,19 @@ def detect_clicks(y, sr: int) -> dict:
     if len(y) < 2 or duration <= 0:
         return empty
 
-    jumps = np.abs(np.diff(y))
-    baseline = float(np.percentile(jumps, 99.0))
-    threshold = max(baseline * CLICK_RATIO, CLICK_MIN_JUMP)
-    flagged = np.flatnonzero(jumps > threshold)
-    if flagged.size == 0:
+    jumps, baseline, flagged, spans = find_clicks(y, sr)
+    if not spans:
         return dict(empty, peak_jump=round(float(jumps.max()), 4),
                     baseline_jump=round(baseline, 5))
 
-    gap = max(1, int(sr * CLICK_GROUP_MS / 1000.0))
-    count = 1 + int(np.sum(np.diff(flagged) > gap))
-    flagged_ratio = flagged.size / jumps.size
-    # x2 headroom: the percentile cut has to sit a little below the measured
-    # fraction to actually catch every flagged jump.
-    sensitivity = min(
-        1.0, max(CLICK_MIN_SENSITIVITY, flagged_ratio * 100.0 * 2.0 / 20.0)
-    )
+    count = len(spans)
     return {
         "count": count,
         "per_minute": round(count / (duration / 60.0), 2),
-        "flagged_ratio": round(flagged_ratio, 8),
+        "flagged_ratio": round(flagged.size / jumps.size, 8),
         "peak_jump": round(float(jumps.max()), 4),
         "baseline_jump": round(baseline, 5),
-        "recommended_sensitivity": round(sensitivity, 4),
+        "recommended_sensitivity": CLICK_DEFAULT_SENSITIVITY,
         "duration_seconds": round(duration, 2),
     }
 
