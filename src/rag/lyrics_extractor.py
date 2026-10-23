@@ -8,6 +8,7 @@ This two-step approach provides higher accuracy:
 """
 
 import logging
+import re
 import tempfile
 import shutil
 from pathlib import Path
@@ -37,6 +38,23 @@ try:
     logger.info("demucs loaded successfully")
 except ImportError as e:
     logger.warning(f"demucs not available: {e}. Install with: pip install demucs")
+
+# Lines Whisper invents over audio with no words in it: its training subtitles
+# end with credits and sign-offs, so an instrumental break or bleed in a vocal
+# stem comes back as "Thank you." or "transcript Emily Beynon" — at high
+# confidence, so the confidence floor doesn't catch them. Matched against a
+# segment's whole text, so a sung line that merely contains "thank you" stays.
+_PHANTOM_SEGMENT = re.compile(
+    r"(thank you|thanks)( (so|very) much)?( for watching| for listening)?"
+    r"|you|bye|okay|(please )?(like and )?subscribe"
+    r"|.*\b(subtitles?|captions?|transcript|transcribed|amara)\b.*"
+)
+
+
+def is_phantom_segment(text: str) -> bool:
+    """Whether a transcribed segment is a known Whisper hallucination, not a lyric."""
+    normalized = " ".join(re.sub(r"\W+", " ", text.lower()).split())
+    return not normalized or bool(_PHANTOM_SEGMENT.fullmatch(normalized))
 
 
 class LyricsExtractor:
@@ -329,6 +347,12 @@ class LyricsExtractor:
             transcribe_args = {
                 'language': language,
                 'beam_size': 5,
+                # Feeding each window's text in as the next one's prompt is
+                # built for speech; over a song it locks Whisper into
+                # repeating a line through instrumental breaks and skipping
+                # whole verses after one. Off, it recovered a missing first
+                # verse on the vocal stem it was tested against.
+                'condition_on_previous_text': False,
                 'vad_filter': vad_filter,
                 'word_timestamps': word_timestamps
             }
@@ -359,7 +383,7 @@ class LyricsExtractor:
                 else:
                     confidence = 0.5  # Default if not available
                 
-                if confidence >= self.min_confidence:
+                if confidence >= self.min_confidence and not is_phantom_segment(segment.text):
                     all_text.append(segment.text.strip())
                     entry = {
                         'start': segment.start,

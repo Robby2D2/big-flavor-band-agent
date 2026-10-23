@@ -1,5 +1,8 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import LyricsFollower from '../../LyricsFollower';
+import { LyricTimings, TimedLyricsResponse, isFollowable } from '@/lib/lyricTimings';
 import WaveformView from '../WaveformView';
 import { formatTime } from '../audioEngine';
 import type { Peaks } from '../audioEngine';
@@ -32,6 +35,8 @@ interface TransportBarProps {
   renderingFixes: boolean;
   /** Some audible row has fixes, and every such row is playing them. */
   withFixes: boolean;
+  /** The song whose follow-along lyrics the Lyrics toggle shows. */
+  songId: number;
 }
 
 /**
@@ -58,7 +63,28 @@ export default function TransportBar({
   unrenderedRows,
   renderingFixes,
   withFixes,
+  songId,
 }: TransportBarProps) {
+  // Fetched each time the panel opens, not once: the point of it here is to
+  // check a re-extraction, which lands while the page stays open.
+  const [showLyrics, setShowLyrics] = useState(false);
+  const [timings, setTimings] = useState<LyricTimings | null | undefined>(undefined);
+  useEffect(() => {
+    if (!showLyrics) return;
+    let cancelled = false;
+    fetch(`/api/songs/${songId}/lyrics/timed`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: TimedLyricsResponse | null) => {
+        if (!cancelled) setTimings(data?.timings ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setTimings(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showLyrics, songId]);
+
   const waiting = maxDuration > 0 && !playbackReady;
 
   let hearing: { text: string; tone: string } | null = null;
@@ -131,7 +157,36 @@ export default function TransportBar({
             </span>
           )}
         </div>
+        <button
+          onClick={() => {
+            setTimings(undefined);
+            setShowLyrics((v) => !v);
+          }}
+          aria-pressed={showLyrics}
+          className={`flex-none rounded-full border px-3 py-1 text-xs ${
+            showLyrics ? 'border-signal text-signal' : 'border-white/15 text-text/55 hover:text-text'
+          }`}
+        >
+          Lyrics
+        </button>
       </div>
+      {showLyrics &&
+        (isFollowable(timings) ? (
+          <LyricsFollower
+            lines={timings!.lines}
+            currentTime={playhead}
+            onSeek={onSeek}
+            className="mt-2 border-t border-white/8"
+          />
+        ) : (
+          <p className="mt-2 border-t border-white/8 pt-2 pl-12 text-[11px] text-text/45" data-testid="transport-lyrics-note">
+            {timings === undefined
+              ? 'Loading lyrics…'
+              : timings?.status === 'stale'
+                ? 'The lyrics were edited after extraction, so their timings no longer match — re-extract to follow along.'
+                : 'No follow-along timings yet — extract the lyrics below.'}
+          </p>
+        ))}
       {hearing && (
         <p className={`mt-1.5 truncate pl-12 text-[11px] ${hearing.tone}`} data-testid="transport-hearing">
           {hearing.text}

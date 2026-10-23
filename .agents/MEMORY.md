@@ -15,6 +15,20 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-23 — Lyric extraction drops Whisper's phantom lines; produce page gets follow-along
+
+Song 2304 came back as "Thank you." ×7 and, from a 4-stem mix, "© transcript Emily Beynon" ×10 —
+Whisper's training-subtitle sign-offs, emitted over instrumental audio at *high* confidence, so the
+0.5 floor never caught them. `transcribe_audio()` now drops whole-segment phantoms
+(`is_phantom_segment()`, `tests/test_lyrics_phantoms.py`) and runs with
+`condition_on_previous_text=False`, which on 2304's vocal stem recovered the whole missing first
+verse and stopped a line repeating through a break. Tried and rejected: `vad_filter` (kills the
+phantoms but merges lines into 30–50s segments — useless for follow-along) and
+`hallucination_silence_threshold` (no change). An all-phantom transcript is now empty → "No lyrics
+detected" → the job fails and the saved lyrics survive. The produce `TransportBar` got a **Lyrics**
+toggle that refetches `/api/songs/{id}/lyrics/timed` on each open and runs `LyricsFollower` off the
+stem playhead.
+
 ### 2026-10-21 — Vocal fixes: pitch correction stops clicking, click removal stops muffling
 
 `correct_pitch` per-note mode hard-pasted each shifted note over the original (`out[s:e] =

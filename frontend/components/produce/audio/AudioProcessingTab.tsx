@@ -860,6 +860,7 @@ export default function AudioProcessingTab({
                 unrenderedRows={unrenderedRows.map(stemLabel)}
                 renderingFixes={renderInProgress || playbackRendering.length > 0}
                 withFixes={withFixes}
+                songId={songId}
               />
 
               <StemConsole

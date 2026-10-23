@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import TransportBar from '@/components/produce/audio/TransportBar';
 
 vi.mock('@/components/produce/WaveformView', () => ({
@@ -21,6 +21,7 @@ const props = {
   unrenderedRows: [] as string[],
   renderingFixes: false,
   withFixes: false,
+  songId: 7,
 };
 
 describe('TransportBar', () => {
@@ -85,5 +86,45 @@ describe('TransportBar', () => {
     expect(screen.getByTestId('transport-hearing')).toHaveTextContent(
       'Loading audio · 2 of 6 parts ready'
     );
+  });
+
+  describe('Lyrics toggle', () => {
+    const timedResponse = (timings: unknown) =>
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ song_id: 7, lyrics: '', timings }) });
+
+    it('fetches the song timings on open and follows the playhead', async () => {
+      Element.prototype.scrollIntoView = vi.fn();
+      const fetchMock = timedResponse({
+        format_version: 1, source: null, model: null, audio_source: null, status: 'current',
+        lines: [
+          { start: 0, end: 5, text: 'Buckets of rain' },
+          { start: 5, end: 10, text: 'Buckets of tears' },
+        ],
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(<TransportBar {...props} playhead={6} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Lyrics' }));
+
+      expect(await screen.findByTestId('lyric-line-1')).toHaveAttribute('data-active', 'true');
+      expect(fetchMock).toHaveBeenCalledWith('/api/songs/7/lyrics/timed');
+      vi.unstubAllGlobals();
+    });
+
+    it('says to re-extract when the timings are stale', async () => {
+      vi.stubGlobal(
+        'fetch',
+        timedResponse({
+          format_version: 1, source: null, model: null, audio_source: null, status: 'stale',
+          lines: [{ start: 0, end: 5, text: 'x' }],
+        })
+      );
+
+      render(<TransportBar {...props} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Lyrics' }));
+
+      expect(await screen.findByText(/re-extract to follow along/)).toBeInTheDocument();
+      vi.unstubAllGlobals();
+    });
   });
 });
