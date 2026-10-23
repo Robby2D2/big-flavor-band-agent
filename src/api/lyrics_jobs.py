@@ -147,7 +147,9 @@ def _mix_vocal_stems(paths: Sequence[str], output_path: str) -> str:
 
 def _blocking_extract(
     audio_path: str,
-    min_confidence: float = 0.5,
+    # Below the extractor's own 0.5: the phantom filter now catches what that
+    # floor was there for, and real sung lines score 0.4-0.5 on a home recording.
+    min_confidence: float = 0.4,
     vocals_paths: Sequence[str] = (),
     separate_vocals: bool = True,
     word_timestamps: bool = True,

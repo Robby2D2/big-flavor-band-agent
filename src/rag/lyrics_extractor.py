@@ -21,7 +21,7 @@ logger = logging.getLogger("lyrics-extractor")
 # Check for faster-whisper availability
 FASTER_WHISPER_AVAILABLE = False
 try:
-    from faster_whisper import WhisperModel
+    from faster_whisper import WhisperModel, decode_audio
     FASTER_WHISPER_AVAILABLE = True
     logger.info("faster-whisper loaded successfully")
 except ImportError:
@@ -49,6 +49,20 @@ _PHANTOM_SEGMENT = re.compile(
     r"|you|bye|okay|(please )?(like and )?subscribe"
     r"|.*\b(subtitles?|captions?|transcript|transcribed|amara)\b.*"
 )
+
+
+def _peak_normalized(audio_path: str):
+    """The file as Whisper's 16 kHz mono samples, scaled so its peak sits at -1 dBFS.
+
+    A separated stem keeps the level the part was recorded at, and Whisper
+    hears a quiet one as mostly silence: song 2304's vocals peaked near
+    -11 dBFS and whole verses went missing until they were brought up.
+    """
+    import numpy as np
+
+    audio = decode_audio(audio_path, sampling_rate=16000)
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    return audio * (0.89 / peak) if peak > 0 else audio
 
 
 def is_phantom_segment(text: str) -> bool:
@@ -365,7 +379,7 @@ class LyricsExtractor:
                 )
             
             segments, info = self.whisper_model.transcribe(
-                audio_path,
+                _peak_normalized(audio_path),
                 **transcribe_args
             )
             

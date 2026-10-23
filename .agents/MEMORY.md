@@ -25,7 +25,11 @@ Whisper's training-subtitle sign-offs, emitted over instrumental audio at *high*
 verse and stopped a line repeating through a break. Tried and rejected: `vad_filter` (kills the
 phantoms but merges lines into 30–50s segments — useless for follow-along) and
 `hallucination_silence_threshold` (no change). An all-phantom transcript is now empty → "No lyrics
-detected" → the job fails and the saved lyrics survive. The produce `TransportBar` got a **Lyrics**
+detected" → the job fails and the saved lyrics survive. Same day, follow-up: `transcribe_audio()`
+peak-normalizes to -1 dBFS before Whisper (`_peak_normalized()`) — 2304's original vocal stem peaked
+at 0.29 and lost whole verses (8 lines → 23 once normalized) — and the API job's confidence floor
+dropped 0.5 → 0.4 (real lines scored 0.47). Catalog songs always extract from the *original's* stem
+set, not the default cleaned version's (`_default_source_version_id` is None for them). The produce `TransportBar` got a **Lyrics**
 toggle that refetches `/api/songs/{id}/lyrics/timed` on each open and runs `LyricsFollower` off the
 stem playhead.
 
