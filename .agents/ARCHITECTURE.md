@@ -755,6 +755,15 @@ to Drive.
 - **Several projects in one folder** ("1. Warm Up.RPP" + "2. Warm Up.RPP"): every one is read (a few
   MB each) and the one referencing the most files actually present is scanned; only it lands in `raw/`.
   A project with **no items at all** (`20240419 - Nixtamalization`) fails with that said plainly.
+- **A night with no Reaper project is a session too** (2026-10-24, SESS-21): a folder directly
+  holding plain recordings (mp3/m4a/aac/wav/flac/ogg — never `.wv`, which is Reaper's per-channel
+  format) counts **when no project folder encloses it**, so a project's "Audio/" or "Renders/" is
+  never listed as a night of its own. With no `.RPP`, `session_jobs.load_project` builds a stand-in
+  project (`rpp_parser.project_from_recordings`): one pass per file, one `MIXDOWN` item each, scanned
+  as role `mix`. `session_detect` treats `mix` as rhythm and measures its activity down from its
+  *loud* level (`MIX_DROP_DB`), since a limited room recording's quiet percentile is the band;
+  `session_transcribe` feeds it to Whisper whole; its takes register no stems, leaving the produced
+  version free to be separated. Zip uploads of plain recordings go through the same path.
 - **Zip uploads from before Drive import** are matched by name + date, so the list shows them as
   imported rather than offering a second multi-GB fetch.
 

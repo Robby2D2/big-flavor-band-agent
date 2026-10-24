@@ -4,6 +4,11 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
+> Pruned 2026-10-24 (207 lines → ~150): the 2026-10-15 entries moved — the production-frontend
+> deploy fix to [memory/deploy_ops.md](memory/deploy_ops.md); lyric search ranking and the PyAV pin
+> to [memory/search_rag.md](memory/search_rag.md); radio lyrics, real pause and the listener count to
+> [memory/radio_streaming.md](memory/radio_streaming.md).
+>
 > Pruned 2026-10-15 (556 lines → 129): the 2026-09-26 → 2026-09-28 entries moved to their topic
 > files — radio #101/#104 to [memory/radio_streaming.md](memory/radio_streaming.md); session
 > import, grouping and review to [memory/sessions_import.md](memory/sessions_import.md); playback
@@ -12,6 +17,32 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 > [memory/scraping.md](memory/scraping.md); v0.20.0 to [memory/releases.md](memory/releases.md).
 > What stays is the 2026-10-15 work and the `docs/requirements/` contract. Earlier prunes
 > (2026-08-01 → 2026-09-27) are recorded in [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md)'s table.
+
+---
+
+### 2026-10-24 — Drive import takes nights that are plain mp3s, not Reaper projects (SESS-21)
+
+The owner's "20261023 - Freeish Birdish" folder (two room mp3s, no `.RPP`) never appeared under
+Import from Drive, because a session was defined as "a folder that directly holds a `.RPP`". A
+folder of plain recordings (`RECORDING_SUFFIXES`: mp3/m4a/aac/wav/flac/ogg — **not** `.wv`) now
+counts too, **unless a project folder encloses it**: inside a project, a folder of audio is that
+project's "Audio/" or rendered mixes. With no `.RPP`, `session_jobs.load_project` builds a stand-in
+(`rpp_parser.project_from_recordings`): each file is its own pass holding one `MIXDOWN` item, scanned
+as role `mix`, which counts as rhythm (it is the only track) and as a voice (Whisper hears the whole
+mix). Mixdown takes register **no stems**, so a produced version can still be Demucs-separated.
+Zip uploads of mp3s work through the same path.
+
+- **The per-track floor rule found nothing on a real mp3.** `freeish.mp3` is heavily limited
+  (median RMS −4.7 dBFS), so its 20th percentile *is* the band and "floor + 9 dB" sat above 0 dBFS:
+  zero regions. A mixdown is now "playing" within `MIX_DROP_DB = 12` of its 90th-percentile level,
+  measured on both files (10 split off an 8s scrap, 15 let talking in). Two files is a tuning.
+- What the real files hold: `freeish` is one ~25 min stretch of continuous playing (0:18–25:54);
+  `CanadaMan` is 1h46m of which only the first ~24 min has audio — 0:00–1:55 and 7:35–23:18, the
+  rest ~−57 dBFS. Expect long takes; the band was not stopping between songs.
+- **Verified:** detection on the real files via `docker exec` (no DB writes); the Drive listing now
+  shows 34 sessions (was 33) with no project "Audio/"/"Renders" folders listed; 123 session/Drive
+  pytest tests. **Not verified:** a full import (Whisper on a full-band mix, take rendering, review
+  page) — it writes to the live DB and was left for the owner to run.
 
 ---
 
@@ -90,87 +121,6 @@ matches the version being transcribed. That version comes from the router's new
 stems with `default` flags. `POST .../lyrics/extract` takes an optional `{stem_ids}`: omitted means
 the defaults, `[]` means the full mix via Demucs, and ids outside the set get a 400. LyricsPanel has
 a "From: …" multi-select dropdown next to Re-extract.
-
----
-
-### 2026-10-15 — Production deploy actually runs the production frontend
-
-`deploy-production.ps1`/`.sh` used the plain `docker-compose.yml`, which is the hot-reload dev stack:
-the frontend ran `next dev` from `Dockerfile.frontend.dev`, so bigflavor.useunix.com showed the
-Next.js dev-tools "N" badge to every visitor and compiled pages on demand. New
-`docker-compose.prod.yml` override (frontend → `Dockerfile.frontend` standalone build, `NODE_ENV=production`,
-`volumes: !reset []`; backend `APP_ENV=production`); both deploy scripts pass `-f docker-compose.yml
--f docker-compose.prod.yml` on every compose call. Consequence: in production, frontend edits need a
-redeploy (image rebuild) to go live, and a bare `docker-compose up -d` flips the frontend back to dev.
-
----
-
-### 2026-10-15 — Lyric search ranks by relevance, not alphabetically
-
-In-depth search for "down by the river" missed most versions of that song. `search_lyrics_by_keyword`
-sorted `ORDER BY title` before its `LIMIT`, so a common word ("river" — 58 songs) filled the 25 slots
-with whatever sorted early (ten takes of "25th of December"). It now orders by title-contains-keyword,
-then keyword occurrences in the lyrics, then title. Still open: the deep-search planner never chose
-`find_song_by_title` for a title-shaped query, and the qwen evaluator dropped title matches the
-semantic search had found.
-
----
-
-### 2026-10-15 — Lyric extraction broke on PyAV 19; `av<19` pinned
-
-Every "Re-extract from audio" failed with `open() got an unexpected keyword argument
-'metadata_errors'`. `av` was unpinned (a faster-whisper transitive dep), a rebuild pulled PyAV 19.0.1,
-which removed that kwarg, and faster-whisper 1.2.1's `decode_audio` still passes it. The extractor
-catches the exception and returns it as `result["error"]`, so the log shows only the message — run
-`faster_whisper.audio.decode_audio(<file>)` in the container for the real traceback. Pinned `av<19` in
-`requirements-api.txt` and `setup/requirements.txt`; drop the pin once faster-whisper stops passing
-`metadata_errors`.
-
----
-
-### 2026-10-15 — The radio page shows the on-air song's lyrics
-
-- A **Lyrics** toggle in Now Playing opens `components/RadioLyrics.tsx`, which reads the existing
-  listener-scoped `/api/songs/{id}/lyrics/timed` and reuses `LyricsFollower` when timings are
-  followable; otherwise it shows the plain text, or "No lyrics for this song." No backend change.
-- The radio has no local clock, only the 3 s polled `position`: `RadioLyrics` re-anchors on each
-  poll and runs the clock forward with rAF between polls (held while `is_playing` is false). Lines
-  are not seekable — the stream is shared (RAD-01). The polled position is the server's, so the
-  highlight can run a few seconds ahead of what a listener hears through Icecast's buffer.
-- Tests: `frontend/__tests__/RadioLyrics.test.tsx`.
-
----
-
-### 2026-10-15 — Pausing the radio actually stops it; the stray top player is gone
-
-- Pause used to relabel a stream that kept encoding (the page read PAUSED with the clock still
-  moving). It now stops Liquidsoap's Icecast output over harbor `/stop` (`/start` resumes
-  mid-track); measured ~3.7% → ~0.3% CPU. `fallible=true` on `output.icecast` is required: 2.2
-  raises "Source is infallible and cannot be stopped" otherwise.
-- The backend's `is_playing` is the wish and the radio loop re-applies it each tick, so a pause
-  survives a Liquidsoap restart. Top-up (LLM) is skipped while paused. RAD-02/03/04/07 amended.
-- Radio page: the bare `<audio controls>` above the panel is gone (the panel button drives a hidden
-  `<audio>`); tune-in is disabled while paused and a tuned-in listener is dropped when it pauses.
-- **Who may:** pause stays editor+; **resume is open to any signed-in user** (human ruling,
-  2026-10-15, ACCT-15 amended): starting is cheap, reversible, and only happens when someone wants
-  to listen. A listener's tune-in on a paused radio calls `/api/radio/play` then connects, retrying
-  for ~8 s while the Icecast mount comes back. The play BFF route now forwards the caller's real
-  role instead of a constant `'editor'`.
-- Tested against a throwaway Liquidsoap container on a `/stream-test` mount, not the live one.
-  Tests: `tests/test_radio_pause.py`.
-
----
-
-### 2026-10-15 — The radio page shows how many people are listening (RAD-14)
-
-- The count is **Icecast's**, not ours: `radio_background_loop()` reads `/status-json.xsl` every 3
-  ticks into `state["stream_listeners"]`; `/api/radio/state` returns it and the page shows "N people
-  listening" beside the LIVE pill. The existing `active_listeners` (from `radio_listeners`) counts
-  *open radio pages* — every poll registers — so it was the wrong number for "actively listening"
-  and is left as observability only.
-- Unknown is `None`, never 0 (PLAT-07); no source connected *is* 0. Parser handles Icecast's
-  dict-vs-list `source` shape. Tests: `tests/test_radio_listeners.py`. Verified live: a client on
-  `icecast:8000/stream` moved the API count 0 → 1 → 0.
 
 ---
 

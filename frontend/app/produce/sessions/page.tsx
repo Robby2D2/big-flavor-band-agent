@@ -156,8 +156,9 @@ export default function SessionsPage() {
           <div>
             <h1 className="text-2xl font-semibold">Recording sessions</h1>
             <p className="mt-1 text-sm text-text/60">
-              Import a Reaper session from Drive or upload it, and the songs
-              inside it are found for you.
+              Import a session from Drive or upload it — a Reaper project or
+              plain recordings like mp3s — and the songs inside it are found
+              for you.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -242,7 +243,7 @@ export default function SessionsPage() {
                 ? 'Import a project folder from Google Drive, or upload'
                 : 'Upload'}{' '}
               the zip of a Reaper project folder — the WavPack tracks and the
-              .RPP together.
+              .RPP together — or of a night&apos;s plain recordings (mp3, wav).
             </p>
           </div>
         )}

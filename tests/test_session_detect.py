@@ -20,6 +20,7 @@ from src.production.session_detect import (  # noqa: E402
     EXIT_SECONDS,
     FRAGMENT_SECONDS,
     MIN_TAKE_SECONDS,
+    MIX_ROLE,
     Track,
     build_activity,
     classify_track,
@@ -201,6 +202,35 @@ def test_a_rhythm_track_alone_is_enough_to_be_music():
     takes = detect_takes(build_activity(tracks, fps=FPS))
 
     assert len(takes) == 1
+
+
+def test_a_plain_recording_of_the_whole_band_finds_its_songs_alone():
+    """An mp3 of the night is the only track there is, so it is enough."""
+    tracks = [
+        track(
+            "freeish",
+            [(20, QUIET), (120, LOUD), (30, QUIET), (90, LOUD), (20, QUIET)],
+            role=MIX_ROLE,
+        ),
+    ]
+
+    takes = detect_takes(build_activity(tracks, fps=FPS))
+
+    assert len(takes) == 2
+
+
+def test_a_recording_that_is_mostly_music_is_measured_from_its_loud_level():
+    """The real "freeish.mp3": the band plays nearly all of it, so its quiet
+    percentile is the band itself and a floor-based rule found no take at all."""
+    TALK = 0.03     # about -30 dBFS: talking, picked up by the room recorder
+    tracks = [
+        track("freeish", [(20, TALK), (1500, LOUD), (100, TALK)], role=MIX_ROLE),
+    ]
+
+    takes = detect_takes(build_activity(tracks, fps=FPS))
+
+    assert len(takes) == 1
+    assert 15 < takes[0].start < 20 and 1520 < takes[0].end < 1525
 
 
 def test_tracks_are_aligned_by_their_timeline_position():

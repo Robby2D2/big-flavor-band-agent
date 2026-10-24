@@ -161,3 +161,26 @@ nothing. Full BFF round-trip: search 0.16s (was 2-12s), explain 0.72s on click.
 Verified no regressions by diffing the full pytest failure set against a `git stash` baseline:
 13 before, 13 after, identical — all stale demo scripts calling methods that no longer exist
 (`SongRAGSystem.initialize`, `DatabaseManager.disconnect`).
+
+---
+
+*The entries below moved here from [MEMORY.md](../MEMORY.md) in the 2026-10-24 prune.*
+
+### 2026-10-15 — Lyric search ranks by relevance, not alphabetically
+
+In-depth search for "down by the river" missed most versions of that song. `search_lyrics_by_keyword`
+sorted `ORDER BY title` before its `LIMIT`, so a common word ("river" — 58 songs) filled the 25 slots
+with whatever sorted early (ten takes of "25th of December"). It now orders by title-contains-keyword,
+then keyword occurrences in the lyrics, then title. Still open: the deep-search planner never chose
+`find_song_by_title` for a title-shaped query, and the qwen evaluator dropped title matches the
+semantic search had found.
+
+### 2026-10-15 — Lyric extraction broke on PyAV 19; `av<19` pinned
+
+Every "Re-extract from audio" failed with `open() got an unexpected keyword argument
+'metadata_errors'`. `av` was unpinned (a faster-whisper transitive dep), a rebuild pulled PyAV 19.0.1,
+which removed that kwarg, and faster-whisper 1.2.1's `decode_audio` still passes it. The extractor
+catches the exception and returns it as `result["error"]`, so the log shows only the message — run
+`faster_whisper.audio.decode_audio(<file>)` in the container for the real traceback. Pinned `av<19` in
+`requirements-api.txt` and `setup/requirements.txt`; drop the pin once faster-whisper stops passing
+`metadata_errors`.

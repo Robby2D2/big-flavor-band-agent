@@ -14,7 +14,8 @@ into the takes.
 Transcription runs on a **mix of the vocal tracks only**. The band has a mic per
 singer, so mixing them puts whoever is singing in front of Whisper without the
 instruments, and without the duplicate lines two separately-transcribed mics
-would produce from bleed.
+would produce from bleed. A plain recording of the night has no vocal track, so
+the whole recording goes to Whisper instead — instruments and all.
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from src.production import wavpack_io
-from src.production.session_detect import Take, Track
+from src.production.session_detect import MIX_ROLE, Take, Track
 from src.production.session_render import mix_audio_files
 
 logger = logging.getLogger("backend-api")
@@ -37,6 +38,9 @@ TRANSCRIBE_RATE = 16000
 #: session needs the opposite: mumbled chatter is exactly the signal that splits
 #: two attempts, so nothing is filtered out here.
 SESSION_MIN_CONFIDENCE = 0.0
+
+#: Tracks whose audio carries the words: the singers' mics, or a mixdown.
+VOICE_ROLES = frozenset({"vocals", MIX_ROLE})
 
 
 @dataclass
@@ -65,7 +69,7 @@ def build_vocal_mix(
 
     slices: List[Path] = []
     for index, track in enumerate(tracks):
-        if track.role != "vocals":
+        if track.role not in VOICE_ROLES:
             continue
         source = sources.get(track.source_name)
         if source is None:

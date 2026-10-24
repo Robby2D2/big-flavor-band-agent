@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 
-/** One Reaper project folder on the band's Drive, as the backend lists it. */
+/** One session folder on the band's Drive — a Reaper project or plain
+ *  recordings — as the backend lists it. */
 export interface DriveFolder {
   id: string;
   folder_name: string;

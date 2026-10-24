@@ -24,6 +24,7 @@ from src.production.drive_source import (  # noqa: E402
     SessionFile,
     media_to_fetch,
     project_candidates,
+    recording_candidates,
 )
 
 ROOT = "rootFolder0001"
@@ -85,6 +86,11 @@ def file(id_, name, size):
     return {"id": id_, "name": name, "mimeType": "audio/x-wavpack", "size": str(size)}
 
 
+def mp3(name, size=100):
+    return {"id": f"id-{name}".replace(" ", "-").replace(".", "-"), "name": name,
+            "mimeType": "audio/mpeg", "size": str(size)}
+
+
 # --- listing ----------------------------------------------------------------
 
 def test_list_children_follows_pages():
@@ -140,21 +146,25 @@ def rpp(name):
 
 #: The shapes the band's real Drive has, trimmed: a night filed at the top
 #: level, a night with an "Audio/" sub-folder, a night with later nights filed
-#: *inside* it, a folder that is only media, and an "_Archive" that is not
-#: searched at all.
+#: *inside* it, a folder that is only WavPack media, a night that is only mp3s
+#: (no Reaper at all), and an "_Archive" that is not searched at all.
 TREE = {
     ROOT: [
         folder("topNight0001", "20260501 May the Farts Be With You"),
         folder("julyChrist01", "20240719 - July Christie"),
         folder("mediaOnly001", "20250124 - Waitlisted"),
+        folder("freeishBird1", "20261023 - Freeish Birdish"),
         folder("archive00001", "_Archive"),
     ],
+    "freeishBird1": [mp3("freeish.mp3"), mp3("CanadaMan.mp3")],
     "topNight0001": [rpp("1. Warm Up.RPP"), wv("01-Kev Vox.wv"), folder("audioSub0001", "Audio")],
     "audioSub0001": [wv("02-Drums.wv")],
     "julyChrist01": [
         rpp("1. Warm Up.RPP"), rpp("1. Warm Up.RPP-bak"), wv("01-July.wv"),
         folder("nestedNight1", "20250213 - Broken Tooth"),
+        folder("renders00001", "Renders"),
     ],
+    "renders00001": [mp3("Warm Up mix.mp3")],
     "nestedNight1": [rpp("1. Warm Up.RPP"), rpp("2. Warm Up.RPP"), wv("01-Tooth.wv")],
     "mediaOnly001": [wv("01-Wait.wv")],
     "archive00001": [rpp("Old.RPP")],
@@ -167,11 +177,19 @@ def test_find_sessions_finds_every_folder_holding_a_project_at_any_depth():
     found = drive_source.find_sessions(DriveClient(tree), ROOT)
 
     assert [(s.folder.name, s.location) for s in found] == [
+        ("20261023 - Freeish Birdish", ()),
         ("20260501 May the Farts Be With You", ()),
         ("20250213 - Broken Tooth", ("20240719 - July Christie",)),
         ("20240719 - July Christie", ()),
     ]
     assert "archive00001" not in tree.listed
+
+
+def test_a_folder_of_audio_inside_a_project_is_not_a_night_of_its_own():
+    """A project's rendered mixes are mp3s too; only a loose folder counts."""
+    found = drive_source.find_sessions(DriveClient(FakeTree(TREE)), ROOT)
+
+    assert "Renders" not in {s.folder.name for s in found}
 
 
 def test_session_files_keep_media_subfolders_but_not_nested_nights():
@@ -202,6 +220,14 @@ def test_project_candidates_are_the_folders_own_projects_not_backups():
 
 def test_project_candidates_empty_without_one():
     assert project_candidates(_files(("a.wv", 1))) == []
+
+
+def test_recording_candidates_are_the_folders_own_plain_recordings():
+    files = _files(
+        ("freeish.mp3", 1), ("CanadaMan.mp3", 1), ("notes.txt", 1),
+        ("01-Kev Vox.wv", 1), ("deeper.mp3", 1, 1),
+    )
+    assert [r.name for r in recording_candidates(files)] == ["CanadaMan.mp3", "freeish.mp3"]
 
 
 def test_media_to_fetch_takes_only_referenced_files():
@@ -389,3 +415,34 @@ async def test_a_project_with_nothing_recorded_says_so(tmp_path):
         await _choose_drive_project(
             client, project_candidates(files), files, tmp_path / "projects"
         )
+
+
+# --- a night with no Reaper project -----------------------------------------
+
+def test_a_session_of_plain_recordings_scans_each_as_one_whole_band_pass(tmp_path, monkeypatch):
+    from src.api import session_jobs
+    from src.production import wavpack_io
+
+    for name in ("freeish.mp3", "CanadaMan.mp3", "cover.jpg"):
+        (tmp_path / name).write_bytes(b"x")
+    durations = {"freeish.mp3": 1980.0, "CanadaMan.mp3": 6570.0}
+    monkeypatch.setattr(
+        wavpack_io, "probe",
+        lambda path: wavpack_io.AudioInfo(
+            sample_rate=44100, channels=2, duration=durations[Path(path).name], codec="mp3",
+        ),
+    )
+
+    project = session_jobs.load_project(tmp_path)
+
+    assert [item.source_name for item in project.items] == ["CanadaMan.mp3", "freeish.mp3"]
+    assert len(project.passes()) == 2
+
+
+def test_a_session_with_neither_project_nor_recordings_says_so(tmp_path):
+    from src.api import session_jobs
+
+    (tmp_path / "notes.txt").write_text("x")
+
+    with pytest.raises(RuntimeError, match="recordings"):
+        session_jobs.load_project(tmp_path)

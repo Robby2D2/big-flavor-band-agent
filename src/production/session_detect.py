@@ -51,9 +51,14 @@ _ROLE_PATTERNS: Sequence[tuple[str, str]] = (
     (r"\bkeys?\b|piano|organ|serum|synth", "piano"),
 )
 
+#: A plain recording of the whole band on one file (an mp3 of the night), which
+#: no track name can classify: it is every instrument and every voice at once.
+MIX_ROLE = "mix"
+
 #: Roles whose activity is the strongest evidence that a song is underway
-#: rather than a conversation.
-RHYTHM_ROLES = frozenset({"drums", "bass"})
+#: rather than a conversation. A mixdown is on the list because it is the only
+#: track there is — waiting for three tracks at once would never find a song.
+RHYTHM_ROLES = frozenset({"drums", "bass", MIX_ROLE})
 
 # --- Activity thresholds --------------------------------------------------
 #: How far above its own quiet level a track must rise to count as playing.
@@ -62,6 +67,15 @@ ACTIVE_MARGIN_DB = 9.0
 #: A hard floor, so a track recorded in a silent room cannot have its noise
 #: promoted to "playing" just by being 9 dB above digital silence.
 ABSOLUTE_FLOOR_DB = -48.0
+
+#: A mixdown is "playing" within this many dB of its own loud level (the
+#: percentile below). Measured on the band's two room mp3s of 2026-10-23, both
+#: heavily limited: band at -2..-5 dBFS RMS, talking at -23..-41, dips inside
+#: the playing to -9..-13. At 12 dB the talking is out and each stretch of
+#: playing is one piece; at 10 an 8s scrap split off, at 15 a burst of talk got
+#: in. Two files is a tuning, not a validation.
+MIX_DROP_DB = 12.0
+MIX_LOUD_PERCENTILE = 90
 
 #: Peak below which a whole track holds no audio at all — an automation or
 #: folder track that recorded silence. Matches instrument_tagging.SILENCE_PEAK,
@@ -143,6 +157,13 @@ class Track:
         finite = levels[np.isfinite(levels)]
         if finite.size == 0:
             return np.zeros(len(self.envelope), dtype=bool)
+        if self.role == MIX_ROLE:
+            # A recording of the whole night is mostly music, so its 20th
+            # percentile is the band, not the room. Measure down from its loud
+            # level instead.
+            loud = float(np.percentile(finite, MIX_LOUD_PERCENTILE))
+            threshold = max(loud - MIX_DROP_DB, ABSOLUTE_FLOOR_DB)
+            return levels > threshold
         # The 20th percentile is this track's own resting level — room tone plus
         # whatever bleeds in — which is what "playing" has to rise above.
         floor = float(np.percentile(finite, 20))

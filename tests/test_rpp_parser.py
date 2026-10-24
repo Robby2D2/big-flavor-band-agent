@@ -10,7 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.production.rpp_parser import parse_project_text  # noqa: E402
+from src.production.rpp_parser import (  # noqa: E402
+    MIXDOWN_SOURCE,
+    parse_project_text,
+    project_from_recordings,
+)
 
 PROJECT = """<REAPER_PROJECT 0.1 "7.39/macOS-arm64" 1780706838
   RIPPLE 0 0
@@ -123,3 +127,18 @@ def test_a_file_that_is_not_a_project_is_rejected():
 
     with pytest.raises(ValueError):
         parse_project_text("NOT 1\nA PROJECT 2\n")
+
+
+def test_each_plain_recording_is_its_own_pass_of_one_mixdown_item():
+    """Two mp3s of a night are two stretches of it, not two mics of one."""
+    project = project_from_recordings([("freeish.mp3", 1980.0), ("CanadaMan.mp3", 6570.5)])
+
+    passes = project.passes()
+
+    assert [[item.source_name for item in p.items] for p in passes] == [
+        ["freeish.mp3"], ["CanadaMan.mp3"],
+    ]
+    assert [p.number for p in passes] == [1, 2]
+    assert passes[1].duration == 6570.5
+    assert passes[0].items[0].track_name == "freeish"
+    assert {item.source_type for item in project.items} == {MIXDOWN_SOURCE}

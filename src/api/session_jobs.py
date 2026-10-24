@@ -38,7 +38,14 @@ from src.production import (
     waveform_peaks,
     wavpack_io,
 )
-from src.production.rpp_parser import RecordingPass, parse_project
+from src.production.rpp_parser import (
+    MIXDOWN_SOURCE,
+    RECORDING_SUFFIXES,
+    Project,
+    RecordingPass,
+    parse_project,
+    project_from_recordings,
+)
 
 logger = logging.getLogger("backend-api")
 
@@ -108,16 +115,16 @@ class SessionJobManager:
     async def _run(self, session_id: int, db: DatabaseManager, gather) -> None:
         """Run one session scan end to end. Never raises.
 
-        ``gather`` puts the session's ``.RPP`` and media into ``raw_dir`` — by
-        unpacking an uploaded zip or by downloading from Drive — and owns the
-        first 10% of progress. Everything after it is the same scan.
+        ``gather`` puts the session's ``.RPP`` and media — or its plain
+        recordings — into ``raw_dir``, by unpacking an uploaded zip or by
+        downloading from Drive, and owns the first 10% of progress. Everything
+        after it is the same scan.
         """
         raw_dir = session_dir(session_id) / "raw"
         try:
             await gather(raw_dir)
 
-            project_file = _find_project(raw_dir)
-            project = await run_in_threadpool(parse_project, project_file)
+            project = await run_in_threadpool(load_project, raw_dir)
             media = {path.name: path for path in raw_dir.iterdir() if path.is_file()}
             passes = selectable_passes(project, media)
             if not passes:
@@ -222,35 +229,46 @@ async def fetch_from_drive(
     folder also holds peak caches, backups and renders, and a project that has
     accumulated several nights references media from other folders that is
     simply absent here — the same as a zip that did not carry it.
+
+    A folder with no project is a night recorded some other way, and its plain
+    recordings (mp3 and the like) are downloaded as they are.
     """
     await _stage(db, session_id, STAGE_DOWNLOADING, 0)
     client = await run_in_threadpool(drive_source.DriveClient)
     files = await run_in_threadpool(drive_source.session_files, client, folder_id)
 
     candidates = drive_source.project_candidates(files)
-    if not candidates:
-        raise RuntimeError("No Reaper project (.RPP) in this Drive folder")
-    project_path, media = await _choose_drive_project(
-        client, candidates, files, raw_dir.parent / "projects"
-    )
-    if not media:
-        raise RuntimeError(
-            "None of the audio this project uses is in its Drive folder"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    if candidates:
+        project_path, media = await _choose_drive_project(
+            client, candidates, files, raw_dir.parent / "projects"
         )
+        if not media:
+            raise RuntimeError(
+                "None of the audio this project uses is in its Drive folder"
+            )
+        # Only the chosen project goes into raw_dir, so the scan cannot pick another.
+        project_path.replace(raw_dir / project_path.name)
+        shutil.rmtree(project_path.parent, ignore_errors=True)
+        source = project_path.name
+    else:
+        media = drive_source.recording_candidates(files)
+        if not media:
+            raise RuntimeError(
+                "No Reaper project (.RPP) or recordings (mp3, wav, …) in this "
+                "Drive folder"
+            )
+        source = "its plain recordings"
+
     total = sum(item.size or 0 for item in media)
     if total > MAX_UNPACKED_BYTES:
         raise RuntimeError(
             f"Session is more than {MAX_UNPACKED_BYTES // 1024**3} GB of audio"
         )
 
-    # Only the chosen project goes into raw_dir, so the scan cannot pick another.
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    project_path.replace(raw_dir / project_path.name)
-    shutil.rmtree(project_path.parent, ignore_errors=True)
-
     logger.info(
         "Session %s: downloading %d files (%.1f GB) from Drive for %s",
-        session_id, len(media), total / 1024**3, project_path.name,
+        session_id, len(media), total / 1024**3, source,
     )
     # One file at a time so progress can be written between them; a night's
     # tracks are a few hundred MB each, so the bar still moves steadily.
@@ -302,13 +320,31 @@ async def _choose_drive_project(
     return best
 
 
-def _find_project(raw_dir: Path) -> Path:
+def load_project(raw_dir: Path) -> Project:
+    """The session's project: its ``.RPP``, or one stood in for its recordings.
+
+    A session with no project is a night recorded some other way — a couple of
+    mp3s of the room — and each recording is scanned as one whole-band track.
+    """
     projects = sorted(
         path for path in raw_dir.iterdir() if path.suffix.lower() == ".rpp"
     )
-    if not projects:
-        raise RuntimeError("No Reaper project (.RPP) in this upload")
-    return projects[0]
+    if projects:
+        return parse_project(projects[0])
+
+    recordings = []
+    for path in sorted(raw_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in RECORDING_SUFFIXES:
+            continue
+        try:
+            recordings.append((path.name, wavpack_io.probe(path).duration))
+        except wavpack_io.DecodeError:
+            logger.warning("Skipping unreadable recording %s", path.name)
+    if not recordings:
+        raise RuntimeError(
+            "No Reaper project (.RPP) or recordings (mp3, wav, …) in this upload"
+        )
+    return project_from_recordings(recordings)
 
 
 def selectable_passes(project, media: Dict[str, Path]) -> List[RecordingPass]:
@@ -342,6 +378,11 @@ async def _scan_pass(
             source_name=item.source_name,
             position=item.position,
             envelope=envelope,
+            role=(
+                session_detect.MIX_ROLE
+                if item.source_type == MIXDOWN_SOURCE
+                else "other"
+            ),
         )
         tracks.append(track)
         await db.add_session_track(
@@ -458,6 +499,12 @@ async def _store_take(
         for row in await db.list_session_tracks(session_id)
     }
     for stem in rendered.stems:
+        if stem.name.split("-")[0] == session_detect.MIX_ROLE:
+            # A whole-band recording is the take itself, not one of its parts.
+            # Kept as a stem it would become a one-stem set on the produced
+            # version and stand in the way of separating it for real.
+            _remove_quietly(Path(stem.path))
+            continue
         row = await db.add_session_take_stem(
             take_id=take["id"],
             track_id=track_ids.get((stem.display_name, scan.recording_pass.number)),

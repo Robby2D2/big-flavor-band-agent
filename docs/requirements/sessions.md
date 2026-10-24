@@ -26,6 +26,14 @@ on the producer's browser staying open.
 *Why:* the sessions already live on Drive; moving gigabytes down to a laptop and back up is the whole
 cost the feature removes.
 
+**SESS-21** — A session MUST NOT need a Reaper project. A night recorded some other way — a
+folder (or zip) of plain recordings such as mp3s — MUST be importable the same way, from Drive or by
+upload, and each recording is scanned for takes as a whole-band recording. Its takes carry no
+per-channel stems: there were no channels, and a one-part "stem set" would stand in the way of
+separating the produced version for real.
+*Why:* the 2026-10-23 night ("Freeish Birdish") exists only as two room mp3s and was invisible to
+the Drive import.
+
 **SESS-17** — An imported file MUST be whole before a scan reads it: an interrupted download MUST
 resume or fail the import, never be scanned as a truncated track. The same Drive folder MUST NOT be
 imported twice at once, and the import list MUST show which folders already have a session.

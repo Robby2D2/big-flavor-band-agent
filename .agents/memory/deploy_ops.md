@@ -41,3 +41,17 @@ Post-deploy verification that matters: liquidsoap logs `Switch to safe_blank` **
 then recovers once sources are ready — check the *tail*, not the boot lines, or it reads as the
 blank-source regression. It was queuing real `/audio_library/…` files a minute later, path rewrite
 intact.
+
+---
+
+*The entries below moved here from [MEMORY.md](../MEMORY.md) in the 2026-10-24 prune.*
+
+### 2026-10-15 — Production deploy actually runs the production frontend
+
+`deploy-production.ps1`/`.sh` used the plain `docker-compose.yml`, which is the hot-reload dev stack:
+the frontend ran `next dev` from `Dockerfile.frontend.dev`, so bigflavor.useunix.com showed the
+Next.js dev-tools "N" badge to every visitor and compiled pages on demand. New
+`docker-compose.prod.yml` override (frontend → `Dockerfile.frontend` standalone build, `NODE_ENV=production`,
+`volumes: !reset []`; backend `APP_ENV=production`); both deploy scripts pass `-f docker-compose.yml
+-f docker-compose.prod.yml` on every compose call. Consequence: in production, frontend edits need a
+redeploy (image rebuild) to go live, and a bare `docker-compose up -d` flips the frontend back to dev.

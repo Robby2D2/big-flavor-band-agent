@@ -20,6 +20,10 @@ Only what the project needs is fetched: the ``.RPP`` first, then the audio files
 it actually references. A project folder also carries Reaper's peak caches,
 ``.RPP-bak`` backups and rendered mixes, none of which a scan reads.
 
+Not every night was recorded in Reaper. A folder holding only plain recordings
+("20261023 - Freeish Birdish": two room mp3s) is a session too, and each of its
+recordings is scanned as one whole-band track (see ``session_jobs``).
+
 Everything here is synchronous (``requests``) and is called from a threadpool.
 """
 from __future__ import annotations
@@ -33,6 +37,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
+
+from src.production.rpp_parser import RECORDING_SUFFIXES
 
 logger = logging.getLogger("backend-api")
 
@@ -93,7 +99,8 @@ class DriveFile:
 
 @dataclass(frozen=True)
 class DriveSession:
-    """A folder holding a Reaper project: one night's recording."""
+    """A folder holding one night's recording: a Reaper project, or plain
+    recordings when the night was not recorded in Reaper."""
 
     folder: DriveFile
     #: The folders it sits inside, below the root. Empty for a top-level
@@ -223,28 +230,35 @@ class DriveClient:
 def find_sessions(client: DriveClient, root_id: str) -> List[DriveSession]:
     """Every session folder under the root, at any depth, newest-named first.
 
-    A session is **a folder that directly holds a ``.RPP``**. Sessions are not
-    only the root's children: nights get filed inside other nights' folders
-    ("20240719 - July Christie" holds seven 2025 sessions), and one night can
-    sit in two places. Folders named with a leading underscore ("_Archive")
-    are not sessions and are not searched.
+    A session is **a folder that directly holds a ``.RPP``**, or one that
+    directly holds plain recordings (mp3 and the like) and sits inside no
+    project — inside one, a folder of audio is that project's media or renders.
+    Sessions are not only the root's children: nights get filed inside other
+    nights' folders ("20240719 - July Christie" holds seven 2025 sessions), and
+    one night can sit in two places. Folders named with a leading underscore
+    ("_Archive") are not sessions and are not searched.
 
     Listed a level at a time in parallel, since each folder is one request.
     Names start with the date (``YYYYMMDD``), so reverse name order is newest
     first without trusting Drive's modified times.
     """
     sessions: List[DriveSession] = []
-    pending = [(child, ()) for child in _subfolders(client.list_children(root_id))]
+    # (folder, location, whether a project folder encloses it)
+    pending = [(child, (), False) for child in _subfolders(client.list_children(root_id))]
     depth = 1
     with ThreadPoolExecutor(max_workers=_LIST_WORKERS) as pool:
         while pending and depth <= _MAX_DEPTH:
             listings = list(pool.map(lambda entry: client.list_children(entry[0].id), pending))
             deeper = []
-            for (folder, location), children in zip(pending, listings):
-                if any(_is_project(child) for child in children):
+            for (folder, location, in_project), children in zip(pending, listings):
+                is_project = any(_is_project(child) for child in children)
+                if is_project or (
+                    not in_project and any(_is_recording(child) for child in children)
+                ):
                     sessions.append(DriveSession(folder=folder, location=location))
                 deeper.extend(
-                    (sub, location + (folder.name,)) for sub in _subfolders(children)
+                    (sub, location + (folder.name,), in_project or is_project)
+                    for sub in _subfolders(children)
                 )
             pending = deeper
             depth += 1
@@ -287,6 +301,18 @@ def project_candidates(files: Iterable[SessionFile]) -> List[DriveFile]:
     )
 
 
+def recording_candidates(files: Iterable[SessionFile]) -> List[DriveFile]:
+    """The plain recordings at a session folder's own level, by name.
+
+    Used only when the folder has no project. Deeper files belong to sub-folders
+    that are sessions of their own (see ``find_sessions``).
+    """
+    return sorted(
+        (entry.file for entry in files if entry.depth == 0 and _is_recording(entry.file)),
+        key=lambda item: item.name,
+    )
+
+
 def media_to_fetch(
     files: Iterable[SessionFile], wanted_names: Iterable[str]
 ) -> List[DriveFile]:
@@ -318,12 +344,18 @@ def _is_project(item: DriveFile) -> bool:
     return not item.is_folder and item.name.lower().endswith(".rpp")
 
 
+def _is_recording(item: DriveFile) -> bool:
+    return not item.is_folder and item.name.lower().endswith(RECORDING_SUFFIXES)
+
+
 def _ignored(name: str) -> bool:
     return name.startswith("_")
 
 
 def _subfolders(children: Iterable[DriveFile]) -> List[DriveFile]:
     return [child for child in children if child.is_folder and not _ignored(child.name)]
+
+
 def _authorized_session() -> requests.Session:
     path = key_path()
     if path is None:

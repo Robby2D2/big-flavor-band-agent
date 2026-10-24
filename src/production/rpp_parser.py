@@ -27,9 +27,18 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger("backend-api")
+
+#: ``Item.source_type`` of a plain recording standing in for a project: a whole
+#: band on one file, not one channel of a multitrack.
+MIXDOWN_SOURCE = "MIXDOWN"
+
+#: What a session of plain recordings holds. WavPack is left out on purpose: it
+#: is what Reaper records each channel to, so a project's "Audio/" folder full
+#: of ``.wv`` must not read as a recording session of its own.
+RECORDING_SUFFIXES = (".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg")
 
 # `NAME "quoted value"` / `POSITION 12.5` — a chunk field is a bare token
 # followed by the rest of the line.
@@ -118,6 +127,28 @@ def parse_project(path: str | Path) -> Project:
     """
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     return parse_project_text(text)
+
+
+def project_from_recordings(recordings: Sequence[Tuple[str, float]]) -> Project:
+    """A stand-in project for a session that is plain recordings, not Reaper.
+
+    ``recordings`` is each file's name and duration in seconds. Every file is a
+    separate press of record — two mp3s of a night are two stretches of it, not
+    two mics of one — so each becomes its own pass holding one mixdown item.
+    """
+    items = [
+        Item(
+            track_name=Path(name).stem,
+            position=0.0,
+            length=duration,
+            start_offset=0.0,
+            rec_pass=number,
+            source_file=name,
+            source_type=MIXDOWN_SOURCE,
+        )
+        for number, (name, duration) in enumerate(recordings, 1)
+    ]
+    return Project(track_names=[item.track_name for item in items], items=items)
 
 
 def parse_project_text(text: str) -> Project:
