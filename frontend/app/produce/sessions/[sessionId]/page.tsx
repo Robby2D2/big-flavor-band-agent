@@ -87,14 +87,16 @@ export default function SessionPage() {
   }, [load]);
 
   const busy = session?.status === 'running' || session?.status === 'queued';
+  const listening = (session?.takes ?? []).some((take) => take.listening);
 
   // Follow the scan while it runs, and stop the moment it lands — a reload
   // mid-scan picks the story back up because the stage lives in the database.
+  // A split take's words are read the same way, in the background.
   useEffect(() => {
-    if (!busy) return;
+    if (!busy && !listening) return;
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
-  }, [busy, load]);
+  }, [busy, listening, load]);
 
   const toggleExcluded = async (take: SessionTake) => {
     // Optimistic: the only failure mode is the flag not sticking, and the next
@@ -146,6 +148,22 @@ export default function SessionPage() {
       setActionError(data.error || 'Could not move the take');
     }
     load();
+  };
+
+  // Splitting is for the band running one song straight into the next, which
+  // detection can miss and no move can fix (SESS-22).
+  const splitTake = async (take: SessionTake, seconds: number) => {
+    setActionError(null);
+    const response = await fetch(`/api/produce/sessions/takes/${take.id}/split`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ at_seconds: seconds }),
+    }).catch(() => null);
+    if (!response?.ok) {
+      const data = await response?.json().catch(() => ({}));
+      setActionError(data?.error || 'Could not split the take');
+    }
+    await load();
   };
 
   // Producing brings the group into the catalog and hands over to the produce
@@ -348,6 +366,7 @@ export default function SessionPage() {
                         onRename={renameGroup}
                         onProduce={produceGroup}
                         onMove={moveTake}
+                        onSplit={splitTake}
                         onToggleExcluded={toggleExcluded}
                       />
                     ) : (
@@ -357,6 +376,7 @@ export default function SessionPage() {
                         index={row.position}
                         songs={songs}
                         onMove={moveTake}
+                        onSplit={splitTake}
                         onToggleExcluded={toggleExcluded}
                       />
                     )
@@ -370,7 +390,8 @@ export default function SessionPage() {
                   song, and which takes are the same song is guessed from the words
                   they share, not matched against the catalog. Use each take&apos;s
                   song menu to put it with the right song, or make it a new one,
-                  and discard anything that isn&apos;t a song. Nothing reaches the
+                  split a take where the band ran two songs together, and
+                  discard anything that isn&apos;t a song. Nothing reaches the
                   catalog until you produce a song, and every song produced from a
                   session is a new one.
                   {kept.length !== session.takes.length &&

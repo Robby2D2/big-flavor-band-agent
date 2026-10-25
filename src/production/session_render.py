@@ -50,6 +50,14 @@ class RenderedTake:
     sample_rate: int
 
 
+@dataclass
+class SplitPart:
+    """One side of a take cut in two: its mix and the channels that kept audio."""
+
+    mix_path: str
+    stems: List[RenderedStem]
+
+
 def render_take(
     take: Take,
     tracks: Sequence[Track],
@@ -109,6 +117,81 @@ def render_take(
     return RenderedTake(
         take=take, mix_path=str(mix_path), stems=stems, sample_rate=sample_rate
     )
+
+
+def split_rendered_take(
+    mix_path: str | Path,
+    stems: Sequence[RenderedStem],
+    at_seconds: float,
+    before_dir: str | Path,
+    after_dir: str | Path,
+) -> tuple[SplitPart, SplitPart]:
+    """Cut a rendered take in two at ``at_seconds`` into the take.
+
+    Works from the take's own files, not the session's tracks: the raw WavPack
+    is gone once a scan finishes. Cutting the mix at the same sample as its
+    channels gives what re-summing them would, so nothing is mixed again. A
+    channel left silent on one side is dropped there, as ``render_take`` does.
+    """
+    parts = []
+    for directory, start, end in (
+        (Path(before_dir), 0.0, at_seconds),
+        (Path(after_dir), at_seconds, None),
+    ):
+        part_mix = directory / "mix.wav"
+        slice_audio_file(mix_path, part_mix, start, end)
+        part_stems = []
+        for stem in stems:
+            path = directory / "stems" / Path(stem.path).name
+            slice_audio_file(stem.path, path, start, end)
+            peak_db = _peak_db(path)
+            if peak_db < STEM_SILENCE_PEAK_DB:
+                path.unlink(missing_ok=True)
+                continue
+            part_stems.append(
+                RenderedStem(
+                    name=stem.name,
+                    display_name=stem.display_name,
+                    path=str(path),
+                    peak_db=peak_db,
+                )
+            )
+        parts.append(SplitPart(mix_path=str(part_mix), stems=part_stems))
+    return parts[0], parts[1]
+
+
+def slice_audio_file(
+    source: str | Path,
+    target: str | Path,
+    start_seconds: float,
+    end_seconds: Optional[float] = None,
+) -> None:
+    """Copy ``[start, end)`` of an audio file, keeping its format and bit depth.
+
+    Streamed in blocks: a take stem is up to half an hour of 48 kHz audio.
+    """
+    import soundfile as sf
+
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with sf.SoundFile(str(source)) as src:
+        first = min(int(round(start_seconds * src.samplerate)), src.frames)
+        last = src.frames
+        if end_seconds is not None:
+            last = min(int(round(end_seconds * src.samplerate)), src.frames)
+        src.seek(first)
+        with sf.SoundFile(
+            str(target), "w",
+            samplerate=src.samplerate, channels=src.channels,
+            format=src.format, subtype=src.subtype,
+        ) as dst:
+            remaining = max(0, last - first)
+            while remaining:
+                block = src.read(min(remaining, 1 << 20), dtype="float32", always_2d=True)
+                if not len(block):
+                    break
+                dst.write(block)
+                remaining -= len(block)
 
 
 def _unique_name(role: str, used: Dict[str, int]) -> str:

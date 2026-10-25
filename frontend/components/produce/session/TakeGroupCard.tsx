@@ -22,6 +22,7 @@ interface TakeGroupCardProps {
   onRename: (group: TakeGroupRecord, name: string) => void;
   onProduce: (group: TakeGroupRecord, title: string) => void;
   onMove: (take: SessionTake, target: MoveTarget) => void;
+  onSplit: (take: SessionTake, seconds: number) => Promise<void>;
   onToggleExcluded: (take: SessionTake) => void;
 }
 
@@ -42,9 +43,16 @@ export default function TakeGroupCard({
   onRename,
   onProduce,
   onMove,
+  onSplit,
   onToggleExcluded,
 }: TakeGroupCardProps) {
-  const name = groupName(group, takes);
+  const guessed = groupName(group, takes);
+  // A split's halves have no words until they are read again; until then the
+  // guess would call the song an instrumental, which may be false (SESS-12).
+  const name =
+    guessed.wordless && takes.some((member) => member.take.listening)
+      ? { ...guessed, text: 'Listening for the words…' }
+      : guessed;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name.text);
 
@@ -139,6 +147,7 @@ export default function TakeGroupCard({
             inGroup
             songs={songs}
             onMove={onMove}
+            onSplit={onSplit}
             onToggleExcluded={onToggleExcluded}
           />
         ))}

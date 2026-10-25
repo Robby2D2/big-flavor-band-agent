@@ -1221,12 +1221,16 @@ class DatabaseManager:
         end_seconds: float,
         transcript: Optional[str],
         mix_path: Optional[str],
+        group_id: Optional[int] = None,
+        excluded: bool = False,
+        transcript_pending: bool = False,
     ) -> Dict[str, Any]:
-        """Record one detected attempt at a song."""
+        """Record one detected attempt at a song, or one half of a split take."""
         query = """
             INSERT INTO session_takes (
-                session_id, rec_pass, start_seconds, end_seconds, transcript, mix_path
-            ) VALUES ($1, $2, $3, $4, $5, $6)
+                session_id, rec_pass, start_seconds, end_seconds, transcript, mix_path,
+                group_id, excluded, transcript_pending
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
         """
         async with self.pool.acquire() as conn:
@@ -1238,8 +1242,29 @@ class DatabaseManager:
                 end_seconds,
                 transcript,
                 mix_path,
+                group_id,
+                excluded,
+                transcript_pending,
             )
         return dict(row)
+
+    async def delete_session_take(self, take_id: int) -> None:
+        """Remove a take and its stems. Only a split does this, once both halves
+        hold its audio — review itself never deletes a take (SESS-09)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM session_takes WHERE id = $1", take_id)
+
+    async def set_session_take_transcript(
+        self, take_id: int, transcript: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Store a take's words once they have been read, ending the wait."""
+        query = """
+            UPDATE session_takes SET transcript = $2, transcript_pending = FALSE
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, take_id, transcript)
+        return dict(row) if row else None
 
     async def list_session_takes(self, session_id: int) -> List[Dict[str, Any]]:
         """Every take of a session, in timeline order, each with its stems."""

@@ -61,7 +61,7 @@ src/
     session_transcribe.py     # vocal-only mix of a region -> timed transcript lines
     session_attempts.py       # transcript + stops -> the band's attempts at songs
     session_grouping.py       # transcripts -> which takes are attempts at one song (SESS-13)
-    session_render.py         # slice a take out of every track (its stems) + the mix
+    session_render.py         # slice a take out of every track (its stems) + the mix; split a rendered take
 database/
   database.py                 # DatabaseManager (asyncpg) — the single DB access point
   apply_schema.py             # schema bootstrap
@@ -889,6 +889,28 @@ migration 24) is the human import **SESS-10** waits for:
 
 Not done: setting the default does not index the version's audio, so until a reindex a session song
 is found by title and text search but not by audio similarity or tempo.
+
+### A take holding two songs is split in two (2026-10-25, SESS-22)
+
+Detection misses the band running one song straight into the next (the Freeish Birdish room mp3s
+gave one 25-minute take), and no move fixes that. `POST /api/produce/sessions/takes/{id}/split`
+with `at_seconds` (the playhead on the take card's waveform) cuts it.
+
+- **It cuts the take's own files, not the session's tracks** — the raw WavPack is gone after a
+  scan. `session_render.split_rendered_take` stream-slices the mix and each channel at the same
+  sample (format and bit depth kept); slicing a sum equals re-summing the slices, so nothing is
+  mixed again. A channel silent on one side is dropped there, as `render_take` does.
+- **Two new takes replace it**, written under their own `take_dir`s before the original row and
+  folder are deleted; a failure deletes the halves instead. New ids, not a trimmed original, because
+  `/preview` is served `immutable` per take id. The first half keeps the take's group (and its
+  name); the second gets a new group, or none if the take was on its own. A produced take is
+  released from its catalog song first (`session_import.release_take`, as a move does).
+- **The words are read again, in the background.** The scan keeps a take's transcript, not when each
+  line was sung, so it cannot be shared out. Halves start `transcript_pending` (migration 25) and
+  `SessionJobManager.listen` runs Whisper over each half's vocal stems, or its mix for a room
+  recording, one batch at a time behind a lock. The flag is durable and `GET /sessions/{id}` calls
+  `listen` for any pending take not already queued, so a restart mid-read resumes. The page shows
+  "Listening for the words…" rather than *Instrumental* and polls until the flag clears.
 
 ### `AnthropicProvider` cannot make a call (found 2026-09-25, not yet fixed)
 

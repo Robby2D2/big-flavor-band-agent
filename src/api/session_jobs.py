@@ -84,6 +84,11 @@ class SessionJobManager:
     def __init__(self) -> None:
         # session_id -> Task, so a job isn't garbage-collected while it runs.
         self._tasks: Dict[int, asyncio.Task] = {}
+        # Takes whose words are queued or being read again after a split, and
+        # the tasks reading them. One read at a time: each loads Whisper.
+        self._listening: set[int] = set()
+        self._listen_tasks: set[asyncio.Task] = set()
+        self._listen_lock = asyncio.Lock()
 
     def start(self, session_id: int, zip_path: str, db: DatabaseManager) -> None:
         """Kick off the scan of an uploaded session."""
@@ -106,6 +111,31 @@ class SessionJobManager:
 
     def is_running(self, session_id: int) -> bool:
         return session_id in self._tasks
+
+    def listen(self, db: DatabaseManager, takes: Sequence[Dict]) -> None:
+        """Read the words of takes marked ``transcript_pending``, in the background.
+
+        Takes already queued are skipped, so it is safe to call on every page
+        load — which is how a read cut short by a restart picks back up.
+        """
+        fresh = [take for take in takes if take["id"] not in self._listening]
+        if not fresh:
+            return
+        self._listening.update(take["id"] for take in fresh)
+        task = asyncio.create_task(self._listen(db, fresh))
+        self._listen_tasks.add(task)
+        task.add_done_callback(self._listen_tasks.discard)
+
+    async def _listen(self, db: DatabaseManager, takes: Sequence[Dict]) -> None:
+        try:
+            async with self._listen_lock:
+                extractor = await run_in_threadpool(_load_extractor)
+                for take in takes:
+                    await _read_take_words(db, take, extractor)
+        except Exception:
+            logger.exception("Could not read the words of split takes")
+        finally:
+            self._listening.difference_update(take["id"] for take in takes)
 
     def _launch(self, session_id: int, db: DatabaseManager, gather) -> None:
         task = asyncio.create_task(self._run(session_id, db, gather))
@@ -521,6 +551,152 @@ async def _store_take(
     await _warm_peaks(
         db.set_session_take_waveform_peaks, take["id"], rendered.mix_path
     )
+
+
+async def split_take(
+    db: DatabaseManager, take: Dict, at_seconds: float
+) -> List[Dict]:
+    """Cut one take in two at ``at_seconds`` into it (SESS-22).
+
+    The first half stays in the take's song; the second starts a song of its
+    own, since the reason to split is that the band ran one song into the next.
+    A take on its own splits into two takes on their own. Both keep the take's
+    discard state. Their words are read again in the background — the scan
+    kept what was sung, not when — so each starts ``transcript_pending``.
+
+    The halves are new takes with new audio, and the original is deleted only
+    once both are written, so a failure leaves the take as it was. The caller
+    releases a produced take from the catalog first.
+    """
+    session_id = take["session_id"]
+    start, end = take["start_seconds"], take["end_seconds"]
+    second_group = None
+    if take.get("group_id") is not None:
+        second_group = (await db.create_session_take_group(session_id))["id"]
+
+    halves = [
+        await db.add_session_take(
+            session_id=session_id,
+            rec_pass=take.get("rec_pass"),
+            start_seconds=bounds[0],
+            end_seconds=bounds[1],
+            transcript=None,
+            mix_path=None,
+            group_id=group_id,
+            excluded=take.get("excluded", False),
+            transcript_pending=True,
+        )
+        for bounds, group_id in (
+            ((start, start + at_seconds), take.get("group_id")),
+            ((start + at_seconds, end), second_group),
+        )
+    ]
+    old_stems = take.get("stems") or []
+    try:
+        parts = await run_in_threadpool(
+            session_render.split_rendered_take,
+            take["mix_path"],
+            [
+                session_render.RenderedStem(
+                    name=stem["name"],
+                    display_name=stem.get("display_name") or stem["name"],
+                    path=stem["path"],
+                    peak_db=stem.get("peak_db") or 0.0,
+                )
+                for stem in old_stems
+            ],
+            at_seconds,
+            take_dir(session_id, halves[0]["id"]),
+            take_dir(session_id, halves[1]["id"]),
+        )
+    except Exception:
+        # Deleting the halves also drops the new group, which is left empty.
+        for half in halves:
+            await db.set_session_take_group_id(half["id"], None)
+            await db.delete_session_take(half["id"])
+            await run_in_threadpool(
+                shutil.rmtree, take_dir(session_id, half["id"]), True
+            )
+        raise
+
+    track_ids = {stem["name"]: stem.get("track_id") for stem in old_stems}
+    for half, part in zip(halves, parts):
+        for stem in part.stems:
+            row = await db.add_session_take_stem(
+                take_id=half["id"],
+                track_id=track_ids.get(stem.name),
+                name=stem.name,
+                display_name=stem.display_name,
+                path=stem.path,
+                peak_db=_finite(stem.peak_db),
+            )
+            await _warm_peaks(
+                db.set_session_take_stem_waveform_peaks, row["id"], stem.path
+            )
+        await db.set_session_take_mix_path(half["id"], part.mix_path)
+        await _warm_peaks(db.set_session_take_waveform_peaks, half["id"], part.mix_path)
+
+    await db.delete_session_take(take["id"])
+    await run_in_threadpool(shutil.rmtree, take_dir(session_id, take["id"]), True)
+    logger.info(
+        "Take %s split at %.1fs into takes %s and %s",
+        take["id"], at_seconds, halves[0]["id"], halves[1]["id"],
+    )
+
+    by_id = {row["id"]: row for row in await db.list_session_takes(session_id)}
+    split = [by_id[half["id"]] for half in halves]
+    manager.listen(db, split)
+    return split
+
+
+async def _read_take_words(db: DatabaseManager, take: Dict, extractor) -> None:
+    """Transcribe one take from its own audio and store the words.
+
+    The same sources the scan reads (``session_transcribe.VOICE_ROLES``): the
+    singers' mics, or — for a night recorded as plain room recordings, whose
+    takes carry no channels — the take itself. A take whose channels hold no
+    mic has no words, which is a real answer. A failure stores none rather than
+    leaving the take waiting forever.
+    """
+    stems = take.get("stems") or []
+    sources = [
+        stem["path"] for stem in stems
+        if stem["name"].split("-")[0] in session_transcribe.VOICE_ROLES
+    ]
+    if not stems and take.get("mix_path"):
+        sources = [take["mix_path"]]
+
+    transcript = None
+    try:
+        if sources:
+            transcript = await run_in_threadpool(
+                _transcribe_files, sources, extractor, take["id"]
+            )
+    except Exception:
+        logger.exception("Reading the words of take %s failed", take["id"])
+    await db.set_session_take_transcript(take["id"], transcript or None)
+
+
+def _transcribe_files(paths: Sequence[str], extractor, take_id: int) -> str:
+    """Sum the given files and return what Whisper hears in them."""
+    import soundfile as sf
+
+    workdir = Path("/tmp") / f"take{take_id}-words"
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        audio = Path(paths[0])
+        if len(paths) > 1:
+            audio = workdir / "voices.wav"
+            session_render.mix_audio_files(
+                paths, audio, sf.info(str(paths[0])).samplerate
+            )
+        # Timed from zero: only the words are kept, not where they fall.
+        lines = session_transcribe.transcribe_region(
+            audio, session_detect.Take(start=0.0, end=0.0), extractor
+        )
+        return " ".join(line.text for line in lines).strip()
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 async def group_session_takes(db: DatabaseManager, session_id: int) -> int:

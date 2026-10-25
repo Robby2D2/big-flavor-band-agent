@@ -23,6 +23,8 @@ Review is only about grouping takes into songs; the one route that adds to the
 catalog is ``POST .../groups/{id}/produce``, which a producer clicks to turn a
 group into a song (``session_import``). Moving a take that was already produced
 takes its version back out of that song, so it can be produced into its new one.
+A take holding two songs the band ran together is cut in two
+(``POST .../takes/{id}/split``) from its own rendered audio.
 """
 import logging
 import re
@@ -43,6 +45,7 @@ from src.api.session_jobs import (
     group_session_takes,
     manager as session_manager,
     session_dir,
+    split_take as split_session_take,
     upload_zip_path,
 )
 from src.auth import require_role
@@ -58,6 +61,10 @@ _DATED_NAME = re.compile(r"^\s*(?P<date>\d{8})[\s_-]+(?P<name>.+?)\s*$")
 
 #: Google Drive appends its own export suffix when it zips a folder.
 _DRIVE_SUFFIX = re.compile(r"-\d{8}T\d{6}Z-\d+-\d+$")
+
+#: The shortest piece a split may leave. Short on purpose: cutting off a
+#: count-in to discard it is a fair use of a split.
+MIN_SPLIT_PART_SECONDS = 1.0
 
 
 class SessionCreate(BaseModel):
@@ -77,6 +84,12 @@ class TakeUpdate(BaseModel):
 
     excluded: Optional[bool] = None
     group_id: Optional[int] = None
+
+
+class TakeSplit(BaseModel):
+    """Where to cut a take, in seconds from its own start."""
+
+    at_seconds: float
 
 
 class GroupCreate(BaseModel):
@@ -282,6 +295,8 @@ async def get_session(
 
     tracks = await db.list_session_tracks(session_id)
     takes = await db.list_session_takes(session_id)
+    # A read of a split take's words cut short by a restart resumes here.
+    session_manager.listen(db, [take for take in takes if take.get("transcript_pending")])
     payload = _session_payload(session)
     payload["tracks"] = [_track_payload(row) for row in tracks]
     payload["takes"] = [_take_payload(row) for row in takes]
@@ -335,6 +350,46 @@ async def update_take(
         take = await db.set_session_take_excluded(take_id, body.excluded) or take
 
     return _take_payload(dict(take, stems=[]))
+
+
+@router.post("/api/produce/sessions/takes/{take_id}/split")
+async def split_take(
+    take_id: int,
+    body: TakeSplit,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Cut a take in two where one song ends and the next begins (SESS-22).
+
+    Detection can miss the band running one song straight into the next, and
+    no move can fix that — both songs are in one take. The first half stays in
+    the take's song and the second becomes a new one. A produced take leaves
+    its catalog song first, as a moved one does (SESS-18).
+    """
+    take = await db.get_session_take(take_id)
+    if take is None:
+        raise HTTPException(status_code=404, detail="Take not found")
+    session = await db.get_recording_session(take["session_id"])
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session_manager.is_running(session["id"]) or session["status"] != "complete":
+        raise HTTPException(status_code=409, detail="This session is still scanning")
+    if not take.get("mix_path") or not Path(take["mix_path"]).exists():
+        raise HTTPException(status_code=409, detail="This take has no audio to split")
+
+    duration = take["end_seconds"] - take["start_seconds"]
+    if not MIN_SPLIT_PART_SECONDS <= body.at_seconds <= duration - MIN_SPLIT_PART_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Split at least {MIN_SPLIT_PART_SECONDS:g} seconds from either end",
+        )
+
+    await session_import.release_take(db, take)
+    with_stems = next(
+        row for row in await db.list_session_takes(session["id"]) if row["id"] == take_id
+    )
+    halves = await split_session_take(db, with_stems, body.at_seconds)
+    return {"takes": [_take_payload(row) for row in halves]}
 
 
 @router.post("/api/produce/sessions/{session_id}/groups")
@@ -590,6 +645,8 @@ def _take_payload(row: Dict[str, Any]) -> Dict[str, Any]:
         "excluded": row.get("excluded", False),
         "has_audio": bool(row.get("mix_path")),
         "song_version_id": row.get("song_version_id"),
+        # No transcript yet is not "no words" while this is set (SESS-12).
+        "listening": bool(row.get("transcript_pending")),
         "stems": [
             {
                 "id": stem["id"],

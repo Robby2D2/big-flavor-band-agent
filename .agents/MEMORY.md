@@ -20,6 +20,19 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-25 — A session take can be split in two at the playhead (SESS-22)
+
+Freeish Birdish came out as one 25-minute take ("And for a king."), and nothing in review could
+separate two songs sharing a take. Each opened take card now has **Split here**: click the waveform,
+split. `POST /api/produce/sessions/takes/{id}/split` cuts the take's **own** mix and channels
+(`session_render.split_rendered_take`; the raw recording is gone after a scan) into two **new**
+takes, then deletes the original. New ids because `/preview` is cached `immutable` per id. First
+half keeps the song, second gets a new group (or stays alone if the take was alone). A produced
+take is released first. Words aren't timed in storage, so each half is re-transcribed in the
+background: `transcript_pending` (**migration 25, applied to the local/prod DB 2026-10-25**) shows
+"Listening for the words…" and `GET /sessions/{id}` resumes any read a restart cut short. Tests
+are in `tests/test_session_produce.py`.
+
 ### 2026-10-24 — Drive import takes nights that are plain mp3s, not Reaper projects (SESS-21)
 
 The owner's "20261023 - Freeish Birdish" folder (two room mp3s, no `.RPP`) never appeared under

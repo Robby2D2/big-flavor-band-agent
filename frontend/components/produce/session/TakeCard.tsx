@@ -27,6 +27,8 @@ export interface SessionTake {
   has_audio: boolean;
   /** The catalog version this take became when its song was produced. */
   song_version_id: number | null;
+  /** Its words are being read again after a split, so no transcript is not "no words". */
+  listening: boolean;
   stems: SessionStem[];
 }
 
@@ -47,12 +49,17 @@ interface TakeCardProps {
   /** The session's songs, for the menu that moves a take between them. */
   songs: SongOption[];
   onMove: (take: SessionTake, target: MoveTarget) => void;
+  /** Cut the take in two at `seconds` into it (SESS-22). */
+  onSplit: (take: SessionTake, seconds: number) => Promise<void>;
   /**
    * Shown inside a song group, where the guessed name belongs to the group and a
    * take has to be told apart from its siblings some other way (SESS-13).
    */
   inGroup?: boolean;
 }
+
+/** The shortest piece a split may leave — the backend's MIN_SPLIT_PART_SECONDS. */
+const MIN_SPLIT_PART_SECONDS = 1;
 
 const NEW_SONG = 'new';
 const ON_ITS_OWN = '';
@@ -77,6 +84,7 @@ export default function TakeCard({
   onToggleExcluded,
   songs,
   onMove,
+  onSplit,
   inGroup = false,
 }: TakeCardProps) {
   const [open, setOpen] = useState(false);
@@ -84,6 +92,7 @@ export default function TakeCard({
   const [duration, setDuration] = useState(take.duration_seconds);
   const [waveError, setWaveError] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState<number | null>(null);
+  const [splitting, setSplitting] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -120,7 +129,31 @@ export default function TakeCard({
   };
 
   const played = take.stems.filter((stem) => stem.name !== 'full mix');
-  const name = takeName(take.transcript);
+  const name = take.listening
+    ? { text: 'Listening for the words…', shortened: false, wordless: true }
+    : takeName(take.transcript);
+
+  const canSplit =
+    playhead !== null &&
+    playhead >= MIN_SPLIT_PART_SECONDS &&
+    playhead <= take.duration_seconds - MIN_SPLIT_PART_SECONDS;
+
+  const split = async () => {
+    if (playhead === null) return;
+    audioRef.current?.pause();
+    const at = clock(playhead);
+    const question =
+      take.song_version_id !== null
+        ? `Split this take at ${at}? It is already a version in the catalog — splitting removes that version from the song, and producing again brings both halves in.`
+        : `Split this take at ${at} into two takes? This can't be undone.`;
+    if (!window.confirm(question)) return;
+    setSplitting(true);
+    try {
+      await onSplit(take, playhead);
+    } finally {
+      setSplitting(false);
+    }
+  };
 
   return (
     <li
@@ -246,6 +279,25 @@ export default function TakeCard({
                 }
                 className="mt-3 w-full"
               />
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={split}
+                  disabled={!canSplit || splitting}
+                  className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised disabled:opacity-50"
+                >
+                  {splitting
+                    ? 'Splitting…'
+                    : canSplit && playhead !== null
+                      ? `Split here (${clock(playhead)})`
+                      : 'Split here'}
+                </button>
+                <span className="text-xs text-text/40">
+                  Two songs in one take? Click the waveform where the second
+                  starts, then split — the part after it becomes{' '}
+                  {take.group_id !== null ? 'a new song' : 'a take of its own'}.
+                </span>
+              </div>
             </>
           ) : (
             <p className="text-sm text-text/50">No audio was rendered for this take.</p>

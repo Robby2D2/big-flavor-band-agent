@@ -98,6 +98,17 @@ stage the take again, so producing its new song brings it in.
 *Amended 2026-09-28:* this used to say a produced take stays with its song. The owner ruled that a
 grouping mistake found after producing must still be fixable from review.
 
+**SESS-22** — A producer MUST be able to split a take in two at a point they choose on its waveform,
+where the band ran one song straight into the next. The split MUST lose no audio — the two halves
+together hold everything the take held, with its channels — and MUST NOT need the session's raw
+recording. The part after the split becomes a song of its own (a take of its own when the original
+was on its own); the part before stays where the take was. Each half's name comes from the words
+sung in that half (**SESS-12**), and until they are known it MUST be shown as pending, not as having
+none. Splitting a take already in the catalog removes its version first, as moving one does
+(**SESS-18**).
+*Why:* detection gave the 2026-10-23 night one 25-minute take; no move can separate two songs that
+share a take.
+
 **SESS-19** — Producing a song group is the human import **SESS-10** requires. It MUST create one
 **new** catalog song whose versions are the group's takes that were not discarded, and it MUST NOT
 match the group to a song already in the catalog. Producing the same group again MUST return the same

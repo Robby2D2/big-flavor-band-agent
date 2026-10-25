@@ -12,6 +12,8 @@ decode. The contracts:
   - the catalog keeps its own copy of the audio, and the takes' channels become
     each version's stem set under the band's own track names (SESS-11),
   - re-guessing the songs leaves a produced group and its takes alone,
+  - splitting a take cuts its own audio in two: the first half keeps its song,
+    the second starts a new one, and both wait for their words (SESS-22),
   - a session song's versions list works with no catalog original on disk.
 """
 import datetime
@@ -116,6 +118,45 @@ class FakeDB:
 
     async def get_session_take_group(self, group_id):
         return self.groups.get(group_id)
+
+    async def add_session_take(
+        self, session_id, rec_pass, start_seconds, end_seconds, transcript, mix_path,
+        group_id=None, excluded=False, transcript_pending=False,
+    ):
+        tid = self._id()
+        self.takes[tid] = {
+            "id": tid, "session_id": session_id, "group_id": group_id,
+            "rec_pass": rec_pass, "start_seconds": start_seconds,
+            "end_seconds": end_seconds, "transcript": transcript,
+            "mix_path": mix_path, "excluded": excluded, "song_version_id": None,
+            "transcript_pending": transcript_pending, "stems": [],
+        }
+        return await self.get_session_take(tid)
+
+    async def delete_session_take(self, take_id):
+        del self.takes[take_id]
+
+    async def set_session_take_mix_path(self, take_id, mix_path):
+        self.takes[take_id]["mix_path"] = mix_path
+        return await self.get_session_take(take_id)
+
+    async def set_session_take_transcript(self, take_id, transcript):
+        self.takes[take_id].update(transcript=transcript, transcript_pending=False)
+        return await self.get_session_take(take_id)
+
+    async def add_session_take_stem(self, take_id, track_id, name, display_name, path, peak_db):
+        stem = {
+            "id": self._id(), "take_id": take_id, "track_id": track_id, "name": name,
+            "display_name": display_name, "path": path, "peak_db": peak_db,
+        }
+        self.takes[take_id]["stems"].append(stem)
+        return stem
+
+    async def set_session_take_waveform_peaks(self, take_id, peaks):
+        return None
+
+    async def set_session_take_stem_waveform_peaks(self, stem_id, peaks):
+        return None
 
     async def set_session_take_group_name(self, group_id, name):
         self.groups[group_id]["name"] = name
@@ -604,3 +645,205 @@ async def test_a_session_songs_own_audio_is_its_default_then_its_newest_take(
     take1["is_published"] = True
     default = await produce._resolve_clean_source_path(song_id, None, db)
     assert str(default) == take1["audio_path"]
+
+
+# --- splitting a take that holds two songs (SESS-22) ---------------------------
+
+_RATE = 8000
+
+
+def _write_tone(path, seconds, silent_from=None):
+    """A test tone; silent from ``silent_from`` seconds on, when given."""
+    import numpy as np
+    import soundfile as sf
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    t = np.arange(int(seconds * _RATE)) / _RATE
+    audio = 0.5 * np.sin(2 * np.pi * 220 * t)
+    if silent_from is not None:
+        audio[int(silent_from * _RATE):] = 0.0
+    sf.write(str(path), audio, _RATE, subtype="PCM_24")
+
+
+def _frames(path):
+    import soundfile as sf
+
+    return sf.info(str(path)).frames
+
+
+@pytest.fixture
+def split_env(session_client, monkeypatch):
+    """Takes rendered as real (tiny) audio, with word reading recorded, not run."""
+    client, db, tmp_path = session_client
+    monkeypatch.setattr(
+        session_jobs, "take_dir",
+        lambda session_id, take_id: tmp_path / "sessions" / str(session_id) / str(take_id),
+    )
+    listened = []
+    monkeypatch.setattr(
+        session_jobs.manager, "listen",
+        lambda db, takes: listened.extend(t["id"] for t in takes),
+    )
+
+    def add_take(group_id, session=None):
+        session = session or db.add_session()
+        tid = db.add_take(session, group_id, 10.0, None)
+        folder = session_jobs.take_dir(session, tid)
+        _write_tone(folder / "mix.wav", 10)
+        # The singer stops halfway: the second half holds no vocals.
+        _write_tone(folder / "stems" / "vocals.flac", 10, silent_from=4)
+        _write_tone(folder / "stems" / "bass.flac", 10)
+        db.takes[tid].update(
+            end_seconds=20.0,
+            mix_path=str(folder / "mix.wav"),
+            stems=[
+                {"id": db._id(), "name": "vocals", "display_name": "4 Kev Vox",
+                 "path": str(folder / "stems" / "vocals.flac"), "track_id": 41},
+                {"id": db._id(), "name": "bass", "display_name": "5 Tom Bass",
+                 "path": str(folder / "stems" / "bass.flac"), "track_id": 42},
+            ],
+        )
+        return session, tid
+
+    return client, db, add_take, listened
+
+
+def _split(client, monkeypatch, take, at):
+    return client.post(
+        f"/api/produce/sessions/takes/{take}/split",
+        json={"at_seconds": at},
+        headers=_editor_headers(monkeypatch),
+    )
+
+
+def test_splitting_a_take_cuts_its_audio_into_two_songs(split_env, monkeypatch):
+    client, db, add_take, listened = split_env
+    session = db.add_session()
+    group = db.add_group(session, name="And for a king")
+    _, take = add_take(group, session)
+    old_dir = session_jobs.take_dir(session, take)
+
+    resp = _split(client, monkeypatch, take, 4.0)
+
+    assert resp.status_code == 200
+    first, second = (db.takes[row["id"]] for row in resp.json()["takes"])
+    assert take not in db.takes
+    assert not old_dir.exists()
+    # Timeline bounds follow the cut.
+    assert (first["start_seconds"], first["end_seconds"]) == (10.0, 14.0)
+    assert (second["start_seconds"], second["end_seconds"]) == (14.0, 20.0)
+    # The first half stays in the song (and keeps its name); the second is new.
+    assert first["group_id"] == group
+    assert db.groups[group]["name"] == "And for a king"
+    assert second["group_id"] not in (None, group)
+    assert db.groups[second["group_id"]]["session_id"] == session
+    # Each half's mix is its share of the audio.
+    assert _frames(first["mix_path"]) == 4 * _RATE
+    assert _frames(second["mix_path"]) == 6 * _RATE
+    # A channel silent on one side is dropped there; the rest keep their track.
+    assert [(s["name"], s["track_id"]) for s in first["stems"]] == [
+        ("vocals", 41), ("bass", 42)
+    ]
+    assert [(s["name"], s["track_id"]) for s in second["stems"]] == [("bass", 42)]
+    # The words are read again for both, so neither claims to have none yet.
+    assert all(row["listening"] for row in resp.json()["takes"])
+    assert first["transcript"] is None
+    assert listened == [first["id"], second["id"]]
+
+
+def test_a_lone_take_splits_into_two_lone_takes(split_env, monkeypatch):
+    client, db, add_take, _ = split_env
+    _, take = add_take(None)
+
+    resp = _split(client, monkeypatch, take, 5.0)
+
+    assert resp.status_code == 200
+    assert [row["group_id"] for row in resp.json()["takes"]] == [None, None]
+    assert db.groups == {}
+
+
+def test_a_split_must_leave_audio_on_both_sides(split_env, monkeypatch):
+    client, db, add_take, listened = split_env
+    _, take = add_take(None)
+
+    for at in (0.2, 9.8, 12.0):
+        assert _split(client, monkeypatch, take, at).status_code == 400
+    assert take in db.takes
+    assert listened == []
+
+
+def test_cannot_split_while_scanning(split_env, monkeypatch):
+    client, db, add_take, _ = split_env
+    _, take = add_take(None, db.add_session(status="running"))
+
+    assert _split(client, monkeypatch, take, 5.0).status_code == 409
+    assert take in db.takes
+
+
+def test_a_produced_take_leaves_its_catalog_song_when_split(split_env, monkeypatch):
+    client, db, add_take, _ = split_env
+    session = db.add_session()
+    group = db.add_group(session)
+    _, take = add_take(group, session)
+    _produce(client, monkeypatch, group)
+    version_id = db.takes[take]["song_version_id"]
+    assert version_id in db.versions
+
+    resp = _split(client, monkeypatch, take, 4.0)
+
+    assert resp.status_code == 200
+    assert version_id not in db.versions
+    first, second = resp.json()["takes"]
+    # Both halves are staged, so producing the song again brings them in.
+    assert first["song_version_id"] is None and second["song_version_id"] is None
+    assert db.groups[group]["song_id"] is not None
+
+
+class _FakeExtractor:
+    def __init__(self):
+        self.heard = []
+
+    def transcribe_audio(self, path, **_kwargs):
+        self.heard.append(path)
+        return {"segments": [{"start": 0.0, "end": 2.0, "text": " for a king "}]}
+
+
+@pytest.mark.asyncio
+async def test_a_split_halves_words_come_from_its_singers(split_env, monkeypatch):
+    _, db, add_take, _ = split_env
+    _, take = add_take(None)
+    db.takes[take]["transcript_pending"] = True
+    extractor = _FakeExtractor()
+
+    await session_jobs._read_take_words(db, db.takes[take], extractor)
+
+    assert extractor.heard == [db.takes[take]["stems"][0]["path"]]
+    assert db.takes[take]["transcript"] == "for a king"
+    assert db.takes[take]["transcript_pending"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_half_with_no_mic_has_no_words_without_asking_whisper(split_env, monkeypatch):
+    _, db, add_take, _ = split_env
+    _, take = add_take(None)
+    db.takes[take]["stems"] = db.takes[take]["stems"][1:]
+    db.takes[take]["transcript_pending"] = True
+    extractor = _FakeExtractor()
+
+    await session_jobs._read_take_words(db, db.takes[take], extractor)
+
+    assert extractor.heard == []
+    assert db.takes[take]["transcript"] is None
+    assert db.takes[take]["transcript_pending"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_room_recordings_half_is_read_from_its_mix(split_env, monkeypatch):
+    _, db, add_take, _ = split_env
+    _, take = add_take(None)
+    db.takes[take]["stems"] = []
+    extractor = _FakeExtractor()
+
+    await session_jobs._read_take_words(db, db.takes[take], extractor)
+
+    assert extractor.heard == [db.takes[take]["mix_path"]]
