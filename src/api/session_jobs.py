@@ -591,20 +591,11 @@ async def split_take(
             ((start + at_seconds, end), second_group),
         )
     ]
-    old_stems = take.get("stems") or []
     try:
         parts = await run_in_threadpool(
             session_render.split_rendered_take,
             take["mix_path"],
-            [
-                session_render.RenderedStem(
-                    name=stem["name"],
-                    display_name=stem.get("display_name") or stem["name"],
-                    path=stem["path"],
-                    peak_db=stem.get("peak_db") or 0.0,
-                )
-                for stem in old_stems
-            ],
+            _rendered_part(take).stems,
             at_seconds,
             take_dir(session_id, halves[0]["id"]),
             take_dir(session_id, halves[1]["id"]),
@@ -619,22 +610,8 @@ async def split_take(
             )
         raise
 
-    track_ids = {stem["name"]: stem.get("track_id") for stem in old_stems}
     for half, part in zip(halves, parts):
-        for stem in part.stems:
-            row = await db.add_session_take_stem(
-                take_id=half["id"],
-                track_id=track_ids.get(stem.name),
-                name=stem.name,
-                display_name=stem.display_name,
-                path=stem.path,
-                peak_db=_finite(stem.peak_db),
-            )
-            await _warm_peaks(
-                db.set_session_take_stem_waveform_peaks, row["id"], stem.path
-            )
-        await db.set_session_take_mix_path(half["id"], part.mix_path)
-        await _warm_peaks(db.set_session_take_waveform_peaks, half["id"], part.mix_path)
+        await _store_part(db, half["id"], part)
 
     await db.delete_session_take(take["id"])
     await run_in_threadpool(shutil.rmtree, take_dir(session_id, take["id"]), True)
@@ -647,6 +624,121 @@ async def split_take(
     split = [by_id[half["id"]] for half in halves]
     manager.listen(db, split)
     return split
+
+
+#: Where two takes are joined across audio that was never kept, each side is
+#: faded this long at the seam so the cut does not click.
+JOIN_FADE_SECONDS = 0.02
+
+
+async def join_takes(db: DatabaseManager, first: Dict, second: Dict) -> Dict:
+    """Join two neighbouring takes into one, ``first`` being the earlier (SESS-23).
+
+    The undo for a split, and for detection cutting one song in two. The audio
+    between two detected takes was never rendered and the raw recording is
+    gone, so the takes are put back to back; only a seam over such a gap is
+    faded. The joined take sits in the first take's song, or the second's if
+    the first was on its own, and is kept unless both were discarded. Its words
+    are the two transcripts in order — no Whisper run — unless either half was
+    still being read, in which case the whole take is read again.
+
+    As with a split, the joined take is written before the two are deleted.
+    The caller releases produced takes from the catalog first.
+    """
+    session_id = first["session_id"]
+    pending = bool(first.get("transcript_pending") or second.get("transcript_pending"))
+    transcript = " ".join(
+        text for text in (first.get("transcript"), second.get("transcript")) if text
+    )
+    gap = second["start_seconds"] - first["end_seconds"]
+
+    joined = await db.add_session_take(
+        session_id=session_id,
+        rec_pass=first.get("rec_pass"),
+        start_seconds=first["start_seconds"],
+        end_seconds=first["start_seconds"],
+        transcript=None if pending else (transcript or None),
+        mix_path=None,
+        group_id=first.get("group_id") or second.get("group_id"),
+        excluded=bool(first.get("excluded") and second.get("excluded")),
+        transcript_pending=pending,
+    )
+    output_dir = take_dir(session_id, joined["id"])
+    try:
+        part = await run_in_threadpool(
+            session_render.join_rendered_takes,
+            _rendered_part(first),
+            _rendered_part(second),
+            output_dir,
+            JOIN_FADE_SECONDS if gap > 0.05 else 0.0,
+        )
+    except Exception:
+        await db.set_session_take_group_id(joined["id"], None)
+        await db.delete_session_take(joined["id"])
+        await run_in_threadpool(shutil.rmtree, output_dir, True)
+        raise
+
+    import soundfile as sf
+
+    duration = (await run_in_threadpool(sf.info, part.mix_path)).duration
+    await db.set_session_take_bounds(
+        joined["id"], first["start_seconds"], first["start_seconds"] + duration
+    )
+
+    await _store_part(db, joined["id"], part)
+
+    for take in (first, second):
+        # Out of its group first, so a song the join leaves empty goes too.
+        await db.set_session_take_group_id(take["id"], joined["group_id"])
+        await db.delete_session_take(take["id"])
+        await run_in_threadpool(shutil.rmtree, take_dir(session_id, take["id"]), True)
+    logger.info(
+        "Takes %s and %s joined into take %s (%.1fs gap dropped)",
+        first["id"], second["id"], joined["id"], max(gap, 0.0),
+    )
+
+    row = next(
+        take for take in await db.list_session_takes(session_id)
+        if take["id"] == joined["id"]
+    )
+    if pending:
+        manager.listen(db, [row])
+    return row
+
+
+def _rendered_part(take: Dict) -> session_render.SplitPart:
+    """A stored take's files, in the shape the render helpers take."""
+    return session_render.SplitPart(
+        mix_path=take["mix_path"],
+        stems=[
+            session_render.RenderedStem(
+                name=stem["name"],
+                display_name=stem.get("display_name") or stem["name"],
+                path=stem["path"],
+                peak_db=stem.get("peak_db") or 0.0,
+                track_id=stem.get("track_id"),
+            )
+            for stem in take.get("stems") or []
+        ],
+    )
+
+
+async def _store_part(
+    db: DatabaseManager, take_id: int, part: session_render.SplitPart
+) -> None:
+    """Record the files a split or join wrote for a take, and warm their peaks."""
+    for stem in part.stems:
+        row = await db.add_session_take_stem(
+            take_id=take_id,
+            track_id=stem.track_id,
+            name=stem.name,
+            display_name=stem.display_name,
+            path=stem.path,
+            peak_db=_finite(stem.peak_db),
+        )
+        await _warm_peaks(db.set_session_take_stem_waveform_peaks, row["id"], stem.path)
+    await db.set_session_take_mix_path(take_id, part.mix_path)
+    await _warm_peaks(db.set_session_take_waveform_peaks, take_id, part.mix_path)
 
 
 async def _read_take_words(db: DatabaseManager, take: Dict, extractor) -> None:

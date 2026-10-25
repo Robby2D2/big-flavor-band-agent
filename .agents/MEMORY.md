@@ -20,6 +20,16 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-25 — …and joined back with its neighbour (SESS-23)
+
+Each take card has "← Join with take N" / "Join with take N →" beside Split: only timeline
+neighbours in one recording pass. `POST .../takes/{id}/join` puts both takes' audio back to back
+(`session_render.join_rendered_takes`); the gap between detected takes was never kept, so it is
+dropped (20 ms seam fade) and the confirm says how long it was. Transcripts are simply joined. **Found
+while verifying:** the scan stores two same-named mics ("Drums in stereo" ×2) under one `track_id`
+(it links by name — 26 takes affected, not fixed), so channels are matched on (track id, name,
+order). Verified on real take audio: 7 channels in, 7 out.
+
 ### 2026-10-25 — A session take can be split in two at the playhead (SESS-22)
 
 Freeish Birdish came out as one 25-minute take ("And for a king."), and nothing in review could

@@ -12,7 +12,12 @@ import TakeCard, {
 } from '@/components/produce/session/TakeCard';
 import TakeGroupCard from '@/components/produce/session/TakeGroupCard';
 import { stemColor } from '@/components/produce/audio/stemColors';
-import { TakeGroupRecord, groupName, reviewRows } from '@/lib/takeGroups';
+import {
+  TakeGroupRecord,
+  groupName,
+  reviewRows,
+  takeNeighbours,
+} from '@/lib/takeGroups';
 
 interface SessionTrack {
   id: number;
@@ -166,6 +171,21 @@ export default function SessionPage() {
     await load();
   };
 
+  // Joining undoes a split, or detection cutting one song in two (SESS-23).
+  const joinTakes = async (take: SessionTake, other: SessionTake) => {
+    setActionError(null);
+    const response = await fetch(`/api/produce/sessions/takes/${take.id}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ other_take_id: other.id }),
+    }).catch(() => null);
+    if (!response?.ok) {
+      const data = await response?.json().catch(() => ({}));
+      setActionError(data?.error || 'Could not join the takes');
+    }
+    await load();
+  };
+
   // Producing brings the group into the catalog and hands over to the produce
   // page, where analysis runs and the default version is chosen (SESS-19).
   const produceGroup = async (group: TakeGroupRecord, title: string) => {
@@ -231,6 +251,7 @@ export default function SessionPage() {
     [session]
   );
   const groupCount = rows.filter((row) => row.kind === 'group').length;
+  const neighbours = useMemo(() => takeNeighbours(session?.takes ?? []), [session]);
 
   // Every song the menu can move a take into, named as its card is.
   const songs: SongOption[] = useMemo(
@@ -367,6 +388,8 @@ export default function SessionPage() {
                         onProduce={produceGroup}
                         onMove={moveTake}
                         onSplit={splitTake}
+                        neighbours={neighbours}
+                        onJoin={joinTakes}
                         onToggleExcluded={toggleExcluded}
                       />
                     ) : (
@@ -377,6 +400,8 @@ export default function SessionPage() {
                         songs={songs}
                         onMove={moveTake}
                         onSplit={splitTake}
+                        neighbours={neighbours.get(row.take.id)}
+                        onJoin={joinTakes}
                         onToggleExcluded={toggleExcluded}
                       />
                     )
@@ -390,8 +415,8 @@ export default function SessionPage() {
                   song, and which takes are the same song is guessed from the words
                   they share, not matched against the catalog. Use each take&apos;s
                   song menu to put it with the right song, or make it a new one,
-                  split a take where the band ran two songs together, and
-                  discard anything that isn&apos;t a song. Nothing reaches the
+                  split a take where the band ran two songs together or join one
+                  cut in two, and discard anything that isn&apos;t a song. Nothing reaches the
                   catalog until you produce a song, and every song produced from a
                   session is a new one.
                   {kept.length !== session.takes.length &&

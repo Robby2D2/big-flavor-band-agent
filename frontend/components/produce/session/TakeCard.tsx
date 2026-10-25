@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import WaveformView from '@/components/produce/WaveformView';
 import { Peaks, fetchPeaks } from '@/components/produce/audioEngine';
 import { stemColor } from '@/components/produce/audio/stemColors';
+import { TakeNeighbours } from '@/lib/takeGroups';
 import { takeName } from '@/lib/takeName';
 
 export interface SessionStem {
@@ -51,6 +52,10 @@ interface TakeCardProps {
   onMove: (take: SessionTake, target: MoveTarget) => void;
   /** Cut the take in two at `seconds` into it (SESS-22). */
   onSplit: (take: SessionTake, seconds: number) => Promise<void>;
+  /** The takes right before and after this one, which it can be joined with. */
+  neighbours?: TakeNeighbours<SessionTake>;
+  /** Join two neighbouring takes into one (SESS-23). */
+  onJoin: (take: SessionTake, other: SessionTake) => Promise<void>;
   /**
    * Shown inside a song group, where the guessed name belongs to the group and a
    * take has to be told apart from its siblings some other way (SESS-13).
@@ -85,6 +90,8 @@ export default function TakeCard({
   songs,
   onMove,
   onSplit,
+  neighbours,
+  onJoin,
   inGroup = false,
 }: TakeCardProps) {
   const [open, setOpen] = useState(false);
@@ -92,7 +99,7 @@ export default function TakeCard({
   const [duration, setDuration] = useState(take.duration_seconds);
   const [waveError, setWaveError] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState<number | null>(null);
-  const [splitting, setSplitting] = useState(false);
+  const [working, setWorking] = useState<'split' | 'join' | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -147,13 +154,45 @@ export default function TakeCard({
         ? `Split this take at ${at}? It is already a version in the catalog — splitting removes that version from the song, and producing again brings both halves in.`
         : `Split this take at ${at} into two takes? This can't be undone.`;
     if (!window.confirm(question)) return;
-    setSplitting(true);
+    setWorking('split');
     try {
       await onSplit(take, playhead);
     } finally {
-      setSplitting(false);
+      setWorking(null);
     }
   };
+
+  // Joining is a split's undo, so it names what a split cannot give back: the
+  // audio between two detected takes was never kept (SESS-23).
+  const join = async (other: SessionTake, otherIndex: number) => {
+    audioRef.current?.pause();
+    const otherFirst = other.start_seconds < take.start_seconds;
+    const [earlier, later] = otherFirst ? [other, take] : [take, other];
+    const [first, second] = otherFirst ? [otherIndex, index] : [index, otherIndex];
+    const gap = later.start_seconds - earlier.end_seconds;
+    const question = [
+      `Join take ${first} and take ${second} into one take?`,
+      gap >= 0.5
+        ? `The ${clock(gap)} between them wasn't kept, so they will play back to back.`
+        : '',
+      take.song_version_id !== null || other.song_version_id !== null
+        ? 'A take already in the catalog leaves its song — produce again to bring the joined take in.'
+        : '',
+      'You can split it again afterwards.',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    if (!window.confirm(question)) return;
+    setWorking('join');
+    try {
+      await onJoin(take, other);
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const before = neighbours?.before ?? null;
+  const after = neighbours?.after ?? null;
 
   return (
     <li
@@ -280,24 +319,50 @@ export default function TakeCard({
                 className="mt-3 w-full"
               />
               <div className="mt-3 flex flex-wrap items-center gap-3">
+                {before && (
+                  <button
+                    type="button"
+                    onClick={() => join(before.take, before.position)}
+                    disabled={working !== null}
+                    title="Put this take on the end of the one before it"
+                    className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised disabled:opacity-50"
+                  >
+                    ← Join with take {before.position}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={split}
-                  disabled={!canSplit || splitting}
+                  disabled={!canSplit || working !== null}
                   className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised disabled:opacity-50"
                 >
-                  {splitting
+                  {working === 'split'
                     ? 'Splitting…'
                     : canSplit && playhead !== null
                       ? `Split here (${clock(playhead)})`
                       : 'Split here'}
                 </button>
-                <span className="text-xs text-text/40">
-                  Two songs in one take? Click the waveform where the second
-                  starts, then split — the part after it becomes{' '}
-                  {take.group_id !== null ? 'a new song' : 'a take of its own'}.
-                </span>
+                {after && (
+                  <button
+                    type="button"
+                    onClick={() => join(after.take, after.position)}
+                    disabled={working !== null}
+                    title="Put the take after this one on the end of it"
+                    className="rounded border border-raised px-2 py-1 text-xs hover:bg-raised disabled:opacity-50"
+                  >
+                    Join with take {after.position} →
+                  </button>
+                )}
+                {working === 'join' && (
+                  <span className="text-xs text-text/50">Joining…</span>
+                )}
               </div>
+              <p className="mt-2 text-xs text-text/40">
+                Two songs in one take? Click the waveform where the second starts,
+                then split — the part after it becomes{' '}
+                {take.group_id !== null ? 'a new song' : 'a take of its own'}. One
+                song cut in two? Join it with the take before or after.
+              </p>
             </>
           ) : (
             <p className="text-sm text-text/50">No audio was rendered for this take.</p>

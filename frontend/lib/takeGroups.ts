@@ -101,6 +101,37 @@ export function reviewRows<T extends GroupableTake>(
   return rows;
 }
 
+/** The takes a take can be joined with: right before and after it (SESS-23). */
+export interface TakeNeighbours<T extends GroupableTake> {
+  before: PositionedTake<T> | null;
+  after: PositionedTake<T> | null;
+}
+
+/**
+ * Each take's timeline neighbours within its own recording pass.
+ *
+ * A pass is its own timeline — a room-recorded night has one per file — so the
+ * last take of one pass and the first of the next are not neighbours. Takes
+ * arrive in timeline order, and positions match `reviewRows`.
+ */
+export function takeNeighbours<T extends GroupableTake & { rec_pass: number | null }>(
+  takes: T[]
+): Map<number, TakeNeighbours<T>> {
+  const result = new Map<number, TakeNeighbours<T>>();
+  const lastInPass = new Map<number | null, PositionedTake<T>>();
+
+  takes.forEach((take, index) => {
+    const current = { take, position: index + 1 };
+    const before = lastInPass.get(take.rec_pass) ?? null;
+    result.set(take.id, { before, after: null });
+    const previous = before ? result.get(before.take.id) : undefined;
+    if (previous) previous.after = current;
+    lastInPass.set(take.rec_pass, current);
+  });
+
+  return result;
+}
+
 /** Every take the rows hold, however they are arranged. */
 export function rowTakes<T extends GroupableTake>(rows: ReviewRow<T>[]): T[] {
   return rows.flatMap((row) =>

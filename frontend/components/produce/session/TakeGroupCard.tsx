@@ -10,6 +10,7 @@ import TakeCard, {
 import {
   PositionedTake,
   TakeGroupRecord,
+  TakeNeighbours,
   groupName,
 } from '@/lib/takeGroups';
 
@@ -23,6 +24,8 @@ interface TakeGroupCardProps {
   onProduce: (group: TakeGroupRecord, title: string) => void;
   onMove: (take: SessionTake, target: MoveTarget) => void;
   onSplit: (take: SessionTake, seconds: number) => Promise<void>;
+  neighbours: Map<number, TakeNeighbours<SessionTake>>;
+  onJoin: (take: SessionTake, other: SessionTake) => Promise<void>;
   onToggleExcluded: (take: SessionTake) => void;
 }
 
@@ -44,6 +47,8 @@ export default function TakeGroupCard({
   onProduce,
   onMove,
   onSplit,
+  neighbours,
+  onJoin,
   onToggleExcluded,
 }: TakeGroupCardProps) {
   const guessed = groupName(group, takes);
@@ -148,6 +153,8 @@ export default function TakeGroupCard({
             songs={songs}
             onMove={onMove}
             onSplit={onSplit}
+            neighbours={neighbours.get(member.take.id)}
+            onJoin={onJoin}
             onToggleExcluded={onToggleExcluded}
           />
         ))}

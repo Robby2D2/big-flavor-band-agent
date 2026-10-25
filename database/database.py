@@ -1249,10 +1249,23 @@ class DatabaseManager:
         return dict(row)
 
     async def delete_session_take(self, take_id: int) -> None:
-        """Remove a take and its stems. Only a split does this, once both halves
-        hold its audio — review itself never deletes a take (SESS-09)."""
+        """Remove a take and its stems. Only a split or a join does this, once
+        the takes replacing it hold its audio — review itself never deletes a
+        take (SESS-09)."""
         async with self.pool.acquire() as conn:
             await conn.execute("DELETE FROM session_takes WHERE id = $1", take_id)
+
+    async def set_session_take_bounds(
+        self, take_id: int, start_seconds: float, end_seconds: float
+    ) -> Optional[Dict[str, Any]]:
+        """Set where a take sits on the session timeline, once its audio is known."""
+        query = """
+            UPDATE session_takes SET start_seconds = $2, end_seconds = $3
+            WHERE id = $1 RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, take_id, start_seconds, end_seconds)
+        return dict(row) if row else None
 
     async def set_session_take_transcript(
         self, take_id: int, transcript: Optional[str]

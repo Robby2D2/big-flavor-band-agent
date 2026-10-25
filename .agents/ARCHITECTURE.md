@@ -912,6 +912,19 @@ with `at_seconds` (the playhead on the take card's waveform) cuts it.
   `listen` for any pending take not already queued, so a restart mid-read resumes. The page shows
   "Listening for the words…" rather than *Instrumental* and polls until the flag clears.
 
+**Joining is the undo (SESS-23).** `POST .../takes/{id}/join` with `other_take_id` — only the take
+right before or after in the same `rec_pass` (`lib/takeGroups.takeNeighbours` on the page, the same
+check in the route), so a joined take plays the night in order. `session_render.join_rendered_takes`
+writes both takes back to back. **The gap between two detected takes is not restored** — it was
+never rendered (measured: every neighbouring pair has 2 s – 79 min between them) — so the timeline
+`end_seconds` becomes start + audio length, a 20 ms fade each side keeps a seam over a dropped gap
+from clicking (a split's own halves join seamlessly), and the confirm says how much is missing.
+Channels are matched on (track id, name, order among stems sharing both): **a scan links a stem
+to its track by name**, so two mics both called "Drums in stereo" were stored under one track id
+(26 takes); matching on either alone merged them and lost a channel. A channel only one side has is
+padded with silence. Words are the two transcripts joined — no Whisper — unless a side was still
+pending. Joined take: the earlier take's group, else the later's; discarded only if both were.
+
 ### `AnthropicProvider` cannot make a call (found 2026-09-25, not yet fixed)
 
 `anthropic` 1.7.0 removed `temperature` from `messages.create`, and

@@ -15,6 +15,7 @@ import {
   groupName,
   reviewRows,
   rowTakes,
+  takeNeighbours,
 } from '@/lib/takeGroups';
 
 const SO_TIRED =
@@ -143,5 +144,34 @@ describe('groupName', () => {
 
     expect(name.chosen).toBe(false);
     expect(name.text).toBe('so tired of waiting for the');
+  });
+});
+
+describe('takeNeighbours', () => {
+  const passTake = (id: number, start_seconds: number, rec_pass: number | null) => ({
+    ...take(id, null, start_seconds),
+    rec_pass,
+  });
+
+  it('pairs each take with the ones right before and after it', () => {
+    const takes = [passTake(1, 0, 1), passTake(2, 300, 1), passTake(3, 600, 1)];
+    const neighbours = takeNeighbours(takes);
+
+    expect(neighbours.get(1)?.before).toBeNull();
+    expect(neighbours.get(1)?.after?.take.id).toBe(2);
+    expect(neighbours.get(2)?.before).toEqual({ take: takes[0], position: 1 });
+    expect(neighbours.get(2)?.after).toEqual({ take: takes[2], position: 3 });
+    expect(neighbours.get(3)?.after).toBeNull();
+  });
+
+  it('never pairs takes across recording passes', () => {
+    // Two room recordings of one night: each file is its own timeline.
+    const takes = [passTake(1, 0, 1), passTake(2, 10, 2), passTake(3, 400, 1)];
+    const neighbours = takeNeighbours(takes);
+
+    expect(neighbours.get(1)?.after?.take.id).toBe(3);
+    expect(neighbours.get(3)?.before).toEqual({ take: takes[0], position: 1 });
+    expect(neighbours.get(2)?.before).toBeNull();
+    expect(neighbours.get(2)?.after).toBeNull();
   });
 });

@@ -109,6 +109,16 @@ none. Splitting a take already in the catalog removes its version first, as movi
 *Why:* detection gave the 2026-10-23 night one 25-minute take; no move can separate two songs that
 share a take.
 
+**SESS-23** — A producer MUST be able to join a take with the take right before or after it in the
+same recording, into one take — the undo for a split, and for detection cutting one song in two. The
+joined take MUST hold both takes' audio, in order, with every channel either had. Audio that lay
+between two detected takes was never kept, so the takes play back to back, and the product MUST say
+so before joining rather than imply the gap comes back. The joined take stays in the earlier take's
+song, or the later one's if the earlier was on its own; its words are both takes' words in order.
+Joining a take already in the catalog removes its version first, as moving one does (**SESS-18**).
+*Why:* the owner's request alongside **SESS-22** — a split made in the wrong place, or a song
+detection split at a pause, must be fixable from review.
+
 **SESS-19** — Producing a song group is the human import **SESS-10** requires. It MUST create one
 **new** catalog song whose versions are the group's takes that were not discarded, and it MUST NOT
 match the group to a song already in the catalog. Producing the same group again MUST return the same

@@ -24,7 +24,8 @@ catalog is ``POST .../groups/{id}/produce``, which a producer clicks to turn a
 group into a song (``session_import``). Moving a take that was already produced
 takes its version back out of that song, so it can be produced into its new one.
 A take holding two songs the band ran together is cut in two
-(``POST .../takes/{id}/split``) from its own rendered audio.
+(``POST .../takes/{id}/split``) from its own rendered audio, and one song cut in
+two is joined back (``POST .../takes/{id}/join``).
 """
 import logging
 import re
@@ -43,6 +44,7 @@ from src.api.dependencies import get_db
 from src.api import session_import
 from src.api.session_jobs import (
     group_session_takes,
+    join_takes as join_session_takes,
     manager as session_manager,
     session_dir,
     split_take as split_session_take,
@@ -90,6 +92,12 @@ class TakeSplit(BaseModel):
     """Where to cut a take, in seconds from its own start."""
 
     at_seconds: float
+
+
+class TakeJoin(BaseModel):
+    """The neighbouring take to join this one with."""
+
+    other_take_id: int
 
 
 class GroupCreate(BaseModel):
@@ -390,6 +398,59 @@ async def split_take(
     )
     halves = await split_session_take(db, with_stems, body.at_seconds)
     return {"takes": [_take_payload(row) for row in halves]}
+
+
+@router.post("/api/produce/sessions/takes/{take_id}/join")
+async def join_take(
+    take_id: int,
+    body: TakeJoin,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+) -> Dict[str, Any]:
+    """Join a take to the one right before or after it into one take (SESS-23).
+
+    The undo for a split, and for detection cutting one song in two. Only
+    timeline neighbours in one recording pass, so the joined take plays the
+    night in order. Produced takes leave their catalog song first (SESS-18).
+    """
+    take = await db.get_session_take(take_id)
+    other = await db.get_session_take(body.other_take_id)
+    if take is None or other is None:
+        raise HTTPException(status_code=404, detail="Take not found")
+    if take_id == body.other_take_id:
+        raise HTTPException(status_code=400, detail="A take cannot be joined to itself")
+    session = await db.get_recording_session(take["session_id"])
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session_manager.is_running(session["id"]) or session["status"] != "complete":
+        raise HTTPException(status_code=409, detail="This session is still scanning")
+
+    not_neighbours = HTTPException(
+        status_code=400,
+        detail="Only a take right before or after this one can be joined to it",
+    )
+    if other["session_id"] != take["session_id"]:
+        raise not_neighbours
+    takes = await db.list_session_takes(session["id"])
+    first, second = sorted(
+        (row for row in takes if row["id"] in (take_id, body.other_take_id)),
+        key=lambda row: row["start_seconds"],
+    )
+    same_pass = [row for row in takes if row.get("rec_pass") == first.get("rec_pass")]
+    if second not in same_pass or any(
+        first["start_seconds"] < row["start_seconds"] < second["start_seconds"]
+        for row in same_pass
+    ):
+        raise not_neighbours
+    for row in (first, second):
+        if not row.get("mix_path") or not Path(row["mix_path"]).exists():
+            raise HTTPException(status_code=409, detail="A take has no audio to join")
+
+    for row in (first, second):
+        await session_import.release_take(db, row)
+        row["song_version_id"] = None
+    joined = await join_session_takes(db, first, second)
+    return {"take": _take_payload(joined)}
 
 
 @router.post("/api/produce/sessions/{session_id}/groups")

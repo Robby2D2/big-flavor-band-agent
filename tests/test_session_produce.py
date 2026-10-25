@@ -14,6 +14,7 @@ decode. The contracts:
   - re-guessing the songs leaves a produced group and its takes alone,
   - splitting a take cuts its own audio in two: the first half keeps its song,
     the second starts a new one, and both wait for their words (SESS-22),
+  - joining two neighbouring takes puts their audio back to back (SESS-23),
   - a session song's versions list works with no catalog original on disk.
 """
 import datetime
@@ -138,6 +139,10 @@ class FakeDB:
 
     async def set_session_take_mix_path(self, take_id, mix_path):
         self.takes[take_id]["mix_path"] = mix_path
+        return await self.get_session_take(take_id)
+
+    async def set_session_take_bounds(self, take_id, start_seconds, end_seconds):
+        self.takes[take_id].update(start_seconds=start_seconds, end_seconds=end_seconds)
         return await self.get_session_take(take_id)
 
     async def set_session_take_transcript(self, take_id, transcript):
@@ -847,3 +852,178 @@ async def test_a_room_recordings_half_is_read_from_its_mix(split_env, monkeypatc
     await session_jobs._read_take_words(db, db.takes[take], extractor)
 
     assert extractor.heard == [db.takes[take]["mix_path"]]
+
+
+# --- joining a song cut in two (SESS-23) ---------------------------------------
+
+_TRACKS = {
+    "vocals": ("4 Kev Vox", 41),
+    "bass": ("5 Tom Bass", 42),
+    # Two drum mics the band gave one name, which a scan stores under one
+    # track id (it links a stem to its track by name).
+    "drums": ("Drums in stereo", 68),
+    "drums-2": ("Drums in stereo", 68),
+}
+
+
+def _add_rendered_take(
+    db, session, group, start, seconds, channels=("vocals", "bass"),
+    transcript=None, rec_pass=1, excluded=False,
+):
+    """A detected take whose mix and channels are real (tiny) audio files."""
+    tid = db.add_take(session, group, start, None, excluded=excluded)
+    folder = session_jobs.take_dir(session, tid)
+    _write_tone(folder / "mix.wav", seconds)
+    stems = []
+    for name in channels:
+        display, track_id = _TRACKS[name]
+        _write_tone(folder / "stems" / f"{name}.flac", seconds)
+        stems.append({
+            "id": db._id(), "name": name, "display_name": display,
+            "path": str(folder / "stems" / f"{name}.flac"), "track_id": track_id,
+        })
+    db.takes[tid].update(
+        end_seconds=start + seconds, mix_path=str(folder / "mix.wav"),
+        transcript=transcript, rec_pass=rec_pass, stems=stems,
+    )
+    return tid
+
+
+def _join(client, monkeypatch, take, other):
+    return client.post(
+        f"/api/produce/sessions/takes/{take}/join",
+        json={"other_take_id": other},
+        headers=_editor_headers(monkeypatch),
+    )
+
+
+def test_joining_puts_two_takes_back_to_back(split_env, monkeypatch):
+    client, db, _, listened = split_env
+    session = db.add_session()
+    song = db.add_group(session, name="And for a king")
+    stray = db.add_group(session)
+    first = _add_rendered_take(db, session, song, 100.0, 4, transcript="and for a king")
+    # Detection dropped 6s of chatter between them; that audio no longer exists.
+    second = _add_rendered_take(
+        db, session, stray, 110.0, 3, channels=("bass",), transcript="the king is dead"
+    )
+    old_dirs = [session_jobs.take_dir(session, t) for t in (first, second)]
+
+    # Joined from the later take's card: order still follows the timeline.
+    resp = _join(client, monkeypatch, second, first)
+
+    assert resp.status_code == 200
+    joined = db.takes[resp.json()["take"]["id"]]
+    assert first not in db.takes and second not in db.takes
+    assert not any(d.exists() for d in old_dirs)
+    assert joined["group_id"] == song
+    assert stray not in db.groups
+    # Back to back: the timeline runs as long as the audio, not across the gap.
+    assert (joined["start_seconds"], joined["end_seconds"]) == (100.0, 107.0)
+    assert _frames(joined["mix_path"]) == 7 * _RATE
+    # The words join in order, with no Whisper run.
+    assert joined["transcript"] == "and for a king the king is dead"
+    assert resp.json()["take"]["listening"] is False
+    assert listened == []
+    # A channel only one side had is padded with silence to stay aligned.
+    assert [(s["name"], s["track_id"]) for s in joined["stems"]] == [
+        ("vocals", 41), ("bass", 42)
+    ]
+    assert all(_frames(s["path"]) == 7 * _RATE for s in joined["stems"])
+
+
+def test_the_seam_over_a_dropped_gap_is_faded(split_env, monkeypatch):
+    import soundfile as sf
+
+    client, db, _, _ = split_env
+    session = db.add_session()
+    first = _add_rendered_take(db, session, None, 0.0, 2)
+    second = _add_rendered_take(db, session, None, 5.0, 2)
+
+    joined = db.takes[_join(client, monkeypatch, first, second).json()["take"]["id"]]
+
+    audio, _ = sf.read(joined["mix_path"])
+    seam = 2 * _RATE
+    # Unfaded, a 220 Hz tone reaches ~0.5 within 8 samples of the cut.
+    assert abs(audio[seam - 8:seam + 8]).max() < 0.05
+    assert abs(audio[seam - _RATE // 2:seam - _RATE // 4]).max() > 0.4
+
+
+def test_joining_undoes_a_split(split_env, monkeypatch):
+    client, db, add_take, listened = split_env
+    session = db.add_session()
+    song = db.add_group(session)
+    _, take = add_take(song, session)
+    halves = [row["id"] for row in _split(client, monkeypatch, take, 4.0).json()["takes"]]
+    new_song = db.takes[halves[1]]["group_id"]
+    listened.clear()
+
+    resp = _join(client, monkeypatch, *halves)
+
+    assert resp.status_code == 200
+    joined = db.takes[resp.json()["take"]["id"]]
+    assert (joined["start_seconds"], joined["end_seconds"]) == (10.0, 20.0)
+    assert _frames(joined["mix_path"]) == 10 * _RATE
+    assert joined["group_id"] == song
+    assert new_song not in db.groups
+    # The halves' words were still being read, so the whole take is read again.
+    assert joined["transcript_pending"] is True
+    assert listened == [joined["id"]]
+
+
+def test_only_neighbours_in_one_pass_can_be_joined(split_env, monkeypatch):
+    client, db, _, _ = split_env
+    session = db.add_session()
+    first = _add_rendered_take(db, session, None, 0.0, 2)
+    middle = _add_rendered_take(db, session, None, 10.0, 2)
+    last = _add_rendered_take(db, session, None, 20.0, 2)
+    other_pass = _add_rendered_take(db, session, None, 5.0, 2, rec_pass=2)
+    elsewhere = _add_rendered_take(db, db.add_session(), None, 3.0, 2)
+
+    for take, other in ((first, last), (first, other_pass), (first, elsewhere), (first, first)):
+        assert _join(client, monkeypatch, take, other).status_code == 400
+    assert all(t in db.takes for t in (first, middle, last, other_pass, elsewhere))
+
+
+def test_a_lone_take_joins_its_neighbours_song(split_env, monkeypatch):
+    client, db, _, _ = split_env
+    session = db.add_session()
+    song = db.add_group(session)
+    count_in = _add_rendered_take(db, session, None, 0.0, 2, excluded=True)
+    take = _add_rendered_take(db, session, song, 4.0, 3)
+
+    joined = _join(client, monkeypatch, count_in, take).json()["take"]
+
+    assert joined["group_id"] == song
+    # Kept, since one of the two was.
+    assert joined["excluded"] is False
+
+
+def test_produced_takes_leave_their_song_when_joined(split_env, monkeypatch):
+    client, db, _, _ = split_env
+    session = db.add_session()
+    song = db.add_group(session)
+    first = _add_rendered_take(db, session, song, 0.0, 2)
+    second = _add_rendered_take(db, session, song, 4.0, 2)
+    _produce(client, monkeypatch, song)
+    versions = [db.takes[t]["song_version_id"] for t in (first, second)]
+
+    joined = _join(client, monkeypatch, first, second).json()["take"]
+
+    assert not any(v in db.versions for v in versions)
+    assert joined["song_version_id"] is None
+    assert joined["group_id"] == song
+
+
+def test_two_mics_with_one_name_stay_two_channels_when_joined(split_env, monkeypatch):
+    """A real session names two drum mics "Drums in stereo", stored under one
+    track id; matching channels by either merged them and lost one."""
+    client, db, _, _ = split_env
+    session = db.add_session()
+    first = _add_rendered_take(db, session, None, 0.0, 2, channels=("drums", "drums-2"))
+    second = _add_rendered_take(db, session, None, 5.0, 2, channels=("drums", "drums-2"))
+
+    joined = db.takes[_join(client, monkeypatch, first, second).json()["take"]["id"]]
+
+    assert [s["name"] for s in joined["stems"]] == ["drums", "drums-2"]
+    assert all(_frames(s["path"]) == 4 * _RATE for s in joined["stems"])

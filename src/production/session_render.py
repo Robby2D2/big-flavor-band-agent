@@ -40,6 +40,8 @@ class RenderedStem:
     display_name: str
     path: str
     peak_db: float
+    #: The session channel it came from, once stored.
+    track_id: Optional[int] = None
 
 
 @dataclass
@@ -52,7 +54,8 @@ class RenderedTake:
 
 @dataclass
 class SplitPart:
-    """One side of a take cut in two: its mix and the channels that kept audio."""
+    """A take's own files — one side of a split, or one half of a join: its mix
+    and the channels that hold audio."""
 
     mix_path: str
     stems: List[RenderedStem]
@@ -154,10 +157,123 @@ def split_rendered_take(
                     display_name=stem.display_name,
                     path=str(path),
                     peak_db=peak_db,
+                    track_id=stem.track_id,
                 )
             )
         parts.append(SplitPart(mix_path=str(part_mix), stems=part_stems))
     return parts[0], parts[1]
+
+
+def join_rendered_takes(
+    first: SplitPart,
+    second: SplitPart,
+    output_dir: str | Path,
+    fade_seconds: float = 0.0,
+) -> SplitPart:
+    """Put two rendered takes back to back as one, mix and channels alike.
+
+    A channel is matched across the two by its session track and name, and its
+    order among stems sharing both: a scan links a stem to its track by name,
+    so two mics the band named alike ("Drums in stereo" twice) were stored with
+    one track id. A channel only one side has is padded with silence over the
+    other, so every channel stays aligned with the mix.
+    ``fade_seconds`` fades each side in and out at the seam — where audio
+    between them was never kept, the cut would otherwise click.
+    """
+    import soundfile as sf
+
+    output = Path(output_dir)
+    (output / "stems").mkdir(parents=True, exist_ok=True)
+    sides = (first, second)
+    infos = [
+        [sf.info(path) for path in [side.mix_path] + [s.path for s in side.stems]]
+        for side in sides
+    ]
+    rates = {info.samplerate for side in infos for info in side}
+    if len(rates) != 1:
+        raise ValueError(f"Takes are at different sample rates: {sorted(rates)}")
+    rate = rates.pop()
+    # A side lasts as long as its longest file: a mix is cut to its shortest
+    # channel, and no channel's tail may be lost.
+    lengths = [max(info.frames for info in side) for side in infos]
+    fade = int(fade_seconds * rate)
+
+    mix_path = output / "mix.wav"
+    _join_files(
+        [first.mix_path, second.mix_path], lengths, mix_path, infos[0][0], fade
+    )
+
+    channels: Dict[tuple, List[Optional[RenderedStem]]] = {}
+    for index, side in enumerate(sides):
+        seen: Dict[tuple, int] = {}
+        for stem in side.stems:
+            identity = (stem.track_id, stem.display_name)
+            seen[identity] = seen.get(identity, 0) + 1
+            channels.setdefault((*identity, seen[identity]), [None, None])[index] = stem
+
+    used: Dict[str, int] = {}
+    stems = []
+    for pair in channels.values():
+        template = next(stem for stem in pair if stem is not None)
+        name = _unique_name(template.name.split("-")[0], used)
+        path = output / "stems" / f"{name}{Path(template.path).suffix}"
+        _join_files(
+            [stem.path if stem else None for stem in pair],
+            lengths, path, sf.info(template.path), fade,
+        )
+        stems.append(
+            RenderedStem(
+                name=name, display_name=template.display_name, path=str(path),
+                peak_db=_peak_db(path), track_id=template.track_id,
+            )
+        )
+    return SplitPart(mix_path=str(mix_path), stems=stems)
+
+
+def _join_files(
+    sources: Sequence[Optional[str | Path]],
+    lengths: Sequence[int],
+    target: Path,
+    like,
+    fade: int,
+) -> None:
+    """Write ``sources`` back to back, each padded or cut to its length.
+
+    A missing source is silence. Written in ``like``'s format and bit depth.
+    """
+    import soundfile as sf
+
+    with sf.SoundFile(
+        str(target), "w", samplerate=like.samplerate, channels=like.channels,
+        format=like.format, subtype=like.subtype,
+    ) as dst:
+        for index, (source, frames) in enumerate(zip(sources, lengths)):
+            src = sf.SoundFile(str(source)) if source else None
+            try:
+                done = 0
+                while done < frames:
+                    count = min(1 << 20, frames - done)
+                    block = np.zeros((count, dst.channels), dtype="float32")
+                    if src is not None:
+                        read = src.read(count, dtype="float32", always_2d=True)
+                        if read.shape[1] != dst.channels:
+                            read = np.repeat(
+                                read.mean(axis=1, keepdims=True), dst.channels, axis=1
+                            )
+                        block[: len(read)] = read
+                    if fade:
+                        position = np.arange(done, done + count)
+                        gain = np.ones(count, dtype="float32")
+                        if index > 0:
+                            gain = np.minimum(gain, position / fade)
+                        if index < len(sources) - 1:
+                            gain = np.minimum(gain, (frames - position) / fade)
+                        block *= np.clip(gain, 0.0, 1.0)[:, None]
+                    dst.write(block)
+                    done += count
+            finally:
+                if src is not None:
+                    src.close()
 
 
 def slice_audio_file(
