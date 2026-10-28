@@ -5,7 +5,13 @@ Useful for debugging and verifying selectors work correctly
 
 import logging
 import json
-from web_scraper import BigFlavorScraper
+import sys
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from scraper.web_scraper import BigFlavorScraper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def test_main_page():
+def scrape_main_page():
     """Test scraping the main song list"""
     logger.info("Testing main page scraping...")
     
@@ -36,7 +42,7 @@ def test_main_page():
             return []
 
 
-def test_song_details(song_id: str, edit_url: str):
+def scrape_song_details(song_id: str, edit_url: str):
     """Test scraping a single song's details"""
     logger.info(f"Testing song details for ID: {song_id}")
     
@@ -57,7 +63,7 @@ def interactive_test():
     print("=" * 60)
     
     # First, get the song list
-    songs = test_main_page()
+    songs = scrape_main_page()
     
     if not songs:
         print("\nNo songs found on main page.")
@@ -78,7 +84,7 @@ def interactive_test():
     
     # Get details for first song
     input("\nPress ENTER to navigate to edit page and extract details...")
-    details = test_song_details(first_song['id'], first_song['edit_url'])
+    details = scrape_song_details(first_song['id'], first_song['edit_url'])
     
     # Show summary
     print("\n" + "=" * 60)

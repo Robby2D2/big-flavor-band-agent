@@ -4,7 +4,13 @@ Test collecting song details one at a time to avoid virtualization issues
 
 import logging
 import json
-from web_scraper import BigFlavorScraper
+import sys
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from scraper.web_scraper import BigFlavorScraper
 
 logging.basicConfig(
     level=logging.INFO,

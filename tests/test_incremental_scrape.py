@@ -4,8 +4,14 @@ Test the incremental scraping with database skip logic
 
 import logging
 import asyncio
-from web_scraper import BigFlavorScraper
-from database import DatabaseManager
+import sys
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from scraper.web_scraper import BigFlavorScraper
+from database.database import DatabaseManager
 
 logging.basicConfig(
     level=logging.INFO,

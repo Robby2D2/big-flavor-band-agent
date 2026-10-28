@@ -36,11 +36,12 @@ checks that actually exist and pass them:
 | Frontend build | `cd frontend && npm run build` | The app compiles for production (also typechecks) |
 | Frontend lint | `cd frontend && npm run lint` | `eslint .` over the flat config; must stay at zero problems |
 
-> **Backend suite caveat.** `python -m pytest tests/ -q` fails to *collect* four ad-hoc scraper scripts
-> (`test_scraper.py`, `test_click_details.py`, `test_details_one_by_one.py`, `test_incremental_scrape.py`
-> — they import a `web_scraper` module that no longer exists), and ~13 further demo scripts fail at run
-> time without a live Postgres/Ollama. Neither is a regression signal. Run with those four `--ignore`d
-> and read past the connection-refused failures; the assertion-based tests are the ones that matter.
+> **Backend suite caveat.** `python -m pytest tests/ -q` collects cleanly, but ~13 demo scripts fail
+> at run time without a live Postgres/Ollama (or against APIs that have since moved on). That is not a
+> regression signal — read past them; the assertion-based tests are the ones that matter. The scraper
+> runners in `tests/` (`test_scraper.py`, `test_click_details.py`, …) drive a real browser against the
+> live site, so they keep no `test_*` functions for pytest to collect; run them by hand with
+> `python tests/<script>.py`.
 
 ### Writing new frontend tests (vitest)
 
