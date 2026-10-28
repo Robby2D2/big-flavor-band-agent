@@ -67,10 +67,13 @@ def render_take(
     sources: Dict[str, Path],
     output_dir: str | Path,
     sample_rate: int = 48000,
+    track_ids: Optional[Dict[str, int]] = None,
 ) -> RenderedTake:
     """Slice one take out of every track and build its mix.
 
-    ``sources`` maps a track's ``source_name`` to the file holding its audio.
+    ``sources`` maps a track's ``source_name`` to the file holding its audio,
+    and ``track_ids`` to its stored ``session_tracks`` id, which each stem
+    carries so it is linked to its own channel rather than one sharing its name.
     Tracks with no audio in this take's range are dropped, so a song the keys
     player sat out does not carry an empty keys stem.
     """
@@ -111,6 +114,7 @@ def render_take(
                 display_name=track.name,
                 path=str(path),
                 peak_db=peak_db,
+                track_id=(track_ids or {}).get(track.source_name),
             )
         )
 
@@ -173,9 +177,9 @@ def join_rendered_takes(
     """Put two rendered takes back to back as one, mix and channels alike.
 
     A channel is matched across the two by its session track and name, and its
-    order among stems sharing both: a scan links a stem to its track by name,
-    so two mics the band named alike ("Drums in stereo" twice) were stored with
-    one track id. A channel only one side has is padded with silence over the
+    order among stems sharing both: scans before 2026-10-27 linked a stem to
+    its track by name, so some takes still hold two mics the band named alike
+    ("Drums in stereo" twice) under one track id. A channel only one side has is padded with silence over the
     other, so every channel stays aligned with the mix.
     ``fade_seconds`` fades each side in and out at the seam — where audio
     between them was never kept, the cut would otherwise click.

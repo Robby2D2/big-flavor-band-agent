@@ -76,6 +76,9 @@ class _PassScan:
     tracks: List[session_detect.Track]
     activity: session_detect.Activity
     regions: List[session_detect.Take]
+    #: Each track's ``session_tracks`` id, by its source file. Not by name: the
+    #: band can give two mics one name ("Drums in stereo" twice).
+    track_ids: Dict[str, int]
 
 
 class SessionJobManager:
@@ -398,6 +401,7 @@ async def _scan_pass(
 ) -> _PassScan:
     """Measure every present track of one pass and find its candidate regions."""
     tracks: List[session_detect.Track] = []
+    track_ids: Dict[str, int] = {}
     for item in sorted(recording_pass.items, key=lambda i: i.position):
         path = media.get(item.source_name)
         if path is None:
@@ -415,7 +419,7 @@ async def _scan_pass(
             ),
         )
         tracks.append(track)
-        await db.add_session_track(
+        row = await db.add_session_track(
             session_id=session_id,
             name=track.name,
             source_name=track.source_name,
@@ -425,6 +429,7 @@ async def _scan_pass(
             peak_db=_finite(track.peak_db),
             is_dead=track.is_dead,
         )
+        track_ids[track.source_name] = row["id"]
 
     activity = session_detect.build_activity(tracks, fps=wavpack_io.ENVELOPE_FPS)
     return _PassScan(
@@ -432,6 +437,7 @@ async def _scan_pass(
         tracks=[t for t in tracks if not t.is_dead],
         activity=activity,
         regions=session_detect.detect_takes(activity),
+        track_ids=track_ids,
     )
 
 
@@ -520,14 +526,9 @@ async def _store_take(
     rendered = await run_in_threadpool(
         session_render.render_take,
         attempt.take, scan.tracks, media, output_dir,
+        track_ids=scan.track_ids,
     )
 
-    # A stem is linked back to the channel it came from by that channel's own
-    # name within this pass, which is what render_take carries as display_name.
-    track_ids = {
-        (row["name"], row["rec_pass"]): row["id"]
-        for row in await db.list_session_tracks(session_id)
-    }
     for stem in rendered.stems:
         if stem.name.split("-")[0] == session_detect.MIX_ROLE:
             # A whole-band recording is the take itself, not one of its parts.
@@ -537,7 +538,7 @@ async def _store_take(
             continue
         row = await db.add_session_take_stem(
             take_id=take["id"],
-            track_id=track_ids.get((stem.display_name, scan.recording_pass.number)),
+            track_id=stem.track_id,
             name=stem.name,
             display_name=stem.display_name,
             path=stem.path,

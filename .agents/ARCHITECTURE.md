@@ -919,9 +919,12 @@ writes both takes back to back. **The gap between two detected takes is not rest
 never rendered (measured: every neighbouring pair has 2 s – 79 min between them) — so the timeline
 `end_seconds` becomes start + audio length, a 20 ms fade each side keeps a seam over a dropped gap
 from clicking (a split's own halves join seamlessly), and the confirm says how much is missing.
-Channels are matched on (track id, name, order among stems sharing both): **a scan links a stem
-to its track by name**, so two mics both called "Drums in stereo" were stored under one track id
-(26 takes); matching on either alone merged them and lost a channel. A channel only one side has is
+Channels are matched on (track id, name, order among stems sharing both): **a scan used to link a
+stem to its track by name**, so two mics both called "Drums in stereo" were stored under one track
+id; matching on either alone merged them and lost a channel. Fixed 2026-10-27: `_scan_pass` keeps
+each track's stored id by source file and `render_take(track_ids=…)` stamps it on the stem. The 26
+takes that kept both mics were relinked (stem rank ↔ track id order); 13 that kept only one still
+point at the later mic, since nothing stored says which it was. A channel only one side has is
 padded with silence. Words are the two transcripts joined — no Whisper — unless a side was still
 pending. Joined take: the earlier take's group, else the later's; discarded only if both were.
 

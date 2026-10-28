@@ -20,15 +20,38 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-10-27 — SECURITY: live frontend compromised via React2Shell; Next 16.0.1 → 16.4.3
+
+The prod frontend ran Next 16.0.1 / React 19.2.0 (CVE-2025-55182, unauthenticated RSC RCE). An
+attacker ran code as `nextjs` in `bigflavor-frontend`: dropped an ELF at `/app/hxh` (sha256
+`eee22e59…af12`), dumped env to `/tmp/.e7445c6ba/environ.txt` (leaked `SESSION_SECRET`,
+`BACKEND_API_SECRET`, `GOOGLE_CLIENT_SECRET`), and injected a ClearFake/EtherHiding script (fake
+captcha, payload fetched from BSC testnet contract `0xE75744C5…6b77`) in memory — nothing on disk.
+Other containers showed no foreign files. Fix: Next 16.4.3, React 19.3.1, `npm audit fix` (prod deps
+0 vulns); `eslint-plugin-react-hooks` overridden to 7.0.1 because 7.1.1's new `set-state-in-effect`
+rule flags 18 existing sites (follow-up). Session + backend secrets rotated in `.env` and
+`.env.production`; Google OAuth secret rotated in console (project `apikey-337918`); Postgres
+password rotated as a precaution (`ALTER USER` + both env files; it was never in the frontend env).
+Drive key (`secrets/`) is backend-only and showed no access; Anthropic key lives only in dev `.env`. Container removed,
+image rebuilt `--no-cache --pull`. **Lesson:** run `npm audit --omit=dev` before every deploy — the
+critical advisory sat open ~11 months.
+
+### 2026-10-27 — Scan links each stem to its own channel, not one sharing its name
+
+`_store_take` looked up a stem's `session_tracks` row by `(name, rec_pass)`, so the two "Drums in
+stereo" mics (sessions 6 and 7) shared one `track_id`. `_PassScan.track_ids` now maps source file →
+stored id and `render_take(track_ids=…)` sets `RenderedStem.track_id`; test in
+`tests/test_session_render.py`. Existing data: 26 stems relinked in the live DB (52/67 instead of
+53/68); 13 takes that kept only one of the pair are left pointing at the later mic — ambiguous.
+
 ### 2026-10-25 — …and joined back with its neighbour (SESS-23)
 
 Each take card has "← Join with take N" / "Join with take N →" beside Split: only timeline
 neighbours in one recording pass. `POST .../takes/{id}/join` puts both takes' audio back to back
 (`session_render.join_rendered_takes`); the gap between detected takes was never kept, so it is
 dropped (20 ms seam fade) and the confirm says how long it was. Transcripts are simply joined. **Found
-while verifying:** the scan stores two same-named mics ("Drums in stereo" ×2) under one `track_id`
-(it links by name — 26 takes affected, not fixed), so channels are matched on (track id, name,
-order). Verified on real take audio: 7 channels in, 7 out.
+while verifying:** the scan stored two same-named mics ("Drums in stereo" ×2) under one `track_id`
+(fixed 2026-10-27, above), so channels are matched on (track id, name, order). Verified on real take audio: 7 channels in, 7 out.
 
 ### 2026-10-25 — A session take can be split in two at the playhead (SESS-22)
 
