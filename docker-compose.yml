@@ -8,7 +8,9 @@ services:
       POSTGRES_USER: bigflavor
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bigflavor_dev_pass}
     ports:
-      - "5432:5432"
+      # Loopback only: containers reach it as `postgres` on the compose network
+      # and host scripts as localhost, so nothing needs it on the LAN/internet.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/init:/docker-entrypoint-initdb.d

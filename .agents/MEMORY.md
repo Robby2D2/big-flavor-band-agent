@@ -24,12 +24,15 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 The prod frontend ran Next 16.0.1 / React 19.2.0 (CVE-2025-55182, unauthenticated RSC RCE). An
 attacker ran code as `nextjs` in `bigflavor-frontend`: dropped an ELF at `/app/hxh` (sha256
-`eee22e59…af12`), dumped env to `/tmp/.e7445c6ba/environ.txt` (leaked `SESSION_SECRET`,
+`eee22e59…af12`, Defender: `Trojan:Linux/CoinMiner!rfn`), dumped env to `/tmp/.e7445c6ba/environ.txt` (leaked `SESSION_SECRET`,
 `BACKEND_API_SECRET`, `GOOGLE_CLIENT_SECRET`), and injected a ClearFake/EtherHiding script (fake
 captcha, payload fetched from BSC testnet contract `0xE75744C5…6b77`) in memory — nothing on disk.
 Other containers showed no foreign files. Fix: Next 16.4.3, React 19.3.1, `npm audit fix` (prod deps
-0 vulns); `eslint-plugin-react-hooks` overridden to 7.0.1 because 7.1.1's new `set-state-in-effect`
-rule flags 18 existing sites (follow-up). Session + backend secrets rotated in `.env` and
+0 vulns). react-hooks 7.1.1's stricter rules flagged 18 sites; fixed 2026-10-28 without a pin:
+derived state for the song page's version selection / bad id, "adjust state on a prop change" for
+AudioProcessingTab's takes + region resets, layout effects for its latest-value refs, and a
+reasoned `set-state-in-effect` disable on each fetch-on-mount effect (the rule can't see that the
+loaders set state only after `await`). Postgres now publishes on `127.0.0.1:5432` only. Session + backend secrets rotated in `.env` and
 `.env.production`; Google OAuth secret rotated in console (project `apikey-337918`); Postgres
 password rotated as a precaution (`ALTER USER` + both env files; it was never in the frontend env).
 Drive key (`secrets/`) is backend-only and showed no access; Anthropic key lives only in dev `.env`. Container removed,
