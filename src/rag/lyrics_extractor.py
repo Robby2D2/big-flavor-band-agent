@@ -50,6 +50,20 @@ _PHANTOM_SEGMENT = re.compile(
     r"|.*\b(subtitles?|captions?|transcript|transcribed|amara)\b.*"
 )
 
+# snap_line_starts reads a 25 ms energy window every 10 ms of 16 kHz audio.
+_SNAP_FRAME = 400
+_SNAP_HOP = 160
+_SNAP_FPS = 100
+# A word with less than this at its peak is too quiet to place.
+_SNAP_FLOOR_RATIO = 0.08
+# The voice has arrived once it reaches this share of the word's own peak.
+_SNAP_ONSET_RATIO = 0.25
+# Shorter lead-ins are ordinary attack and breath; well-placed words sit under it.
+_SNAP_MIN_LEAD_S = 0.15
+# Stop just short of the rise, so a soft opening consonant still lights up.
+_SNAP_PRE_ROLL_S = 0.05
+_SNAP_MIN_WORD_S = 0.1
+
 
 def _peak_normalized(audio_path: str):
     """The file as Whisper's 16 kHz mono samples, scaled so its peak sits at -1 dBFS.
@@ -71,6 +85,50 @@ def is_phantom_segment(text: str) -> bool:
     return not normalized or bool(_PHANTOM_SEGMENT.fullmatch(normalized))
 
 
+def snap_line_starts(lines: List[Dict[str, Any]], samples) -> int:
+    """Move each line's first word forward to where the voice actually starts.
+
+    Whisper stretches a line's first word back over the silence before it, so
+    the line lights up before it is sung: across 22 songs a fifth of first words
+    held over 300 ms of silence, against 2% of the words after them. Only the
+    first word is moved for that reason, and the line's start moves with it.
+
+    ``samples`` must be isolated vocals at 16 kHz. On a full mix the instruments
+    fill the silence this looks for. Returns how many lines moved; ``lines`` is
+    changed in place.
+    """
+    import numpy as np
+
+    frames = (len(samples) - _SNAP_FRAME) // _SNAP_HOP
+    if frames <= 0:
+        return 0
+
+    energy = np.cumsum(np.concatenate(([0.0], np.asarray(samples, dtype=np.float64) ** 2)))
+    offsets = np.arange(frames) * _SNAP_HOP
+    envelope = np.sqrt((energy[offsets + _SNAP_FRAME] - energy[offsets]) / _SNAP_FRAME)
+    voiced = envelope[envelope > 1e-4]
+    if voiced.size == 0:
+        return 0
+    floor = float(np.percentile(voiced, 90)) * _SNAP_FLOOR_RATIO
+
+    moved = 0
+    for line in lines:
+        words = line.get("words")
+        if not words:
+            continue
+        first = words[0]
+        window = envelope[int(first["start"] * _SNAP_FPS):int(first["end"] * _SNAP_FPS)]
+        if window.size == 0 or window.max() < floor:
+            continue
+        lead = int(np.argmax(window >= window.max() * _SNAP_ONSET_RATIO)) / _SNAP_FPS
+        if lead < _SNAP_MIN_LEAD_S:
+            continue
+        start = min(first["start"] + lead - _SNAP_PRE_ROLL_S, first["end"] - _SNAP_MIN_WORD_S)
+        first["start"] = line["start"] = round(start, 2)
+        moved += 1
+    return moved
+
+
 class LyricsExtractor:
     """
     Extract lyrics from audio files using vocal separation and transcription.
@@ -78,7 +136,7 @@ class LyricsExtractor:
     
     def __init__(
         self,
-        whisper_model_size: str = "large-v3",
+        whisper_model_size: Optional[str] = "large-v3",
         use_gpu: bool = True,
         demucs_model: str = "htdemucs",
         min_confidence: float = 0.5,
@@ -91,6 +149,7 @@ class LyricsExtractor:
             whisper_model_size: Model size for faster-whisper 
                                ('tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3')
                                'base' is recommended for balance of speed/accuracy
+                               None skips loading it, for separation-only callers
             use_gpu: Whether to use GPU acceleration (if available)
             demucs_model: Demucs model to use ('htdemucs', 'htdemucs_ft', 'mdx_extra')
                          'htdemucs' is recommended for best quality
@@ -104,7 +163,7 @@ class LyricsExtractor:
         
         # Initialize faster-whisper model
         self.whisper_model = None
-        if FASTER_WHISPER_AVAILABLE:
+        if FASTER_WHISPER_AVAILABLE and whisper_model_size:
             try:
                 device = "cuda" if use_gpu and self._cuda_available() else "cpu"
                 compute_type = "float16" if device == "cuda" else "int8"
@@ -328,7 +387,8 @@ class LyricsExtractor:
         vad_filter: bool = False,
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
-        word_timestamps: bool = False
+        word_timestamps: bool = False,
+        snap_to_voice: bool = False
     ) -> Dict[str, Any]:
         """
         Transcribe audio to text using faster-whisper.
@@ -342,6 +402,9 @@ class LyricsExtractor:
             word_timestamps: Also emit per-word start/end times (cross-attention DTW
                              alignment). Costs roughly 10-25% extra transcription
                              time; required for word-level follow-along highlighting.
+            snap_to_voice: Correct each line's start against the audio (see
+                           snap_line_starts). Only meaningful on isolated vocals
+                           with word_timestamps on.
 
         Returns:
             Dictionary with transcription results
@@ -378,10 +441,8 @@ class LyricsExtractor:
                     threshold=vad_threshold  # Lower threshold = more sensitive to voice (default is 0.5)
                 )
             
-            segments, info = self.whisper_model.transcribe(
-                _peak_normalized(audio_path),
-                **transcribe_args
-            )
+            audio = _peak_normalized(audio_path)
+            segments, info = self.whisper_model.transcribe(audio, **transcribe_args)
             
             # Process segments
             all_text = []
@@ -422,7 +483,11 @@ class LyricsExtractor:
                     segment_data.append(entry)
                     total_confidence += confidence
                     segment_count += 1
-            
+
+            if snap_to_voice:
+                moved = snap_line_starts(segment_data, audio)
+                logger.info(f"Moved {moved} of {len(segment_data)} line starts onto the voice")
+
             # Calculate overall confidence
             avg_confidence = total_confidence / segment_count if segment_count > 0 else 0.0
             
@@ -457,7 +522,8 @@ class LyricsExtractor:
         vad_min_silence_ms: int = 2000,
         vad_threshold: float = 0.3,
         apply_voice_filter: bool = False,
-        word_timestamps: bool = False
+        word_timestamps: bool = False,
+        vocals_isolated: bool = False
     ) -> Dict[str, Any]:
         """
         Extract lyrics from audio file (full pipeline).
@@ -472,6 +538,7 @@ class LyricsExtractor:
             vad_threshold: VAD sensitivity 0.0-1.0 (lower = more sensitive, default 0.3)
             apply_voice_filter: Apply bandpass filter for voice frequencies (80-8000 Hz)
             word_timestamps: Also emit per-word start/end times inside each segment
+            vocals_isolated: audio_path is already isolated vocals (a reused stem)
 
         Returns:
             Dictionary with lyrics and metadata
@@ -492,7 +559,9 @@ class LyricsExtractor:
                     vocals_path = audio_path
             else:
                 logger.info("Skipping vocal separation (using full mix)")
-            
+
+            is_vocals_only = vocals_isolated or vocals_path != audio_path
+
             # Step 1.5: Apply voice frequency filter if requested
             if apply_voice_filter:
                 filtered_path = self.apply_voice_frequency_filter(vocals_path)
@@ -507,9 +576,10 @@ class LyricsExtractor:
                 vad_filter=vad_filter,
                 vad_min_silence_ms=vad_min_silence_ms,
                 vad_threshold=vad_threshold,
-                word_timestamps=word_timestamps
+                word_timestamps=word_timestamps,
+                snap_to_voice=word_timestamps and is_vocals_only
             )
-            
+
             # Add metadata
             result['audio_path'] = audio_path
             result['vocals_separated'] = separate_vocals and vocals_path != audio_path
