@@ -910,6 +910,75 @@ class DatabaseManager:
             await conn.execute(ddl)
         logger.info("song_stem_sets / song_stems tables ensured")
 
+    # Start analysis outcomes, one per version (PROD-22)
+    async def ensure_song_version_analyses_table(self) -> None:
+        """Create the song_version_analyses table if missing. Idempotent.
+
+        Mirrors ensure_song_stems_tables: the canonical schema lives in
+        database/sql/migrations/26-song-version-analyses.sql.
+        """
+        ddl = """
+            CREATE TABLE IF NOT EXISTS song_version_analyses (
+                source_version_id INTEGER PRIMARY KEY REFERENCES song_versions(id) ON DELETE CASCADE,
+                song_id INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+                stem_set_id INTEGER REFERENCES song_stem_sets(id) ON DELETE CASCADE,
+                status VARCHAR(16) NOT NULL,
+                rows JSONB NOT NULL DEFAULT '[]',
+                outcomes JSONB NOT NULL DEFAULT '[]',
+                error TEXT,
+                finished_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+        logger.info("song_version_analyses table ensured")
+
+    async def save_version_analysis(
+        self,
+        version_id: int,
+        song_id: int,
+        stem_set_id: Optional[int],
+        status: str,
+        rows: List[Dict[str, Any]],
+        outcomes: List[Dict[str, Any]],
+        error: Optional[str],
+    ) -> None:
+        """Record a finished pass, replacing the version's previous one."""
+        query = """
+            INSERT INTO song_version_analyses
+                (source_version_id, song_id, stem_set_id, status, rows, outcomes, error)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)
+            ON CONFLICT (source_version_id) DO UPDATE SET
+                song_id = EXCLUDED.song_id,
+                stem_set_id = EXCLUDED.stem_set_id,
+                status = EXCLUDED.status,
+                rows = EXCLUDED.rows,
+                outcomes = EXCLUDED.outcomes,
+                error = EXCLUDED.error,
+                finished_at = CURRENT_TIMESTAMP
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                query, version_id, song_id, stem_set_id, status,
+                json.dumps(rows), json.dumps(outcomes), error,
+            )
+
+    async def get_version_analysis(self, version_id: int) -> Optional[Dict[str, Any]]:
+        """The version's last finished pass, if it has one."""
+        query = "SELECT * FROM song_version_analyses WHERE source_version_id = $1"
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, version_id)
+        return dict(row) if row else None
+
+    async def delete_failed_version_analysis(self, version_id: int) -> None:
+        """Forget a failed pass. Only a failed one: the others hold findings."""
+        query = """
+            DELETE FROM song_version_analyses
+            WHERE source_version_id = $1 AND status = 'failed'
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, version_id)
+
     async def create_stem_set(
         self, song_id: int, model: str, source_version_id: Optional[int] = None
     ) -> Dict[str, Any]:

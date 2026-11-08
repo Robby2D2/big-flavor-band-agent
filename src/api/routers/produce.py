@@ -45,6 +45,13 @@ from src.api.accept_jobs import (
     chain_cache,
     fingerprint as _render_fingerprint,
 )
+from src.api.analysis_jobs import (
+    FULL_MIX_ROW_ID,
+    MASTER_TOOLS,
+    PassServices,
+    analysis_jobs,
+    stem_analysis_tools,
+)
 from src.api.region_tools import build_region_tool_args
 from src.production import (
     audio_preview,
@@ -1294,13 +1301,15 @@ def _stem_view(stem: Dict[str, Any]) -> Dict[str, Any]:
     tags = stem.get("instrument_tags")
     if isinstance(tags, str):  # asyncpg returns JSONB as text
         tags = json.loads(tags)
+    instruments = (tags or {}).get("instruments", [])
     return {
         "id": stem["id"],
         "name": stem["name"],
         "display_name": stem.get("display_name"),
-        "instruments": (tags or {}).get("instruments", []),
+        "instruments": instruments,
         "silent": bool((tags or {}).get("silent")),
         "tagged": stem.get("tagged_at") is not None,
+        "analysis_tools": stem_analysis_tools(stem["name"], instruments),
     }
 
 
@@ -1320,6 +1329,27 @@ def _stem_set_view(stem_set: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+async def _start_separation(
+    song_id: int, source_version_id: Optional[int], db: DatabaseManager
+) -> Dict[str, Any]:
+    """Create a queued stem set and start Demucs on it. Returns the stem set."""
+    from src.api import stem_jobs
+
+    source_path = await _resolve_clean_source_path(song_id, source_version_id, db)
+    stem_set = await db.create_stem_set(
+        song_id, stem_separation.DEFAULT_MODEL, source_version_id
+    )
+    output_dir = _stem_set_output_dir(song_id, stem_set["id"])
+    stem_jobs.manager.start(
+        stem_set["id"],
+        str(source_path),
+        str(output_dir),
+        stem_separation.DEFAULT_MODEL,
+        db,
+    )
+    return stem_set
+
+
 @router.post("/api/produce/stems/separate")
 async def separate_song_stems(
     request: StemSeparateRequest,
@@ -1334,22 +1364,7 @@ async def separate_song_stems(
     polls ``GET /api/produce/songs/{id}/stems`` for status. The original/version
     audio is only read — stems are written under produced/.
     """
-    from src.api import stem_jobs
-
-    source_path = await _resolve_clean_source_path(
-        request.song_id, request.source_version_id, db
-    )
-    stem_set = await db.create_stem_set(
-        request.song_id, stem_separation.DEFAULT_MODEL, request.source_version_id
-    )
-    output_dir = _stem_set_output_dir(request.song_id, stem_set["id"])
-    stem_jobs.manager.start(
-        stem_set["id"],
-        str(source_path),
-        str(output_dir),
-        stem_separation.DEFAULT_MODEL,
-        db,
-    )
+    stem_set = await _start_separation(request.song_id, request.source_version_id, db)
     return {"stem_set": _stem_set_view(stem_set)}
 
 
@@ -1399,7 +1414,7 @@ async def list_song_stems(
         view = _stem_set_view(stem_set)
         view["stems"] = [_stem_view(s) for s in stems]
         views.append(view)
-    return {"song_id": song_id, "stem_sets": views}
+    return {"song_id": song_id, "stem_sets": views, "master_analysis_tools": MASTER_TOOLS}
 
 
 @router.patch("/api/produce/stems/{stem_id}")
@@ -2292,6 +2307,159 @@ async def dismiss_accept_fixes(
     """Forget a finished render, so its row leaves the versions list."""
     accept_jobs.clear(song_id)
     return accept_jobs.status(song_id)
+
+
+# ---- Start analysis: separate + measure + warm the render, in the background ----
+
+def _warm_analyzed_render(
+    song_id: int,
+    version_id: int,
+    rows: List[Dict[str, Any]],
+    outcomes: List[Dict[str, Any]],
+    agent: BigFlavorAgent,
+    db: DatabaseManager,
+) -> None:
+    """Render the queue a pass just detected, so its audio is waiting.
+
+    Analysis only *measures*, and the reason to analyse is almost always to hear
+    or keep the result — so the render starts as soon as the findings are in,
+    and it can't wait for the page: the producer may have left. Shaped exactly
+    as the page's own payload (every stem, fixes in pass order), since that is
+    what makes the fingerprint match and a later Save land on this render.
+    """
+    recommended = [o for o in outcomes if o["result"].get("recommended")]
+
+    def fixes_for(row_id: int) -> List[StemFixSpec]:
+        return [
+            StemFixSpec(tool=o["tool"], params=o["result"].get("params") or {})
+            for o in recommended
+            if o["row_id"] == row_id
+        ]
+
+    request = AcceptFixesRequest(
+        song_id=song_id,
+        source_version_id=version_id,
+        stems=[
+            StemAcceptSpec(stem_id=row["row_id"], fixes=fixes_for(row["row_id"]))
+            for row in rows
+            if row["row_id"] != FULL_MIX_ROW_ID
+        ],
+        master_fixes=fixes_for(FULL_MIX_ROW_ID),
+        preview=True,
+    )
+    if accept_jobs.is_running(song_id):
+        return
+    print_ = _accept_fingerprint(request)
+    fix_count = len(recommended)
+    cached = accept_jobs.cached_render(song_id, print_)
+    if cached is not None:
+        accept_jobs.complete_now(
+            song_id,
+            True,
+            fix_count,
+            {"candidate_path": cached, "notices": accept_jobs.cached_notices(song_id, print_)},
+        )
+        return
+    accept_jobs.start(
+        song_id,
+        preview=True,
+        fix_count=fix_count,
+        render=lambda: _render_accept_fixes(
+            request, agent, db, report=partial(accept_jobs.report, song_id)
+        ),
+        fingerprint=print_,
+    )
+
+
+async def _analysis_version(version_id: int, db: DatabaseManager) -> Dict[str, Any]:
+    version = await db.get_song_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    return version
+
+
+@router.get("/api/produce/versions/{version_id}/analysis")
+async def version_analysis_status(
+    version_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """The version's running pass, else what its last pass found (PROD-11, PROD-22)."""
+    return await analysis_jobs.status(version_id, db)
+
+
+@router.post("/api/produce/versions/{version_id}/analysis/start")
+async def start_version_analysis(
+    version_id: int,
+    agent: BigFlavorAgent = Depends(get_agent),
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Kick off Start analysis in the background and return immediately.
+
+    Separates the version first if it has no stems, and carries on whether or
+    not anyone is watching. Joins the running pass if there already is one.
+    """
+    from src.api import stem_jobs
+
+    version = await _analysis_version(version_id, db)
+    if not agent.production_server:
+        raise HTTPException(status_code=503, detail="Production tools not available")
+    song_id = version["song_id"]
+
+    async def measure(row_id: int, tool: str) -> Optional[Dict[str, Any]]:
+        stem_id = None if row_id == FULL_MIX_ROW_ID else row_id
+        source_path = await _resolve_tool_source_path(song_id, version_id, stem_id, db)
+        result = await agent.production_server.analyze_tool(
+            tool, {"file_path": str(source_path), "start_s": None, "end_s": None}
+        )
+        if "error" in result:
+            logger.warning("Analysis of %s on row %s: %s", tool, row_id, result["error"])
+            return None
+        return result
+
+    async def list_stems(stem_set_id: int) -> List[Dict[str, Any]]:
+        return [_stem_view(stem) for stem in await db.list_stems(stem_set_id)]
+
+    async def start_separation() -> int:
+        return (await _start_separation(song_id, version_id, db))["id"]
+
+    return analysis_jobs.start(
+        song_id,
+        version_id,
+        db,
+        PassServices(
+            measure=measure,
+            list_stems=list_stems,
+            start_separation=start_separation,
+            is_separating=stem_jobs.manager.is_running,
+            on_complete=partial(_warm_analyzed_render, song_id, version_id, agent=agent, db=db),
+        ),
+    )
+
+
+@router.post("/api/produce/versions/{version_id}/analysis/cancel")
+async def cancel_version_analysis(
+    version_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Stop the running pass (PROD-19); rows already measured are kept."""
+    try:
+        return await analysis_jobs.cancel(version_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/api/produce/versions/{version_id}/analysis/dismiss")
+async def dismiss_version_analysis(
+    version_id: int,
+    db: DatabaseManager = Depends(get_db),
+    _role: str = Depends(require_role("editor")),
+):
+    """Forget a failed pass, clearing it from the task panel."""
+    await analysis_jobs.dismiss_failure(version_id, db)
+    return await analysis_jobs.status(version_id, db)
 
 
 # ---- issue #70: waveform region editor — region-scoped preview / apply ----

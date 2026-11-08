@@ -136,6 +136,10 @@ async def lifespan(app: FastAPI):
     await deps.db_manager.ensure_song_stems_tables()
     logger.info("Startup: song_stem_sets / song_stems ensured")
 
+    # Ensure the Start analysis outcomes table exists (needs the stem tables).
+    await deps.db_manager.ensure_song_version_analyses_table()
+    logger.info("Startup: song_version_analyses ensured")
+
     # Ensure the timed-lyrics table exists (follow-along highlighting).
     await deps.db_manager.ensure_song_lyric_timings_table()
     logger.info("Startup: song_lyric_timings ensured")

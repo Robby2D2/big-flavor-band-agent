@@ -1,11 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
-import {
-  FULL_MIX_STEM_ID,
-  isPitchAnalyzable,
-  useProcessingQueue,
-  type StemInfo,
-} from '@/hooks/useProcessingQueue';
+import { FULL_MIX_STEM_ID, useProcessingQueue } from '@/hooks/useProcessingQueue';
 
 const SONG_ID = 1140;
 const VERSION_ID = 52;
@@ -47,29 +42,32 @@ function completeSet() {
 }
 
 /**
- * The produce API, recording every analyze call so a test can assert on which
- * tool was measured against which row — the point of the pitch scoping is the
- * requests that are *not* made.
+ * The produce API, with a finished pass whose every row reported `results` —
+ * which tools get measured where is the server's call (tests/test_analysis_jobs.py).
  */
 function installFakeApi(results: Record<string, any> = {}) {
-  const analyzed: Array<{ tool: string; row: number }> = [];
+  const rowIds = [FULL_MIX_STEM_ID, VOCALS, DRUMS, OTHER];
+  const pass = {
+    status: 'complete',
+    stem_set_id: 9,
+    rows: rowIds.map((row_id) => ({ row_id, label: String(row_id), done: 5, total: 5 })),
+    outcomes: rowIds.flatMap((row_id) =>
+      Object.entries(results).map(([tool, result]) => ({ row_id, tool, result }))
+    ),
+  };
   const json = (data: unknown) =>
     ({ ok: true, status: 200, text: async () => JSON.stringify(data) }) as Response;
 
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url === `/api/produce/songs/${SONG_ID}/stems`) return json({ stem_sets: [completeSet()] });
-    if (url === '/api/produce/tools') return json({ tools: TOOLS });
-    const match = url.match(/^\/api\/produce\/tools\/([^/]+)\/analyze$/);
-    if (match) {
-      const body = init?.body ? JSON.parse(String(init.body)) : {};
-      analyzed.push({ tool: match[1], row: body.stem_id ?? FULL_MIX_STEM_ID });
-      return json({ result: results[match[1]] ?? null });
-    }
-    return json({});
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  return { analyzed };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/produce/songs/${SONG_ID}/stems`) return json({ stem_sets: [completeSet()] });
+      if (url === '/api/produce/tools') return json({ tools: TOOLS });
+      if (url.startsWith(`/api/produce/versions/${VERSION_ID}/analysis`)) return json(pass);
+      return json({});
+    })
+  );
 }
 
 beforeEach(() => {
@@ -82,117 +80,18 @@ afterEach(() => {
 });
 
 async function analyzed(results: Record<string, any> = {}) {
-  const api = installFakeApi(results);
+  installFakeApi(results);
   const hook = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
   await act(async () => {
-    const running = hook.result.current.startAnalysis();
-    await vi.advanceTimersByTimeAsync(20_000);
-    await running;
+    await vi.advanceTimersByTimeAsync(100);
   });
   await act(async () => {
     await hook.result.current.ensureToolParams();
   });
-  return { api, result: hook.result };
+  return { result: hook.result };
 }
 
-const info = (over: Partial<StemInfo>): StemInfo => ({
-  id: 1,
-  name: 'other',
-  displayName: null,
-  instruments: [],
-  silent: false,
-  tagged: true,
-  ...over,
-});
-
-describe('which rows are worth measuring for tuning', () => {
-  it('measures a vocal stem and nothing polyphonic', () => {
-    expect(isPitchAnalyzable(info({ name: 'vocals' }))).toBe(true);
-    expect(isPitchAnalyzable(info({ name: 'drums' }))).toBe(false);
-    expect(isPitchAnalyzable(info({ name: 'guitar' }))).toBe(false);
-    expect(isPitchAnalyzable(info({ name: 'piano' }))).toBe(false);
-  });
-
-  it('leaves the bass out — the detector cannot hear that low', () => {
-    // pyin's floor is C2 (~65 Hz); a real bass stem voiced 2% of the window.
-    expect(isPitchAnalyzable(info({ name: 'bass' }))).toBe(false);
-  });
-
-  it('follows the tagger when a single-line instrument lands inside `other`', () => {
-    expect(
-      isPitchAnalyzable(info({ name: 'other', instruments: [{ label: 'Fiddle / violin', score: 0.8 }] }))
-    ).toBe(true);
-    expect(
-      isPitchAnalyzable(info({ name: 'other', instruments: [{ label: 'Piano', score: 0.8 }] }))
-    ).toBe(false);
-  });
-
-  it('qualifies on any tag, not just the highest-scoring one', () => {
-    // The tagger is multi-label because one stem holds several instruments, and
-    // `other` is where the single-line instruments Demucs has no source for end
-    // up. A fiddle over a sustained pad is tagged second and used to be skipped,
-    // though the gate always claimed to cover it (issue #91).
-    expect(
-      isPitchAnalyzable(
-        info({
-          name: 'other',
-          instruments: [
-            { label: 'Synthesizer', score: 0.71 },
-            { label: 'Fiddle / violin', score: 0.64 },
-          ],
-        })
-      )
-    ).toBe(true);
-  });
-
-  it('still declines a stem whose tags are all polyphonic', () => {
-    expect(
-      isPitchAnalyzable(
-        info({
-          name: 'other',
-          instruments: [
-            { label: 'Synthesizer', score: 0.71 },
-            { label: 'Piano', score: 0.64 },
-          ],
-        })
-      )
-    ).toBe(false);
-  });
-
-  it('never measures the full mix, however it is tagged', () => {
-    expect(isPitchAnalyzable(info({ id: FULL_MIX_STEM_ID, name: 'Full mix' }))).toBe(false);
-    // ...not even when a qualifying instrument is named in its tags.
-    expect(
-      isPitchAnalyzable(
-        info({
-          id: FULL_MIX_STEM_ID,
-          name: 'Full mix',
-          instruments: [{ label: 'Fiddle / violin', score: 0.9 }],
-        })
-      )
-    ).toBe(false);
-  });
-});
-
 describe('the analysis pass', () => {
-  it('runs pitch only on the vocal row, and clicks on every row', async () => {
-    const { api } = await analyzed();
-
-    const pitchRows = api.analyzed.filter((c) => c.tool === 'correct_pitch').map((c) => c.row);
-    expect(pitchRows).toEqual([VOCALS]);
-
-    const clickRows = api.analyzed
-      .filter((c) => c.tool === 'remove_artifacts')
-      .map((c) => c.row)
-      .sort((a, b) => a - b);
-    expect(clickRows).toEqual([FULL_MIX_STEM_ID, VOCALS, DRUMS, OTHER].sort((a, b) => a - b));
-  });
-
-  it('never measures tempo — there is no correct BPM for a song', async () => {
-    const { api } = await analyzed();
-    expect(api.analyzed.some((c) => c.tool === 'match_tempo')).toBe(false);
-  });
-
   it('turns a recommended clicks result into a card with its measured params', async () => {
     const { result } = await analyzed({
       remove_artifacts: {

@@ -640,6 +640,35 @@ the song's **single** cache slot — evicting the 21-fix render, so the next Sav
   `_seed_original` skips session songs, and `_resolve_clean_source_path` with no version resolves a
   session song to its default version, else its newest.
 
+### Start analysis runs on the server (2026-11-08, PROD-22)
+
+A pass was a loop of browser requests with its findings in React state, so leaving the page lost
+the work and left only "Start analysis" to press. `AnalysisJobManager`
+(`src/api/analysis_jobs.py`) now runs separate → measure → warm-render as one background job, and
+the page only follows it.
+
+- **Progress is in memory, the outcome is durable.** One pass per version; a restart mid-pass loses
+  it. The last outcome is one `song_version_analyses` row per version (migration 26), written once
+  at the end whether complete, cancelled or failed.
+- **A row only counts while its stem set is the version's newest.** `status()` compares
+  `stem_set_id` and reports `idle` after a re-separation, because the findings name stem ids that
+  are no longer the ones on screen.
+- **The server owns which tools measure what** (`PER_STEM_TOOLS`, `MASTER_TOOLS`,
+  `stem_analysis_tools`). The browser still drives single-row re-analysis, so
+  `GET /songs/{id}/stems` hands it each stem's `analysis_tools` and `master_analysis_tools`. Those
+  single-row results are still page state and are not stored.
+- **The warm render starts server-side too** (`_warm_analyzed_render`), or a producer who left would
+  come back to nothing rendered. Its request is built to match `buildAcceptPayload` exactly: every
+  stem, fixes in pass order. That equality is what makes a later Save hit the render cache.
+- **`analyze_tool` runs on a worker thread**, as `apply` already did. Each tool's `analyze()` is
+  CPU-bound `async`, and on the event loop a pass would stall its own progress polls and every other
+  request. `ANALYZE_CONCURRENCY = 3` is only real because of this.
+- **The page reopens on the version you were on** (`localStorage`, per song). Analysis belongs to a
+  version, so reopening on the default made work on any other version look lost.
+- **Routes:** `GET /versions/{id}/analysis` and `POST …/analysis/{start,cancel,dismiss}`. Dismiss
+  only forgets a failed pass; a failure holds no findings, and it is stored so that a pass that
+  failed while nobody was watching is still reported on return.
+
 ---
 
 ## Recording-session import (2026-09-25, in progress)

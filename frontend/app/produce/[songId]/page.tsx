@@ -49,6 +49,27 @@ export default function ProduceSongPage({
       ? chosenVersionId
       : versions.find((v) => v.is_published)?.id ?? versions[0]?.id ?? null;
 
+  // Remembered so coming back lands on the version you were working on, and so
+  // on its running analysis — analysis belongs to a version, and reopening on
+  // the default would look like the work had been lost.
+  const versionStorageKey = `produce-version:${songId}`;
+  const chooseVersion = (versionId: number) => {
+    setSelectedVersionId(versionId);
+    try {
+      localStorage.setItem(versionStorageKey, String(versionId));
+    } catch {
+      // Private window or blocked storage: the page just reopens on the default.
+    }
+  };
+  const rememberedVersion = (): number | null => {
+    try {
+      const stored = Number(localStorage.getItem(versionStorageKey));
+      return stored > 0 ? stored : null;
+    } catch {
+      return null;
+    }
+  };
+
   // An unparseable id never fetches, so its error is derived rather than set.
   const invalidId = Number.isNaN(songId);
 
@@ -83,6 +104,7 @@ export default function ProduceSongPage({
       }
       const list: VersionDetail[] = data.versions || [];
       setVersions(list);
+      setSelectedVersionId((prev) => prev ?? rememberedVersion());
     } catch (err: any) {
       setVersionsError(err.message);
       setVersions([]);
@@ -109,7 +131,7 @@ export default function ProduceSongPage({
   const handleVersionSaved = async (versionId: number | null) => {
     await loadVersions();
     if (versionId != null) {
-      setSelectedVersionId(versionId);
+      chooseVersion(versionId);
     }
   };
 
@@ -313,7 +335,7 @@ export default function ProduceSongPage({
                     return (
                       <tr
                         key={v.id}
-                        onClick={() => setSelectedVersionId(v.id)}
+                        onClick={() => chooseVersion(v.id)}
                         aria-selected={selected}
                         className={`border-t border-white/8 align-middle cursor-pointer ${
                           selected ? 'bg-signal/10' : 'hover:bg-white/5'
@@ -324,7 +346,7 @@ export default function ProduceSongPage({
                             type="radio"
                             name="selected-version"
                             checked={selected}
-                            onChange={() => setSelectedVersionId(v.id)}
+                            onChange={() => chooseVersion(v.id)}
                             aria-label={`Work with ${v.name}`}
                             className="accent-signal"
                           />

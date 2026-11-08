@@ -46,6 +46,10 @@ class StemJobManager:
         # stem_set_id -> Task, so a job isn't garbage-collected while it runs.
         self._tasks: Dict[int, asyncio.Task] = {}
 
+    def is_running(self, stem_set_id: int) -> bool:
+        """Whether this process is working on the set — its DB status can't say."""
+        return stem_set_id in self._tasks
+
     def start(
         self,
         stem_set_id: int,

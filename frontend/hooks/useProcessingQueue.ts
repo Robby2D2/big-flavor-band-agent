@@ -25,6 +25,8 @@ export interface StemInfo {
   silent: boolean;
   /** Tagging has run — distinguishes "nothing recognised" from "never tagged". */
   tagged: boolean;
+  /** What re-analyzing this row measures; the server decides. */
+  analysisTools?: string[];
 }
 
 /** The label to show for a stem: the producer's, else what Demucs called it. */
@@ -73,62 +75,6 @@ export interface FixEntry {
   enabled: boolean;
   /** Who put this card in the queue — the analysis, or the producer. */
   source: 'analysis' | 'manual';
-}
-
-// Tools whose analyze() returns real measurements — the only ones worth
-// *calling during analysis*; the rest always report `recommended: false` and
-// would just be wasted requests (src/production/toolkit.py's base analyze()
-// stub). This is an analysis concern only: what a producer may add by hand is
-// decided by ADDABLE_SCOPE below, since "no detector" is no reason to hide a
-// fix somebody can hear.
-const PER_STEM_TOOLS = [
-  'reduce_noise', 'apply_eq', 'remove_hum', 'correct_beats', 'remove_artifacts',
-] as const;
-const MASTER_TOOLS = [
-  'trim_silence', 'apply_eq', 'normalize_audio', 'apply_mastering', 'remove_artifacts',
-] as const;
-
-// Demucs source names whose stem is a single line. pyin tracks one pitch at a
-// time, so note detection means nothing anywhere else — and it is the most
-// expensive measurement in the pass, so it is worth not spending it.
-// `bass` is deliberately out: the detector's floor is C2 (~65 Hz), and a real
-// bass stem voiced 2% of the analysis window against a vocal stem's 79%.
-const MONOPHONIC_SOURCES = new Set(['vocals']);
-
-// ...and the tagger labels (src/production/instrument_tagging.py's vocabulary)
-// that name a single-line instrument, so a fiddle or a harmonica sitting inside
-// `other` is measured too.
-const MONOPHONIC_INSTRUMENTS = new Set([
-  'Vocal', 'Male vocal', 'Female vocal', 'Whistling', 'Humming',
-  'Fiddle / violin', 'Cello', 'Harmonica', 'Trumpet', 'Trombone',
-  'Saxophone', 'Flute', 'Clarinet', 'French horn',
-]);
-
-/**
- * Whether a console row is worth measuring for tuning.
- *
- * The full mix never is — it is polyphonic by definition. The backend refuses
- * a polyphonic source on its own (it can't segment notes out of a chord), so
- * this is about not spending a pyin pass to be told that.
- *
- * *Any* of the stem's tags qualifying is enough, not just the highest-scoring
- * one (issue #91). The tagger is multi-label precisely because one stem holds
- * several instruments, and `other` is where the single-line instruments the
- * Demucs model has no source for end up — a fiddle over a pad is tagged second
- * and was silently skipped, which is the case the comment above always claimed
- * to cover.
- */
-export function isPitchAnalyzable(stem: StemInfo): boolean {
-  if (stem.id === FULL_MIX_STEM_ID) return false;
-  if (MONOPHONIC_SOURCES.has(stem.name)) return true;
-  return stem.instruments.some((i) => MONOPHONIC_INSTRUMENTS.has(i.label));
-}
-
-/** The tools to measure on one stem row. */
-function analysisToolsFor(stem: StemInfo): string[] {
-  return isPitchAnalyzable(stem)
-    ? [...PER_STEM_TOOLS, 'correct_pitch']
-    : [...PER_STEM_TOOLS];
 }
 
 // Where a tool may be added by hand. Every non-hidden single-file tool the
@@ -281,17 +227,27 @@ function toStemInfo(raw: any): StemInfo {
     instruments: raw.instruments ?? [],
     silent: Boolean(raw.silent),
     tagged: Boolean(raw.tagged),
+    analysisTools: raw.analysis_tools ?? [],
+  };
+}
+
+async function fetchStemListing(
+  songId: number
+): Promise<{ sets: StemSetRow[]; masterAnalysisTools: string[] }> {
+  const res = await fetch(`/api/produce/songs/${songId}/stems`);
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data.detail || data.error || 'Failed to load stems');
+  return {
+    sets: (data.stem_sets || []).map((set: any) => ({
+      ...set,
+      stems: (set.stems || []).map(toStemInfo),
+    })),
+    masterAnalysisTools: data.master_analysis_tools ?? [],
   };
 }
 
 async function fetchStemSets(songId: number): Promise<StemSetRow[]> {
-  const res = await fetch(`/api/produce/songs/${songId}/stems`);
-  const data = await readJson(res);
-  if (!res.ok) throw new Error(data.detail || data.error || 'Failed to load stems');
-  return (data.stem_sets || []).map((set: any) => ({
-    ...set,
-    stems: (set.stems || []).map(toStemInfo),
-  }));
+  return (await fetchStemListing(songId)).sets;
 }
 
 /**
@@ -376,35 +332,29 @@ interface AnalyzeOutcome {
   result: AnalyzeResult;
 }
 
-/** One analysis request, and the console row it measures. */
-interface AnalyzeJob {
-  rowId: number;
-  run: (signal?: AbortSignal) => Promise<AnalyzeOutcome | null>;
+/** One console row of a server-run pass: the task panel's row, plus its id. */
+interface PassRow extends TaskRow {
+  row_id: number;
 }
 
-/**
- * Run `jobs` a few at a time, keeping the outcomes that came back.
- *
- * `onDone` hears each job finish — how the task panel counts checks. Once
- * `signal` is aborted no further job starts, and one cut off mid-request counts
- * as no result rather than an error: cancelling is not a failure (PROD-19).
- */
-async function runAnalyzeJobs(
-  jobs: AnalyzeJob[],
-  { signal, onDone }: { signal?: AbortSignal; onDone?: (rowId: number) => void } = {}
-): Promise<AnalyzeOutcome[]> {
-  const results = await mapWithConcurrency(jobs, ANALYZE_CONCURRENCY, async (job) => {
-    if (signal?.aborted) return null;
-    try {
-      const outcome = await job.run(signal);
-      if (!signal?.aborted) onDone?.(job.rowId);
-      return outcome;
-    } catch (err) {
-      if (signal?.aborted) return null;
-      throw err;
-    }
-  });
-  return results.filter((entry): entry is AnalyzeOutcome => entry !== null);
+/** A Start analysis pass as the server reports it (src/api/analysis_jobs.py). */
+interface AnalysisPass {
+  status: 'idle' | 'running' | 'complete' | 'failed' | 'cancelled';
+  stage?: 'separating' | 'measuring' | null;
+  stem_set_id?: number | null;
+  /** Seconds since the epoch. */
+  separation_started_at?: number | null;
+  rows?: PassRow[];
+  /** Present once the pass has finished. */
+  outcomes?: { row_id: number; tool: string; result: AnalyzeResult }[];
+  error?: string | null;
+}
+
+async function fetchAnalysisPass(versionId: number): Promise<AnalysisPass> {
+  const res = await fetch(`/api/produce/versions/${versionId}/analysis`);
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data.detail || data.error || 'Failed to read the analysis');
+  return data;
 }
 
 /** Thrown out of a wait the producer cancelled, so callers can tell it from a failure. */
@@ -413,13 +363,6 @@ class CancelledError extends Error {
     super(message);
     this.name = 'CancelledError';
   }
-}
-
-/** The task panel's rows for a pass: each console row and how many checks it runs. */
-function analysisRows(jobs: AnalyzeJob[], labelFor: (rowId: number) => string): TaskRow[] {
-  const totals = new Map<number, number>();
-  for (const job of jobs) totals.set(job.rowId, (totals.get(job.rowId) ?? 0) + 1);
-  return Array.from(totals, ([rowId, total]) => ({ label: labelFor(rowId), done: 0, total }));
 }
 
 /** The recommended outcomes, as queue cards. */
@@ -524,6 +467,10 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     setAnalyzed(false);
     setAnalyzedStemIds(new Set());
     setAnalysisNote(null);
+    setAnalyzing(false);
+    setAnalysisTask(null);
+    setSeparationTask(null);
+    startedHereRef.current = false;
   }, [sourceVersionId]);
   const [analyzingStemIds, setAnalyzingStemIds] = useState<Set<number>>(new Set());
   // Tempo as each row measured it. Kept from the analysis pass so a hand-added
@@ -533,14 +480,21 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   const [detectedBpm, setDetectedBpm] = useState<Record<number, number>>({});
   const [identifyingStemIds, setIdentifyingStemIds] = useState<Set<number>>(new Set());
 
-  // What the task panel shows for the two jobs this hook runs. A separation is
-  // a server job the page polls; a measuring pass is this page's own requests.
+  // What the task panel shows for the two jobs this hook follows. Both run on
+  // the server; this page only watches them.
   const [separationTask, setSeparationTask] = useState<SeparationState | null>(null);
   const [analysisTask, setAnalysisTask] = useState<AnalysisState | null>(null);
-  // Aborts whichever of the two is waiting (PROD-19), and remembers the stem
-  // set being separated so it can be cancelled on the server too.
+  // Aborts a Separate stems wait (PROD-19), and remembers the stem set being
+  // separated so it can be cancelled on the server too.
   const abortRef = useRef<AbortController | null>(null);
   const separatingSetIdRef = useRef<number | null>(null);
+  // Bumped to re-run the pass poll after starting one, so there is only ever
+  // one implementation of the polling itself.
+  const [passNonce, setPassNonce] = useState(0);
+  // This page started the pass, so it should report the outcome rather than
+  // quietly restoring it.
+  const startedHereRef = useRef(false);
+  const shownStemSetRef = useRef<number | null>(null);
 
   // Optimistic preload: a stem set for *this version* may already sit complete
   // on disk. Show it (waveforms, playback) the moment the tab mounts instead of
@@ -610,21 +564,128 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     };
   }, [songId, untaggedCount, sourceVersionId]);
 
-  // `forceNew=false` (Start analysis): never separate over stems that already
-  // exist *for this version* — if it has a complete stem set, reuse it and go
-  // straight to measuring. Demucs costs minutes, so making *new* stems is
-  // "Separate stems"' job alone; separation here is the first-time path, now
-  // per version rather than per song. Selecting a version nothing has been
-  // separated from therefore does cost a Demucs run — which is the only honest
-  // option, since the alternative is measuring another version's audio.
-  // `forceNew=true` ("Separate stems"): always wait for the *newest* set to
-  // finish, even if an older one is already complete — otherwise a forced
-  // separation would short-circuit straight back to the stale stems.
-  const waitForStemSet = useCallback(
-    async (forceNew: boolean, signal?: AbortSignal): Promise<StemSetRow> => {
+  // Follow the Start analysis pass for this version — from mount as well as
+  // from the button, which is what lets a producer leave and come back to its
+  // progress or its findings (PROD-11, PROD-22). A pass this page did not start
+  // and that has already finished is simply restored: its findings go on screen
+  // without a "done" task, since nothing just happened.
+  useEffect(() => {
+    if (sourceVersionId == null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const showStems = async (stemSetId: number) => {
+      if (shownStemSetRef.current === stemSetId) return;
+      const sets = await fetchStemSets(songId);
+      const set = sets.find((s) => s.id === stemSetId);
+      if (cancelled || !set) return;
+      shownStemSetRef.current = stemSetId;
+      setStems(set.stems);
+      setStemsOnAnotherVersion(false);
+      setSelectedStemId((prev) =>
+        prev === FULL_MIX_STEM_ID || (prev != null && set.stems.some((s) => s.id === prev))
+          ? prev
+          : FULL_MIX_STEM_ID
+      );
+    };
+
+    const applyFinished = (pass: AnalysisPass) => {
+      const rows = pass.rows ?? [];
+      const reporting = startedHereRef.current;
+      startedHereRef.current = false;
+      setAnalyzing(false);
+      setAnalysisNote(null);
+      setSeparationTask(null);
+      setAnalysisTask(null);
+
+      const startedAt = (pass.separation_started_at ?? Date.now() / 1000) * 1000;
+      if (pass.status === 'failed') {
+        // Stays up on a later visit too: a failure nobody saw still happened.
+        if (rows.length > 0) setAnalysisTask({ status: 'failed', rows, error: pass.error });
+        else setSeparationTask({ status: 'failed', startedAt, error: pass.error });
+        return;
+      }
+
+      const outcomes: AnalyzeOutcome[] = (pass.outcomes ?? []).map((o) => ({
+        rowId: o.row_id,
+        tool: o.tool,
+        result: o.result,
+      }));
+      const results = toFixEntries(outcomes);
+      setDetectedBpm(measuredTempos(outcomes));
+      // A re-separation mints new stem ids, so a manual card pinned to a stem
+      // that no longer exists has nothing left to run against.
+      const liveRowIds = new Set(rows.map((row) => row.row_id));
+      setFixes((prev) =>
+        mergeRowFixes(
+          prev.filter((f) => f.scope === 'master' || (f.stemId != null && liveRowIds.has(f.stemId))),
+          results
+        )
+      );
+      // A row cut off mid-pass was only partly measured; it must not read as clean.
+      setAnalyzedStemIds(
+        new Set(rows.filter((row) => row.done >= row.total).map((row) => row.row_id))
+      );
+      if (pass.status === 'cancelled') {
+        if (reporting && rows.length > 0) setAnalysisTask({ status: 'cancelled', rows });
+        else if (reporting) setSeparationTask({ status: 'cancelled', startedAt });
+        return;
+      }
+      if (reporting) setAnalysisTask({ status: 'done', rows });
+      setAnalyzed(true);
+    };
+
+    const tick = async () => {
+      let pass: AnalysisPass;
+      try {
+        pass = await fetchAnalysisPass(sourceVersionId);
+        if (pass.stem_set_id != null) await showStems(pass.stem_set_id);
+      } catch {
+        // A dropped poll is not a failed pass; try again on the next tick.
+        if (!cancelled) timer = setTimeout(tick, POLL_MS);
+        return;
+      }
+      if (cancelled) return;
+
+      if (pass.status === 'idle') {
+        setAnalyzing(false);
+        return;
+      }
+      if (pass.status !== 'running') {
+        applyFinished(pass);
+        return;
+      }
+
+      setAnalyzing(true);
+      setAnalyzed(false);
+      startedHereRef.current = true;
+      if (pass.stage === 'separating') {
+        setAnalysisNote('Separating into stems — this takes a few minutes…');
+        setSeparationTask({
+          status: 'running',
+          startedAt: (pass.separation_started_at ?? Date.now() / 1000) * 1000,
+        });
+      } else if (pass.stage === 'measuring') {
+        setAnalysisNote(null);
+        setSeparationTask(null);
+        setAnalysisTask({ status: 'running', rows: pass.rows ?? [] });
+      }
+      timer = setTimeout(tick, POLL_MS);
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [songId, sourceVersionId, passNonce]);
+
+  // Always waits for the *newest* set to finish, even if an older one is
+  // already complete — otherwise a forced separation would short-circuit
+  // straight back to the stale stems.
+  const waitForNewStemSet = useCallback(
+    async (signal?: AbortSignal): Promise<StemSetRow> => {
       let sets = await fetchStemSets(songId);
-      const existing = latestCompleteForVersion(sets, sourceVersionId);
-      if (!forceNew && existing) return existing;
 
       const running = sets.find(
         (s) => IN_FLIGHT.has(s.status) && s.source_version_id === sourceVersionId
@@ -674,12 +735,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   );
 
   const analyzeStemTool = useCallback(
-    async (stemId: number, tool: string, signal?: AbortSignal): Promise<AnalyzeOutcome | null> => {
+    async (stemId: number, tool: string): Promise<AnalyzeOutcome | null> => {
       const res = await fetch(`/api/produce/tools/${tool}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ song_id: songId, stem_id: stemId }),
-        signal,
       });
       // Checked before reading the body: one tool failing to analyze — or its
       // response never making it back — shouldn't sink the whole queue.
@@ -692,12 +752,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   );
 
   const analyzeMasterTool = useCallback(
-    async (tool: string, signal?: AbortSignal): Promise<AnalyzeOutcome | null> => {
+    async (tool: string): Promise<AnalyzeOutcome | null> => {
       const res = await fetch(`/api/produce/tools/${tool}/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ song_id: songId, source_version_id: sourceVersionId }),
-        signal,
       });
       if (!res.ok) return null;
       const data = await readJson(res);
@@ -707,116 +766,29 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     [songId, sourceVersionId]
   );
 
-  const runAnalysis = useCallback(
-    async () => {
-      if (sourceVersionId == null) return;
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setAnalyzing(true);
-      setAnalyzed(false);
-      setAnalysisNote(null);
-      setError(null);
-      setSeparationTask(null);
-      setAnalysisTask(null);
-      // Measurements describe audio that is about to be re-measured, so they
-      // go; producer-added cards are not measurements and stay put.
-      setFixes((prev) => prev.filter((f) => f.source === 'manual'));
-      setAnalyzedStemIds(new Set());
-      try {
-        const stemSet = await waitForStemSet(false, controller.signal);
-        setAnalysisNote(null);
-        setStems(stemSet.stems);
-        setStemsOnAnotherVersion(false);
-        setSelectedStemId((prev) =>
-          prev === FULL_MIX_STEM_ID || (prev != null && stemSet.stems.some((s) => s.id === prev))
-            ? prev
-            : FULL_MIX_STEM_ID
-        );
-
-        const jobs: AnalyzeJob[] = [];
-        for (const tool of MASTER_TOOLS) {
-          jobs.push({ rowId: FULL_MIX_STEM_ID, run: (signal) => analyzeMasterTool(tool, signal) });
-        }
-        for (const stem of stemSet.stems) {
-          for (const tool of analysisToolsFor(stem)) {
-            jobs.push({ rowId: stem.id, run: (signal) => analyzeStemTool(stem.id, tool, signal) });
-          }
-        }
-
-        const labelFor = (rowId: number) => {
-          const stem = stemSet.stems.find((s) => s.id === rowId);
-          return stem ? stemLabel(stem) : FULL_MIX_STEM_NAME;
-        };
-        const rows = analysisRows(jobs, labelFor);
-        // Same order analysisRows uses — rows are matched by position, since two
-        // stems can carry the same label.
-        const rowOrder = Array.from(new Set(jobs.map((job) => job.rowId)));
-        const doneByRow = new Map<number, number>();
-        setAnalysisTask({ status: 'running', rows });
-
-        const outcomes = await runAnalyzeJobs(jobs, {
-          signal: controller.signal,
-          onDone: (rowId) => {
-            doneByRow.set(rowId, (doneByRow.get(rowId) ?? 0) + 1);
-            const index = rowOrder.indexOf(rowId);
-            setAnalysisTask((prev) =>
-              prev && {
-                ...prev,
-                rows: prev.rows.map((row, i) =>
-                  i === index ? { ...row, done: doneByRow.get(rowId) ?? 0 } : row
-                ),
-              }
-            );
-          },
-        });
-
-        // Cancelled mid-pass: keep what the finished rows measured, and only
-        // call those rows analyzed — a half-measured stem reads as clean.
-        const cancelled = controller.signal.aborted;
-        const finishedRows = new Set(
-          rowOrder.filter(
-            (rowId) =>
-              (doneByRow.get(rowId) ?? 0) === jobs.filter((job) => job.rowId === rowId).length
-          )
-        );
-        const kept = cancelled
-          ? outcomes.filter((outcome) => finishedRows.has(outcome.rowId))
-          : outcomes;
-        const results = toFixEntries(kept);
-        setDetectedBpm(measuredTempos(kept));
-        // A re-separation mints new stem ids, so a manual card pinned to a stem
-        // that no longer exists has nothing left to run against.
-        const liveStemIds = new Set(stemSet.stems.map((s) => s.id));
-        setFixes((prev) =>
-          mergeRowFixes(
-            prev.filter((f) => f.scope === 'master' || (f.stemId != null && liveStemIds.has(f.stemId))),
-            results
-          )
-        );
-        if (cancelled) {
-          setAnalyzedStemIds(finishedRows);
-          setAnalysisTask((prev) => prev && { ...prev, status: 'cancelled' });
-          return;
-        }
-        setAnalyzedStemIds(
-          new Set([FULL_MIX_STEM_ID, ...stemSet.stems.map((s) => s.id)])
-        );
-        setAnalysisTask((prev) => prev && { ...prev, status: 'done' });
-        setAnalyzed(true);
-      } catch (err) {
-        // A cancelled separation is reported by its own task, not as an error.
-        if (!(err instanceof CancelledError)) {
-          setError((err as Error).message);
-          setAnalysisTask((prev) => prev && { ...prev, status: 'failed', error: (err as Error).message });
-        }
-      } finally {
-        setAnalyzing(false);
-        setAnalysisNote(null);
-        abortRef.current = null;
-      }
-    },
-    [sourceVersionId, waitForStemSet, analyzeStemTool, analyzeMasterTool]
-  );
+  /** Hand a pass to the server; the poll above follows it from here. */
+  const startAnalysis = useCallback(async () => {
+    if (sourceVersionId == null) return;
+    startedHereRef.current = true;
+    setAnalyzing(true);
+    setAnalyzed(false);
+    setAnalysisNote(null);
+    setError(null);
+    setSeparationTask(null);
+    setAnalysisTask(null);
+    // Measurements describe audio that is about to be re-measured, so they
+    // go; producer-added cards are not measurements and stay put.
+    setFixes((prev) => prev.filter((f) => f.source === 'manual'));
+    setAnalyzedStemIds(new Set());
+    try {
+      await postJson(`/api/produce/versions/${sourceVersionId}/analysis/start`, {});
+      setPassNonce((n) => n + 1);
+    } catch (err) {
+      startedHereRef.current = false;
+      setAnalyzing(false);
+      setError((err as Error).message);
+    }
+  }, [sourceVersionId]);
 
   /**
    * Re-measure one console row on its own — a single stem, or the full mix
@@ -830,15 +802,15 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setAnalyzingStemIds((prev) => new Set(prev).add(stemId));
       setError(null);
       try {
-        const stem = stems.find((s) => s.id === stemId);
-        const outcomes = await runAnalyzeJobs(
-          isFullMix
-            ? MASTER_TOOLS.map((tool) => ({ rowId: stemId, run: () => analyzeMasterTool(tool) }))
-            : (stem ? analysisToolsFor(stem) : [...PER_STEM_TOOLS]).map((tool) => ({
-                rowId: stemId,
-                run: () => analyzeStemTool(stemId, tool),
-              }))
+        // Asked fresh, so a stem's latest tags decide whether pitch is measured.
+        const { sets, masterAnalysisTools } = await fetchStemListing(songId);
+        const tools = isFullMix
+          ? masterAnalysisTools
+          : sets.flatMap((set) => set.stems).find((s) => s.id === stemId)?.analysisTools ?? [];
+        const settled = await mapWithConcurrency(tools, ANALYZE_CONCURRENCY, (tool) =>
+          isFullMix ? analyzeMasterTool(tool) : analyzeStemTool(stemId, tool)
         );
+        const outcomes = settled.filter((entry): entry is AnalyzeOutcome => entry !== null);
         const results = toFixEntries(outcomes);
         setDetectedBpm((prev) => ({ ...prev, ...measuredTempos(outcomes) }));
         setFixes((prev) => {
@@ -860,15 +832,13 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         });
       }
     },
-    [sourceVersionId, stems, analyzeStemTool, analyzeMasterTool]
+    [songId, sourceVersionId, analyzeStemTool, analyzeMasterTool]
   );
 
-  const startAnalysis = useCallback(() => runAnalysis(), [runAnalysis]);
-
-  /** Stop a measuring pass: nothing new starts, and finished rows are kept. */
-  const cancelAnalysis = useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
+  /** Stop the pass on the server: nothing new starts, and finished rows are kept. */
+  const cancelAnalysis = useCallback(async () => {
+    await postJson(`/api/produce/versions/${sourceVersionId}/analysis/cancel`, {});
+  }, [sourceVersionId]);
 
   /**
    * Cancel the separation in flight. The server marks the set cancelled at once
@@ -876,6 +846,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
    * free immediately, keeping the stems this version had.
    */
   const cancelSeparation = useCallback(async () => {
+    // A separation Start analysis set off belongs to that pass.
+    if (analyzing) {
+      await cancelAnalysis();
+      return;
+    }
     const stemSetId = separatingSetIdRef.current;
     abortRef.current?.abort();
     setSeparationTask((prev) => prev && { ...prev, status: 'cancelled' });
@@ -885,13 +860,21 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     } catch (err) {
       setError((err as Error).message);
     }
-  }, []);
+  }, [analyzing, cancelAnalysis]);
 
   /** Clear finished tasks from the panel; running ones stay. */
   const dismissTasks = useCallback(() => {
     setSeparationTask((prev) => (prev?.status === 'running' ? prev : null));
     setAnalysisTask((prev) => (prev?.status === 'running' ? prev : null));
-  }, []);
+    // A failure is stored so a later visit still reports it; clearing it here
+    // is what stops that.
+    if (
+      sourceVersionId != null &&
+      (separationTask?.status === 'failed' || analysisTask?.status === 'failed')
+    ) {
+      void fetch(`/api/produce/versions/${sourceVersionId}/analysis/dismiss`, { method: 'POST' });
+    }
+  }, [sourceVersionId, separationTask, analysisTask]);
 
   /**
    * Separate this version into stems and stop there.
@@ -912,7 +895,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     setError(null);
     setSeparationTask(null);
     try {
-      const stemSet = await waitForStemSet(true, controller.signal);
+      const stemSet = await waitForNewStemSet(controller.signal);
       setStems(stemSet.stems);
       setStemsOnAnotherVersion(false);
       setSelectedStemId((prev) =>
@@ -932,7 +915,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setAnalysisNote(null);
       abortRef.current = null;
     }
-  }, [sourceVersionId, waitForStemSet]);
+  }, [sourceVersionId, waitForNewStemSet]);
 
   /**
    * Relabel a stem — Demucs can only call a banjo "other", so the producer
@@ -1218,12 +1201,10 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   );
 
   /**
-   * Render the detected queue right after analysing it.
+   * Render the queue as it stands, ahead of Preview or Save.
    *
-   * Analysis only *measures* — every fix was still unrendered when the producer
-   * pressed a button, which is why saving took minutes. Since the reason to
-   * analyse is almost always to hear or keep the result, the render now starts
-   * as soon as the findings are in, and Preview/Save land on a finished file.
+   * The server already does this when a pass finishes; this is the task panel's
+   * retry for when that render fails.
    */
   const warmRender = useCallback(async () => {
     try {

@@ -73,7 +73,15 @@ function completeSet() {
     status: 'complete',
     source_version_id: VERSION_ID,
     stems: [
-      { id: STEM_ID, name: 'vocals', display_name: null, instruments: [], silent: false, tagged: true },
+      {
+        id: STEM_ID,
+        name: 'vocals',
+        display_name: null,
+        instruments: [],
+        silent: false,
+        tagged: true,
+        analysis_tools: ['reduce_noise', 'apply_eq', 'remove_hum', 'correct_beats', 'remove_artifacts', 'correct_pitch'],
+      },
     ],
   };
 }
@@ -86,27 +94,38 @@ function installFakeApi(recommends: string[] = []) {
   const posts: Array<{ url: string; body: any }> = [];
   const json = (data: unknown) =>
     ({ ok: true, status: 200, text: async () => JSON.stringify(data) }) as Response;
+  const finding = {
+    recommended: true,
+    confidence: 'high',
+    reason: 'measured',
+    findings: { adjustments: [1, 2] },
+    params: { low_gain_db: -3, presence_gain_db: 1 },
+  };
+  const rowIds = [FULL_MIX_STEM_ID, STEM_ID];
+  const pass = {
+    status: 'complete',
+    stem_set_id: 9,
+    rows: rowIds.map((row_id) => ({ row_id, label: String(row_id), done: 5, total: 5 })),
+    outcomes: rowIds.flatMap((row_id) =>
+      recommends.map((tool) => ({ row_id, tool, result: finding }))
+    ),
+  };
 
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (init?.method === 'POST') {
       posts.push({ url, body: init.body ? JSON.parse(String(init.body)) : null });
     }
-    if (url === `/api/produce/songs/${SONG_ID}/stems`) return json({ stem_sets: [completeSet()] });
+    if (url === `/api/produce/songs/${SONG_ID}/stems`) {
+      return json({ stem_sets: [completeSet()], master_analysis_tools: ['apply_eq'] });
+    }
     if (url === '/api/produce/tools') return json({ tools: TOOLS });
+    if (url.startsWith(`/api/produce/versions/${VERSION_ID}/analysis`)) return json(pass);
     const analyze = url.match(/^\/api\/produce\/tools\/([^/]+)\/analyze$/);
     if (analyze) {
       const tool = analyze[1];
       if (!recommends.includes(tool)) return json({ result: null });
-      return json({
-        result: {
-          recommended: true,
-          confidence: 'high',
-          reason: 'measured',
-          findings: { adjustments: [1, 2] },
-          params: { low_gain_db: -3, presence_gain_db: 1 },
-        },
-      });
+      return json({ result: finding });
     }
     return json({});
   });
@@ -127,9 +146,7 @@ async function analyzed(recommends: string[] = []) {
   const api = installFakeApi(recommends);
   const hook = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
   await act(async () => {
-    const running = hook.result.current.startAnalysis();
-    await vi.advanceTimersByTimeAsync(20_000);
-    await running;
+    await vi.advanceTimersByTimeAsync(100);
   });
   await act(async () => {
     await hook.result.current.ensureToolParams();
@@ -343,6 +360,9 @@ describe('producer-added fixes', () => {
       const running = result.current.startAnalysis();
       await vi.advanceTimersByTimeAsync(20_000);
       await running;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
     });
 
     expect(result.current.fixesForStem(STEM_ID).map((f) => f.id)).toEqual([

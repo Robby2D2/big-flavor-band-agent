@@ -36,6 +36,9 @@ class FakeDatabaseManager:
     async def ensure_song_stems_tables(self):
         self.song_stems_ensured = True
 
+    async def ensure_song_version_analyses_table(self):
+        self.version_analyses_ensured = True
+
     async def ensure_song_lyric_timings_table(self):
         self.lyric_timings_ensured = True
 

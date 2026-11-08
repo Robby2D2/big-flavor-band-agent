@@ -2,9 +2,9 @@
  * What the task panel says about the work in flight on the produce page.
  *
  * Four kinds of work can be running after Start analysis, each owned by a
- * different piece of state: separating stems (a server job, polled), measuring
- * them (requests from this page), rendering the fixes (a server job with
- * step-by-step progress), and rendering a row's fixes so it can be played. This
+ * different piece of state: separating stems and measuring them (one server
+ * job, polled), rendering the fixes (a server job with step-by-step progress),
+ * and rendering a row's fixes so it can be played. This
  * module turns those into one list of tasks the panel draws, and it is pure so
  * every wording and count can be tested without a DOM.
  *

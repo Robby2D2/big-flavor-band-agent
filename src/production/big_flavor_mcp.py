@@ -173,7 +173,13 @@ class BigFlavorMCPServer:
             start_s = args.pop("start_s", None)
             end_s = args.pop("end_s", None)
             args.pop("output_path", None)  # not meaningful for analyze
-            return await tool.analyze(self._ctx, file_path, start_s=start_s, end_s=end_s, **args)
+            # On a worker thread for the same reason as apply above: measuring
+            # is CPU-bound, and a pass on the event loop stalls its own progress
+            # polls along with every other request.
+            return await asyncio.to_thread(
+                asyncio.run,
+                tool.analyze(self._ctx, file_path, start_s=start_s, end_s=end_s, **args),
+            )
         except Exception as e:
             logger.error(f"Error analyzing with tool {name}: {e}")
             return {"error": str(e)}

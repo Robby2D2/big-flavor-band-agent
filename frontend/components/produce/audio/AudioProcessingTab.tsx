@@ -93,14 +93,13 @@ export default function AudioProcessingTab({
 
   const queue = useProcessingQueue(songId, sourceVersionId);
 
-  // Analysis only measures; rendering is what takes minutes. Kick the render
-  // off the moment the findings land, so play, Preview and Save meet finished
-  // audio instead of starting on it. Fires once per analysis pass (`analyzed`
-  // is reset to false at the start of each, and a cancelled pass never sets it).
+  // The server starts rendering the moment a pass's findings land, so play,
+  // Preview and Save meet finished audio. All the page does is start following
+  // that render (`analyzed` is reset to false at the start of each pass, and a
+  // cancelled pass never sets it).
   const { analyzed, warmRender } = queue;
   useEffect(() => {
-    if (!analyzed) return;
-    void warmRender().then(onRenderStarted);
+    if (analyzed) onRenderStarted();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyzed]);
 
@@ -735,7 +734,7 @@ export default function AudioProcessingTab({
     setTaskError(null);
     try {
       if (id === 'separate') await queue.cancelSeparation();
-      else if (id === 'analyze') queue.cancelAnalysis();
+      else if (id === 'analyze') await queue.cancelAnalysis();
       else if (id === 'playback') cancelPlaybackRender();
       // Finished on the server but still loading into the console: stop the
       // loading, and play the original audio.

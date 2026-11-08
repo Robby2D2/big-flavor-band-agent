@@ -4,6 +4,9 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
+> Pruned 2026-11-08 (206 lines → ~195): the 2026-10-16 PROD-20 lyric-track entry moved to
+> [memory/produce_console.md](memory/produce_console.md).
+>
 > Pruned 2026-10-24 (207 lines → ~150): the 2026-10-15 entries moved — the production-frontend
 > deploy fix to [memory/deploy_ops.md](memory/deploy_ops.md); lyric search ranking and the PyAV pin
 > to [memory/search_rag.md](memory/search_rag.md); radio lyrics, real pause and the listener count to
@@ -17,6 +20,19 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 > [memory/scraping.md](memory/scraping.md); v0.20.0 to [memory/releases.md](memory/releases.md).
 > What stays is the 2026-10-15 work and the `docs/requirements/` contract. Earlier prunes
 > (2026-08-01 → 2026-09-27) are recorded in [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md)'s table.
+
+---
+
+### 2026-11-08 — Start analysis runs on the server, so you can leave and come back (PROD-22)
+
+Leaving the produce page lost a pass: it was a loop of browser requests with findings in React
+state. New `src/api/analysis_jobs.py` runs separate → measure → warm-render as a background job;
+the last outcome per version lives in `song_version_analyses` (migration 26), retired once the
+version is re-separated. The page polls on mount and reopens on the last-selected version. Two
+things found on the way: every tool's `analyze()` ran CPU work on the event loop (now a worker
+thread, as `apply` was), and a stem set left `running` by a restart would have been waited on
+forever (`StemJobManager.is_running` guards it). Not stored: single-row re-analysis, and a
+producer's toggles and added cards. Details in ARCHITECTURE.md.
 
 ---
 
@@ -147,29 +163,6 @@ restart (`play(from)`), because the console held only one take per row (`fixedBu
   same offset on the same clock, with a 15 ms crossfade (`Voice` = src → fade → row gain). End of
   song is detected by the rAF tick, not `onended` (a swap stops sources early). Callers no longer
   re-`play()` to pick up a landed render.
-
----
-
-### 2026-10-16 — Lyric extraction picks its vocal tracks (PROD-20)
-
-Lyric extraction used `get_vocals_stem_path()` (now removed). It had two bugs:
-1. **Wrong mic.** It matched `st.name = 'vocals'` exactly. A session take names its stems by role
-   in track order (`vocals`, `vocals-2`, …, `session_render._unique_name`), so only the *first*
-   vocal mic was ever transcribed. On 1000001/1000002 that was "4 Kev Vox" (harmonica/accordion).
-   "8 Tom Vox", the actual singer, was ignored.
-2. **Wrong take.** It took the newest complete stem set of *any* version. Song 1000001's newest set
-   (48) belongs to version 104, while the audio being transcribed is the published version 95
-   (set 39), so the timings wouldn't line up with what plays.
-
-Now `lyrics_jobs.find_lyrics_stem_set()` takes the newest complete set whose `source_version_id`
-matches the version being transcribed. That version comes from the router's new
-`_default_source_version_id()`, which is also used by `_resolve_clean_source_path`. A catalog song
-(version None) falls back to its newest set. By default, every stem with "vocal" in `name` or
-`display_name` is used (`is_vocal_stem`); several stems are summed with
-`session_render.mix_audio_files` before Whisper. New `GET .../lyrics/vocal-tracks` lists the set's
-stems with `default` flags. `POST .../lyrics/extract` takes an optional `{stem_ids}`: omitted means
-the defaults, `[]` means the full mix via Demucs, and ids outside the set get a 400. LyricsPanel has
-a "From: …" multi-select dropdown next to Re-extract.
 
 ---
 

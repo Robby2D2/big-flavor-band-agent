@@ -42,6 +42,11 @@ catalog song (OKR **KR5.1**).
 **PROD-08** — A producer MUST be able to see what analysis found before acting on it — the recommended
 fixes, not just an "improve" button.
 
+**PROD-22** — Analysis MUST keep running when the producer leaves the page, and returning to that
+version MUST show its progress or what it found, for as long as the stems it measured are still that
+version's current ones. Re-running analysis MUST NOT be the only way back to findings already made.
+*Why:* a pass runs for minutes, and it used to live in the page, so walking away cost the whole result.
+
 ---
 
 ## Applying fixes
