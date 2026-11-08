@@ -251,7 +251,7 @@ def test_several_stems_are_mixed_into_one_transcription(tmp_path):
         def is_available(self):
             return True
 
-        def extract_lyrics(self, path, separate_vocals, word_timestamps):
+        def extract_lyrics(self, path, separate_vocals, word_timestamps, vocals_isolated):
             audio, sample_rate = sf.read(path)
             heard.update(path=path, audio=audio, rate=sample_rate,
                          separate=separate_vocals)

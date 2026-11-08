@@ -145,6 +145,13 @@ def _mix_vocal_stems(paths: Sequence[str], output_path: str) -> str:
     return output_path
 
 
+def _vocals_file(vocals_paths: Sequence[str], temp_dir: str) -> str:
+    """One file holding every chosen vocal stem."""
+    if len(vocals_paths) > 1:
+        return _mix_vocal_stems(vocals_paths, os.path.join(temp_dir, "vocals-mix.wav"))
+    return vocals_paths[0]
+
+
 def _blocking_extract(
     audio_path: str,
     # Below the extractor's own 0.5: the phantom filter now catches what that
@@ -186,16 +193,12 @@ def _blocking_extract(
         raise RuntimeError("Lyrics extractor dependencies not installed")
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        if len(vocals_paths) > 1:
-            source = _mix_vocal_stems(
-                vocals_paths, os.path.join(temp_dir, "vocals-mix.wav")
-            )
-        else:
-            source = vocals_paths[0] if vocals_paths else audio_path
+        source = _vocals_file(vocals_paths, temp_dir) if vocals_paths else audio_path
         result = extractor.extract_lyrics(
             source,
             separate_vocals=needs_demucs,
             word_timestamps=word_timestamps,
+            vocals_isolated=reuse_stem,
         )
     if result.get("error"):
         raise RuntimeError(result["error"])
@@ -340,6 +343,83 @@ async def extract_and_store(
         "line_count": len(result["lines"]),
         "audio_source": result["audio_source"],
         "model": result["model"],
+    }
+
+
+def _blocking_snap(
+    lines: List[Dict[str, Any]],
+    vocals_paths: Sequence[str],
+    audio_path: Optional[str] = None,
+    extractor=None,
+) -> int:
+    """Run ``snap_line_starts`` over a song's vocals (blocking).
+
+    Uses its stems, or separates ``audio_path`` when it has none.
+    ``separate_vocals`` hands the mix back when it fails, and the mix's
+    instruments would hide the silence being looked for, so that is an error.
+    """
+    from src.rag.lyrics_extractor import decode_audio, snap_line_starts
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        if vocals_paths:
+            source = _vocals_file(vocals_paths, temp_dir)
+        else:
+            source = extractor.separate_vocals(audio_path, temp_dir)
+            if source is None or source == audio_path:
+                raise RuntimeError("Vocal separation failed")
+        samples = decode_audio(source, sampling_rate=16000)
+    return snap_line_starts(lines, samples)
+
+
+async def snap_stored_timings(
+    song_id: int,
+    db,
+    dry_run: bool = False,
+    audio_path: Optional[str] = None,
+    extractor=None,
+) -> Optional[Dict[str, Any]]:
+    """Correct a song's stored line starts against its vocals, keeping its words.
+
+    For timings extracted before ``snap_line_starts`` existed. Nothing is
+    transcribed and the lyric text is untouched. A song with no vocal stem on
+    disk is separated from ``audio_path`` when a caller supplies that and an
+    ``extractor``. Returns None when there are no current timings or no vocals
+    to read; a song already corrected finds nothing left to move, so this is
+    safe to repeat.
+    """
+    record = await db.get_lyric_timings(song_id)
+    if not record or record.get("status") == "stale":
+        return None
+    vocals_paths = await resolve_vocals_paths(song_id, db)
+    if not vocals_paths and not (audio_path and extractor):
+        return None
+
+    lines = record["lines"]
+    before = [line["start"] for line in lines]
+    moved = await run_in_threadpool(_blocking_snap, lines, vocals_paths, audio_path, extractor)
+
+    # Separation takes a minute or so: an edit or re-extraction made during it
+    # is newer than these lines, and saving them would undo it.
+    latest = await db.get_lyric_timings(song_id)
+    unchanged = bool(latest) and latest.get("updated_at") == record.get("updated_at")
+    if moved and not dry_run and unchanged:
+        await db.save_lyric_timings(
+            song_id,
+            lines,
+            source=record["source"],
+            model=record["model"],
+            audio_source=record["audio_source"],
+            format_version=record["format_version"],
+        )
+    return {
+        "song_id": song_id,
+        "moved": moved,
+        "line_count": len(lines),
+        "shifts": [
+            round(line["start"] - old, 2)
+            for line, old in zip(lines, before)
+            if line["start"] != old
+        ],
     }
 
 

@@ -4,6 +4,9 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
+> Pruned 2026-11-08 again (209 lines → ~190): the 2026-10-23 phantom-lyrics entry moved to
+> [memory/search_rag.md](memory/search_rag.md).
+>
 > Pruned 2026-11-08 (206 lines → ~195): the 2026-10-16 PROD-20 lyric-track entry moved to
 > [memory/produce_console.md](memory/produce_console.md).
 >
@@ -20,6 +23,16 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 > [memory/scraping.md](memory/scraping.md); v0.20.0 to [memory/releases.md](memory/releases.md).
 > What stays is the 2026-10-15 work and the `docs/requirements/` contract. Earlier prunes
 > (2026-08-01 → 2026-09-27) are recorded in [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md)'s table.
+
+---
+
+### 2026-11-08 — Follow-along lyrics: line starts snapped onto the voice
+
+Lines lit up early because Whisper stretches a line's first word over the preceding silence: on 22
+songs with stems, 20% of first words held 300+ ms of silence vs 2% of later words. `snap_line_starts()`
+now corrects this during extraction from isolated vocals, and `scripts/snap_lyric_timings.py` corrected
+those 22 songs (151 lines), confirmed by ear. Its `--separate` mode re-runs Demucs for the 1,084 timed
+songs with no stems on disk, 7-16 s per song, resumable through `lyric_snap_done.json`.
 
 ---
 
@@ -110,24 +123,6 @@ Zip uploads of mp3s work through the same path.
   page) — it writes to the live DB and was left for the owner to run.
 
 ---
-
-### 2026-10-23 — Lyric extraction drops Whisper's phantom lines; produce page gets follow-along
-
-Song 2304 came back as "Thank you." ×7 and, from a 4-stem mix, "© transcript Emily Beynon" ×10 —
-Whisper's training-subtitle sign-offs, emitted over instrumental audio at *high* confidence, so the
-0.5 floor never caught them. `transcribe_audio()` now drops whole-segment phantoms
-(`is_phantom_segment()`, `tests/test_lyrics_phantoms.py`) and runs with
-`condition_on_previous_text=False`, which on 2304's vocal stem recovered the whole missing first
-verse and stopped a line repeating through a break. Tried and rejected: `vad_filter` (kills the
-phantoms but merges lines into 30–50s segments — useless for follow-along) and
-`hallucination_silence_threshold` (no change). An all-phantom transcript is now empty → "No lyrics
-detected" → the job fails and the saved lyrics survive. Same day, follow-up: `transcribe_audio()`
-peak-normalizes to -1 dBFS before Whisper (`_peak_normalized()`) — 2304's original vocal stem peaked
-at 0.29 and lost whole verses (8 lines → 23 once normalized) — and the API job's confidence floor
-dropped 0.5 → 0.4 (real lines scored 0.47). Catalog songs always extract from the *original's* stem
-set, not the default cleaned version's (`_default_source_version_id` is None for them). The produce `TransportBar` got a **Lyrics**
-toggle that refetches `/api/songs/{id}/lyrics/timed` on each open and runs `LyricsFollower` off the
-stem playhead.
 
 ### 2026-10-21 — Vocal fixes: pitch correction stops clicking, click removal stops muffling
 

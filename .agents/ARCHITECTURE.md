@@ -214,6 +214,12 @@ good timings) and the player then falls back to static lyrics. Read paths: **lis
 `GET /api/songs/{id}/lyrics/timed` (search router) for playback, and the editor-gated
 `GET/PUT /api/produce/songs/{id}/lyrics` which also carries `timings`.
 
+Whisper stretches a line's first word back over the silence before it, so on isolated vocals
+`snap_line_starts()` (`src/rag/lyrics_extractor.py`) moves that word and the line's start onto the
+first real rise in vocal energy. It never runs on a full mix, where instruments fill the silence.
+`scripts/snap_lyric_timings.py` applies it to already-stored timings, reading stems on disk or, with
+`--separate`, running Demucs again (resumable through a JSON ledger of finished songs).
+
 `lyrics_jobs.extract_and_store()` is the single seam for "transcribe one song and persist it" — both the
 background job (`LyricsJobManager`) and the catalog backfill script go through it, so the UI's
 "Re-extract" button and a batch run can't diverge. `scripts/backfill_lyric_timings.py` drives it over the

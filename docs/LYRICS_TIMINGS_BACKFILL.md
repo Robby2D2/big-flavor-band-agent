@@ -162,6 +162,31 @@ Demucs isn't loading. Check `docker logs bigflavor-backend` for import errors fr
 
 ---
 
+## Lines lighting up before they are sung
+
+Whisper stretches a line's first word back over the silence before it. Extraction from isolated
+vocals now corrects that as it runs. Timings stored before that fix can be corrected without
+re-transcribing, for any song with a vocal stem still on disk:
+
+```bash
+docker exec bigflavor-backend python -m scripts.snap_lyric_timings --dry-run
+docker exec bigflavor-backend python -m scripts.snap_lyric_timings
+```
+
+It keeps the words and lyric text, skips stale timings, and finds nothing to move on a second run.
+
+Songs whose vocals were discarded after the backfill need `--separate`, which runs Demucs on each.
+Finished songs go in a ledger (`lyric_snap_done.json`, override with `--ledger`), so to resume a
+stopped run, run the same command again. Failed songs are retried.
+
+```bash
+docker exec bigflavor-backend python -m scripts.snap_lyric_timings --separate --limit 3
+docker exec -d bigflavor-backend sh -c \
+  'python -m scripts.snap_lyric_timings --separate > /tmp/snap.log 2>&1'
+```
+
+---
+
 ## Related
 
 - Design and rationale: [`.agents/ARCHITECTURE.md`](../.agents/ARCHITECTURE.md) → *Search & RAG* →

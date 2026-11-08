@@ -184,3 +184,23 @@ catches the exception and returns it as `result["error"]`, so the log shows only
 `faster_whisper.audio.decode_audio(<file>)` in the container for the real traceback. Pinned `av<19` in
 `requirements-api.txt` and `setup/requirements.txt`; drop the pin once faster-whisper stops passing
 `metadata_errors`.
+
+## Moved from MEMORY.md (2026-11-08 prune)
+
+### 2026-10-23 — Lyric extraction drops Whisper's phantom lines; produce page gets follow-along
+
+Song 2304 came back as "Thank you." ×7 and, from a 4-stem mix, "© transcript Emily Beynon" ×10 —
+Whisper's training-subtitle sign-offs, emitted over instrumental audio at *high* confidence, so the
+0.5 floor never caught them. `transcribe_audio()` now drops whole-segment phantoms
+(`is_phantom_segment()`, `tests/test_lyrics_phantoms.py`) and runs with
+`condition_on_previous_text=False`, which on 2304's vocal stem recovered the whole missing first
+verse and stopped a line repeating through a break. Tried and rejected: `vad_filter` (kills the
+phantoms but merges lines into 30–50s segments — useless for follow-along) and
+`hallucination_silence_threshold` (no change). An all-phantom transcript is now empty → "No lyrics
+detected" → the job fails and the saved lyrics survive. Same day, follow-up: `transcribe_audio()`
+peak-normalizes to -1 dBFS before Whisper (`_peak_normalized()`) — 2304's original vocal stem peaked
+at 0.29 and lost whole verses (8 lines → 23 once normalized) — and the API job's confidence floor
+dropped 0.5 → 0.4 (real lines scored 0.47). Catalog songs always extract from the *original's* stem
+set, not the default cleaned version's (`_default_source_version_id` is None for them). The produce `TransportBar` got a **Lyrics**
+toggle that refetches `/api/songs/{id}/lyrics/timed` on each open and runs `LyricsFollower` off the
+stem playhead.
