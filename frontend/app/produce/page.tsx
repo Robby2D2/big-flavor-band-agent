@@ -102,10 +102,6 @@ export default function ProducePage() {
   const [cleanResults, setCleanResults] = useState<CleanResultRow[]>([]);
   const [cleanError, setCleanError] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadSongs();
-  }, []);
-
   const loadSongs = async () => {
     try {
       const response = await fetch('/api/produce/songs');
@@ -125,6 +121,12 @@ export default function ProducePage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // Fetch on mount: loadSongs() only sets state after its request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadSongs();
+  }, []);
 
   const visibleSongs = useMemo(() => {
     const filtered = songs.filter((song) =>

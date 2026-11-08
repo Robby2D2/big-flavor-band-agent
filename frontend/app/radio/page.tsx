@@ -94,6 +94,8 @@ export default function RadioPage() {
 
   // Poll radio state
   useEffect(() => {
+    // Fetch on mount: fetchRadioState() only sets state after its request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchRadioState();
     const interval = setInterval(fetchRadioState, 3000); // Poll every 3 seconds
 

@@ -56,11 +56,6 @@ export default function AdminPage() {
   const [newInviteUrl, setNewInviteUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    loadUsers();
-    loadInvites();
-  }, []);
-
   const loadUsers = async () => {
     try {
       const response = await fetch('/api/admin/users');
@@ -123,6 +118,13 @@ export default function AdminPage() {
       console.error('Failed to load invites:', err);
     }
   };
+
+  useEffect(() => {
+    // Fetch on mount: both loaders only set state after their requests resolve.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadUsers();
+    loadInvites();
+  }, []);
 
   const createInvite = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -38,28 +38,19 @@ export default function ProduceSongPage({
   const [versionBusyId, setVersionBusyId] = useState<number | null>(null);
   // Which version the details panel acts on. Lives here, not in
   // AudioProcessingTab, because the list that sets it is rendered here.
-  const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
+  const [chosenVersionId, setSelectedVersionId] = useState<number | null>(null);
 
   // Keep a valid selection: default to whatever is published, and fall back
-  // when the selected version is renamed away or deleted.
-  useEffect(() => {
-    setSelectedVersionId((prev) => {
-      if (prev != null && versions.some((v) => v.id === prev)) return prev;
-      const published = versions.find((v) => v.is_published);
-      return published?.id ?? versions[0]?.id ?? null;
-    });
-  }, [versions]);
+  // when the chosen version is renamed away or deleted. Derived rather than
+  // synced in an effect, so a version chosen before the list has reloaded is
+  // picked up the moment it appears.
+  const selectedVersionId =
+    chosenVersionId != null && versions.some((v) => v.id === chosenVersionId)
+      ? chosenVersionId
+      : versions.find((v) => v.is_published)?.id ?? versions[0]?.id ?? null;
 
-  useEffect(() => {
-    if (Number.isNaN(songId)) {
-      setError('Invalid song id.');
-      setLoading(false);
-      return;
-    }
-    loadSong();
-    loadVersions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [songId]);
+  // An unparseable id never fetches, so its error is derived rather than set.
+  const invalidId = Number.isNaN(songId);
 
   const loadSong = async () => {
     try {
@@ -100,12 +91,21 @@ export default function ProduceSongPage({
     }
   };
 
+  useEffect(() => {
+    if (invalidId) return;
+    // Fetch on mount. loadVersions() raises its spinner first, the one
+    // synchronous update here, and that is wanted: the list shows it is loading.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadSong();
+    loadVersions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [songId]);
+
   // A background render adds a version when it lands, so the list reloads
   // itself rather than waiting for the producer to press Refresh.
   // A finished save is the version you now want to be working from, and the
   // fixes on screen were measured against the one you started from. Reload the
-  // list first so the new version exists, then select it — selecting before it
-  // is in `versions` would be undone by the guard below.
+  // list first so the new version exists, then select it.
   const handleVersionSaved = async (versionId: number | null) => {
     await loadVersions();
     if (versionId != null) {
@@ -197,7 +197,7 @@ export default function ProduceSongPage({
     }
   };
 
-  if (loading) {
+  if (loading && !invalidId) {
     return (
       <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="text-center">
@@ -208,13 +208,14 @@ export default function ProduceSongPage({
     );
   }
 
-  if (error) {
+  const pageError = invalidId ? 'Invalid song id.' : error;
+  if (pageError) {
     return (
       <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="max-w-md w-full bg-panel rounded-lg shadow-lg p-8">
           <div className="text-red-600 dark:text-red-400 text-center">
             <h2 className="text-2xl font-bold mb-2">Unable to load song</h2>
-            <p className="text-text/55">{error}</p>
+            <p className="text-text/55">{pageError}</p>
             <Link
               href="/produce"
               className="mt-6 inline-block px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"

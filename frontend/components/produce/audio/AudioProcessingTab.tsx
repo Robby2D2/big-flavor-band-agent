@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   useProcessingQueue,
   FixEntry,
@@ -168,6 +168,9 @@ export default function AudioProcessingTab({
     }
     const keepCurrent = <T,>(prev: Record<number, T>) =>
       Object.fromEntries(Object.entries(prev).filter(([id]) => targetIds.has(Number(id))));
+    // Pruned here, beside the ref caches above, so state and caches always
+    // agree on which rows exist; one extra render per stem-set change is cheap.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPeaks(keepCurrent);
     setBuffers(keepCurrent);
     setControls((prev) =>
@@ -290,14 +293,22 @@ export default function AudioProcessingTab({
   // to a state already heard — or one rendered ahead — swaps in at once.
   const [takes, setTakes] = useState<Map<string, AudioBuffer>>(new Map());
   const takesRef = useRef(takes);
-  takesRef.current = takes;
+  useLayoutEffect(() => {
+    takesRef.current = takes;
+  }, [takes]);
   // Renders on their way, shared so a toggle that lands on a take already
   // being rendered ahead waits for it instead of rendering it twice.
   const pendingTakesRef = useRef<Map<string, Promise<AudioBuffer>>>(new Map());
   // The full-mix row has the same id on every version, so its takes would
-  // otherwise outlive the version they were rendered from.
-  useEffect(() => {
+  // otherwise outlive the version they were rendered from. Dropped during the
+  // render that sees the new version (React's "adjust state on a prop change"),
+  // so no frame ever pairs the new version with the old takes.
+  const [takesVersionId, setTakesVersionId] = useState(sourceVersionId);
+  if (takesVersionId !== sourceVersionId) {
+    setTakesVersionId(sourceVersionId);
     setTakes(new Map());
+  }
+  useEffect(() => {
     pendingTakesRef.current.clear();
   }, [sourceVersionId]);
   // Hear it waits for its own fix; the transport's play button never waits.
@@ -340,7 +351,9 @@ export default function AudioProcessingTab({
     [fixSignature]
   );
   const currentTakeKeysRef = useRef(currentTakeKeys);
-  currentTakeKeysRef.current = currentTakeKeys;
+  useLayoutEffect(() => {
+    currentTakeKeysRef.current = currentTakeKeys;
+  }, [currentTakeKeys]);
 
   const effectiveBuffers = useMemo(() => {
     const merged: Record<number, AudioBuffer> = { ...buffers };
@@ -675,9 +688,13 @@ export default function AudioProcessingTab({
     setControls((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
   };
 
-  useEffect(() => {
+  // A region belongs to the stem it was drawn on; picking another stem drops it
+  // in the same render rather than in an effect after it.
+  const [regionStemId, setRegionStemId] = useState(queue.selectedStemId);
+  if (regionStemId !== queue.selectedStemId) {
+    setRegionStemId(queue.selectedStemId);
     setRegion(null);
-  }, [queue.selectedStemId]);
+  }
 
   // Derived rather than cleared: the audition is over the moment the transport
   // stops, and deriving it means there is no stale "now playing" to tidy up.

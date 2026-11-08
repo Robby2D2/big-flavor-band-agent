@@ -92,6 +92,8 @@ export default function SessionsPage() {
   }, []);
 
   useEffect(() => {
+    // Fetch on mount: both loaders only set state after their requests resolve.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     loadDrive();
   }, [load, loadDrive]);

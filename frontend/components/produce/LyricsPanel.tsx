@@ -126,6 +126,9 @@ export default function LyricsPanel({ songId }: LyricsPanelProps) {
   }, [songId]);
 
   useEffect(() => {
+    // Fetch on mount. loadLyrics() raises its spinner first, which is the one
+    // synchronous update here and is wanted: the panel shows it is loading.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadLyrics();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);

@@ -59,10 +59,6 @@ export default function ProducePage() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadSongs();
-  }, []);
-
   const loadSongs = async () => {
     try {
       const res = await fetch('/api/produce/songs');
@@ -80,6 +76,12 @@ export default function ProducePage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // Fetch on mount: loadSongs() only sets state after its request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadSongs();
+  }, []);
 
   const loadVersions = async (songId: number) => {
     const res = await fetch(`/api/produce/songs/${songId}/versions`);

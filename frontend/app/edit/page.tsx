@@ -23,10 +23,6 @@ export default function EditPage() {
   const [executionResult, setExecutionResult] = useState<any>(null);
   const [executing, setExecuting] = useState(false);
 
-  useEffect(() => {
-    loadTools();
-  }, []);
-
   const loadTools = async () => {
     try {
       const response = await fetch('/api/tools');
@@ -49,6 +45,12 @@ export default function EditPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // Fetch on mount: loadTools() only sets state after its request resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadTools();
+  }, []);
 
   const handleExecuteTool = async () => {
     if (!selectedTool) return;
