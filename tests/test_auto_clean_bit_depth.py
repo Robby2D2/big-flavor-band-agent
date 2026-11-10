@@ -47,6 +47,7 @@ async def test_auto_clean_float_intermediates_and_24bit_final(server, raw_take, 
         keep_intermediates=True,
         steps_override={
             "trim": True,
+            "clicks": True,
             "noise_reduction": True,
             "eq": True,
             "normalize": True,
@@ -56,7 +57,7 @@ async def test_auto_clean_float_intermediates_and_24bit_final(server, raw_take, 
 
     assert result["status"] == "success", result
     step_names = {s["step"] for s in result["steps_applied"]}
-    assert {"trim", "noise_reduction", "eq", "normalize", "mastering"} <= step_names
+    assert {"trim", "click_repair", "noise_reduction", "eq", "normalize", "mastering"} <= step_names
     assert result["output_bit_depth"] == "24-bit PCM"
 
     # Final output: deliberate 24-bit PCM, not the 16-bit library default.
@@ -65,7 +66,7 @@ async def test_auto_clean_float_intermediates_and_24bit_final(server, raw_take, 
     # Every retained intermediate is full-precision float WAV and playable.
     step_dir = tmp_path / f"{output_path.stem}_steps"
     step_files = sorted(step_dir.glob("*.wav"))
-    assert len(step_files) == 4, [f.name for f in step_files]
+    assert len(step_files) == 5, [f.name for f in step_files]
     for step_file in step_files:
         assert sf.info(str(step_file)).subtype == INTERMEDIATE_WAV_SUBTYPE, step_file.name
         data, sr = sf.read(str(step_file))

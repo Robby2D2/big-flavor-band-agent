@@ -167,6 +167,14 @@ def test_pitch_is_added_to_the_tools_only_where_it_applies():
     assert stem_analysis_tools("drums", []) == PER_STEM_TOOLS
 
 
+def test_clicks_and_timing_are_measured_on_the_mix_and_never_per_stem():
+    for tool in ("remove_artifacts", "correct_beats"):
+        assert tool in MASTER_TOOLS
+        assert tool not in stem_analysis_tools("vocals", [])
+    # The chain runs in this order; a click repaired after mastering was boosted first.
+    assert MASTER_TOOLS[0] == "remove_artifacts"
+
+
 def test_never_measures_tempo_there_is_no_correct_bpm_for_a_song():
     assert "match_tempo" not in MASTER_TOOLS
     assert "match_tempo" not in stem_analysis_tools("vocals", [])
@@ -254,7 +262,7 @@ async def test_findings_are_there_after_the_job_has_left_memory():
 async def test_progress_is_reported_while_measuring():
     h = Harness(FakeDb([stem_set(9)]), {9: [stem(901, "drums")]})
     release = asyncio.Event()
-    h.gate = {"held": {(901, "remove_artifacts")}, "release": release}
+    h.gate = {"held": {(901, "remove_hum")}, "release": release}
     h.start()
     await asyncio.sleep(0.01)
 
@@ -274,7 +282,7 @@ async def test_progress_is_reported_while_measuring():
 async def test_a_second_start_joins_the_running_pass():
     h = Harness(FakeDb([stem_set(9)]), {9: [stem(901, "drums")]})
     release = asyncio.Event()
-    h.gate = {"held": {(901, "remove_artifacts")}, "release": release}
+    h.gate = {"held": {(901, "remove_hum")}, "release": release}
     h.start()
     task = h.manager._jobs[VERSION]["_task"]
     h.start()
@@ -419,7 +427,7 @@ async def test_cancel_keeps_only_rows_measured_whole():
     h.results["remove_hum"] = {"recommended": True, "params": {}}
     h.results["trim_silence"] = {"recommended": True, "params": {}}
     release = asyncio.Event()
-    h.gate = {"held": {(901, "remove_artifacts")}, "release": release}
+    h.gate = {"held": {(901, "remove_hum")}, "release": release}
     h.start()
     await asyncio.sleep(0.01)
 

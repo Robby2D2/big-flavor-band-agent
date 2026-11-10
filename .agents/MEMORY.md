@@ -26,6 +26,19 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-11-08 — Click repair works on real mixes; timing fixes stop adding clicks (song 917)
+Cleaning 917 added pops: `_apply_time_map` butted independently stretched beat segments together, a
+click per beat per stem, and each stem warped to its own grid (136-148 BPM on a 152 BPM song). The
+detector needed a ~0.4 FS jump on a loud mix, so it found none of it. Now: joins crossfade; clicks use
+a local per-frame predictor (`find_clicks`); `remove_artifacts` + `correct_beats` are measured on the
+mix only, and `auto_clean` has a click step. `correct_beats` is manual-only (the band's drummer is
+loose, so a tracked beat isn't truth). 917: 24 repairs/min, worst drum hit −0.43 dB. Full reasoning in
+[ARCHITECTURE.md](ARCHITECTURE.md) (search "Clicks use").
+Auto-enabling it when the mix/most stems agree was measured and declined: at mix confidence ≥0.5 only
+3 of 18 stemmed songs pass, 1 with a stem majority agreeing (1824). `_detect_beats` confidence is onset
+clarity, not agreement, so it selects drums (mean 0.58 vs guitar/bass 0.31). One shared map can't align
+stems anyway; that needs per-stem warps, which move Demucs bleed and can't tell phrasing from error.
+
 ### 2026-11-08 — Follow-along lyrics: line starts snapped onto the voice
 
 Lines lit up early because Whisper stretches a line's first word over the preceding silence: on 22

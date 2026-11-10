@@ -44,8 +44,17 @@ SEPARATION_POLL_SECONDS = 4
 # Tools whose analyze() returns real measurements — the only ones worth calling
 # during a pass; the rest always report ``recommended: false``
 # (src/production/toolkit.py's base analyze() stub).
-PER_STEM_TOOLS = ["reduce_noise", "apply_eq", "remove_hum", "correct_beats", "remove_artifacts"]
-MASTER_TOOLS = ["trim_silence", "apply_eq", "normalize_audio", "apply_mastering", "remove_artifacts"]
+#
+# Clicks and timing are measured on the full mix, not per stem. Separation
+# smears one click across several stems, where it stops looking like one and a
+# drum hit starts to; and giving each stem its own beat grid pulled the parts
+# tens of milliseconds apart. Order matters: a fix chain runs in this order, so
+# clicks are repaired before anything raises their level.
+PER_STEM_TOOLS = ["reduce_noise", "apply_eq", "remove_hum"]
+MASTER_TOOLS = [
+    "remove_artifacts", "trim_silence", "apply_eq", "correct_beats",
+    "normalize_audio", "apply_mastering",
+]
 
 # Demucs source names whose stem is a single line. pyin tracks one pitch at a
 # time, so note detection means nothing anywhere else — and it is the most

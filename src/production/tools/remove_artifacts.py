@@ -28,12 +28,9 @@ except ImportError:
 
 logger = logging.getLogger("big-flavor-mcp")
 
-# Samples rebuilt either side of a click's flagged jumps: its tail rings on a
+# Samples rebuilt either side of a click's flagged samples: its tail rings on a
 # little past the step itself.
-CLICK_MARGIN_MS = 0.5
-# Longer than this is a burst or a dropout, not a click — left alone rather
-# than guessed at.
-CLICK_MAX_SPAN_MS = 20.0
+CLICK_MARGIN_SAMPLES = 3
 # Linear-prediction order for the rebuild (~0.7 ms of history at 44.1 kHz).
 AR_ORDER = 32
 
@@ -82,21 +79,18 @@ def _rebuild_span(ch: np.ndarray, s: int, e: int) -> Optional[np.ndarray]:
 def repair_clicks(ch: np.ndarray, sr: int, ratio: float) -> Tuple[np.ndarray, int]:
     """Rebuild each click ``find_clicks`` flags at ``ratio``; return ``(out, count)``.
 
-    A flagged jump ``i`` is the step ``ch[i] -> ch[i+1]``, so a click spanning
-    jumps ``first .. last`` has corrupted ``ch[first+1 .. last]``; the margin
-    widens that to take its ring-out too.
+    A click spanning samples ``first .. last`` is rebuilt across that span plus
+    a margin that takes its ring-out too.
     """
     _jumps, _baseline, _flagged, spans = find_clicks(ch, sr, ratio)
     if not spans:
         return ch, 0
     out = np.array(ch, copy=True)
-    margin = max(1, int(sr * CLICK_MARGIN_MS / 1000.0))
-    max_span = int(sr * CLICK_MAX_SPAN_MS / 1000.0)
     repaired = 0
     for first, last in spans:
-        s = max(1, first + 1 - margin)
-        e = min(len(out) - 1, last + 1 + margin)
-        if e <= s or e - s > max_span:
+        s = max(1, first - CLICK_MARGIN_SAMPLES)
+        e = min(len(out) - 1, last + 1 + CLICK_MARGIN_SAMPLES)
+        if e <= s:
             continue
         fill = _rebuild_span(out, s, e)
         if fill is None:
@@ -144,9 +138,9 @@ class RemoveArtifacts(AudioTool):
                 ),
                 "findings": measured,
                 # `worth=0` rather than a rate floor: the detector only fires on
-                # a jump eight times the track's own loudest transient, so one
-                # hit is already evidence — the rate only decides how loudly to
-                # say so.
+                # a sample nine times outside what the audio around it predicts,
+                # so one hit is already evidence — the rate only decides how
+                # loudly to say so.
                 "confidence": (
                     self.confidence_tier(measured["per_minute"], high=CLICK_HIGH_PER_MIN, worth=0.0)
                     if recommended else None
@@ -171,6 +165,7 @@ class RemoveArtifacts(AudioTool):
         start_s: Optional[float] = None,
         end_s: Optional[float] = None,
         strength: float = 1.0,
+        subtype: Optional[str] = None,
     ) -> dict:
         try:
             # Load audio (channel count preserved; each channel is cleaned
@@ -194,7 +189,7 @@ class RemoveArtifacts(AudioTool):
             y_cleaned, _ = apply_to_region(y, sr, start_s, end_s, clean_process)
 
             # Save output
-            _write_audio(output_path, y_cleaned, sr)
+            _write_audio(output_path, y_cleaned, sr, subtype=subtype)
 
             logger.info(f"Repaired {repaired} clicks (ratio {ratio:.1f}x)")
 

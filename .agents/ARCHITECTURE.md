@@ -434,25 +434,35 @@ whole-song `analyze_and_recommend_processing`, for auto-clean and the agent) mea
   `measure_monophony()` + `passes_monophony_gate()` in `analysis.py`; `apply()` runs it *before* its
   own full-length pyin, so a refusal is the cheap path. The full-length pass still happens, because
   the correction needs f0 across everything it touches — it is the *gate* that moved, not the DSP.
-- **Clicks** use an *absolute* outlier rule: a sample-to-sample jump ≥8x the track's own
-  99th-percentile jump, grouped into events (`find_clicks`). **`apply()` repairs exactly those
-  spans** and leaves every other sample bit-identical: each span (plus 0.5 ms of ring-out) is
-  rebuilt by forward + backward linear prediction (order 32) from the audio either side,
-  crossfaded across the gap, with a straight line as the fallback. Spans over 20 ms are bursts,
-  not clicks, and are left alone. `sensitivity` is the detection ratio, geometric around 8x
-  (`click_ratio`: 0 → 16x, 0.5 → 8x = what `analyze()` counts, 1 → 4x), so a recommended card
-  ships 0.5. Until 2026-10-21 `apply()` cut at the `100 - sensitivity * 20` percentile (a fixed
+- **Clicks** use a *local* outlier rule (`find_clicks`): each 2048-sample frame gets its own order-32
+  linear predictor, and a sample is flagged when its prediction error is ≥9x the typical error of
+  both its frame and its ~5 ms neighbourhood. The neighbourhood is what spares a drum hit or a hard
+  stop in an otherwise quiet frame. Until 2026-11-08 it was one bar per file (a jump ≥8x the track's
+  99th-percentile jump), about 0.4 of full scale on a loud mix, so a real mix always read "no clicks".
+  **`apply()` repairs exactly those spans** and leaves every other sample bit-identical: each span
+  (plus 3 samples of ring-out) is rebuilt by forward + backward linear prediction from the audio
+  either side, crossfaded across the gap, with a straight line as the fallback. Spans over 3 ms are
+  musical events or dropouts and are left alone. `sensitivity` is the detection ratio, geometric
+  around 9x (`click_ratio`: 0 → 18x, 0.5 → 9x = what `analyze()` counts, 1 → 4.5x), so a recommended
+  card ships 0.5. Until 2026-10-21 `apply()` cut at the `100 - sensitivity * 20` percentile (a fixed
   fraction of every file), linearly interpolated those samples, then Savitzky-Golay-smoothed the
   whole channel. On a vocal that kept 1-7% of the high end, muffling every row it ran on.
+- **Clicks and timing are measured on the full mix only** (`MASTER_TOOLS`, with `remove_artifacts`
+  first so a click is repaired before anything raises it). Separation smears a click across stems,
+  and a separate beat grid per stem pulled the parts tens of milliseconds apart. Both tools can still
+  be hand-added to a stem. `correct_beats.analyze()` reports the tempo but never recommends: a tracked
+  beat isn't evidence the timing is wrong, least of all with a loose drummer. `_apply_time_map`
+  stretches each beat segment with context and crossfades the joins (10 ms); butted together, every
+  beat was a click.
 - **Which rows get measured** is a frontend decision (`isPitchAnalyzable` in
   `useProcessingQueue.ts`): the vocal stem, plus any stem **any** of whose tagger labels names a
   single-line instrument (it read only `instruments[0]` until issue #91, so a fiddle tagged second
-  inside `other` was skipped despite the comment saying otherwise). Never the full mix. `remove_artifacts` runs on every row, and its card copy names its
-  scope ("in this stem" / "in the whole mix") because one physical click lands in both.
+  inside `other` was skipped despite the comment saying otherwise). Never the full mix. A
+  `remove_artifacts` card's copy names its scope ("in this stem" / "in the whole mix").
 - **`match_tempo` stays un-recommended** — there is no *correct* BPM for a song, so recommending a
   stretch would assert a creative preference as a defect. Its only change is that a hand-added card
-  is seeded with the tempo `correct_beats` already measured for that row (or, for the full-mix row,
-  any stem's — they are the same performance), so the required `target_bpm` is never blank. This is
+  is seeded with the tempo `correct_beats` measured on the full mix, so the required `target_bpm` is
+  never blank. This is
   why the analyze helpers keep **every** outcome rather than only the recommended ones.
 
 **Hear it plays on the console transport (2026-09-19, issue #89).** A fix card used to render its

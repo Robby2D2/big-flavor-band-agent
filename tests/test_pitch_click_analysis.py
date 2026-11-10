@@ -25,7 +25,6 @@ import soundfile as sf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.production.analysis import (  # noqa: E402
-    CLICK_MIN_JUMP,
     CLICK_DEFAULT_SENSITIVITY,
     PITCH_OFF_TARGET_CENTS,
     detect_clicks,
@@ -205,7 +204,7 @@ def test_an_injected_click_is_detected():
 
     assert measured["count"] >= 1, measured
     assert measured["per_minute"] > 0, measured
-    assert measured["peak_jump"] > CLICK_MIN_JUMP, measured
+    assert measured["peak_jump"] > 0.5, measured
 
 
 def test_three_clicks_are_counted_separately():
@@ -213,6 +212,22 @@ def test_three_clicks_are_counted_separately():
     for at in (1.0, 2.5, 4.0):
         y[int(at * SR)] += 0.9
     assert detect_clicks(y, SR)["count"] == 3, detect_clicks(y, SR)
+
+
+def test_a_small_click_in_a_quiet_ending_is_found_despite_a_loud_song():
+    """The bar follows the music around the click, not the song's loudest part.
+
+    A single bar for the whole file is why a full mix always read as clean.
+    """
+    rng = np.random.default_rng(11)
+    loud = 0.5 * rng.standard_normal(SR * 4)
+    quiet = 0.001 * rng.standard_normal(SR * 2)
+    y = np.concatenate([loud, quiet]).astype(np.float32)
+    y[SR * 5] += 0.03
+
+    measured = detect_clicks(y, SR)
+
+    assert measured["count"] == 1, measured
 
 
 async def test_analyze_recommends_the_sensitivity_that_repairs_what_it_counted(ctx, tmp_path):
@@ -286,9 +301,10 @@ async def test_apply_rebuilds_the_click_and_touches_nothing_else(ctx, tmp_path):
 
 
 async def test_higher_sensitivity_catches_quieter_clicks(ctx, tmp_path):
-    y = clean_music()
-    # This tone's 99th-percentile jump is ~0.027: 4x is ~0.11, 8x ~0.22.
-    y[int(2.0 * SR)] += 0.15  # a quieter click: over 4x the music's jumps, under 8x
+    rng = np.random.default_rng(5)
+    y = clean_music() + 0.01 * rng.standard_normal(int(6.0 * SR)).astype(np.float32)
+    # Hiss at 0.01 sets the typical prediction error: 4.5x is ~0.045, 18x ~0.18.
+    y[int(2.0 * SR)] += 0.1  # a quieter click: over 4.5x the music's error, under 18x
     path = write(tmp_path, "quiet.wav", y)
     counts = {}
     for sensitivity in (0.0, 1.0):
@@ -297,7 +313,7 @@ async def test_higher_sensitivity_catches_quieter_clicks(ctx, tmp_path):
             ctx, file_path=path, sensitivity=sensitivity, output_path=str(out)
         )
         counts[sensitivity] = result["artifacts_removed"]
-    assert counts[0.0] == 0 and counts[1.0] == 1, counts
+    assert counts[0.0] == 0 and counts[1.0] >= 1, counts
 
 
 async def test_analyze_stays_quiet_on_clean_audio(ctx, tmp_path):

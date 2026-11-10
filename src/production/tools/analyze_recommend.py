@@ -394,9 +394,6 @@ class AnalyzeRecommend(AudioTool):
                 "recommendations": recommendations,
                 # A recommended order for whoever acts on this — the fix queue,
                 # the agent, a person — not a description of any pipeline.
-                # auto_clean_recording chains trim → hum → noise → EQ → pitch →
-                # tempo → normalize → master and has no clicks step at all, so
-                # step 3 is the one nothing in the pipeline executes.
                 "processing_order": [
                     "1. Trim non-musical content" if recommendations["trim"]["recommended"] else None,
                     "2. Remove mains hum" if recommendations["hum"]["recommended"] else None,

@@ -29,6 +29,7 @@ from src.production.big_flavor_mcp import (  # noqa: E402
     _build_time_map,
     _to_mono,
 )
+from src.production.analysis import _apply_time_map  # noqa: E402
 
 SR = 22050
 
@@ -90,6 +91,48 @@ def test_build_time_map_strength_scales_the_move():
     assert np.allclose(dst_zero, beats)         # zero leaves beats where they were
     # Half moves the middle beat halfway from 0.6 toward 0.5 → 0.55.
     assert abs(dst_half[1] - 0.55) < 1e-9, dst_half
+
+
+def test_stretched_segments_join_without_a_step():
+    """Segments stretched independently must not click where they meet.
+
+    A steady tone can't step on its own, so any sample-to-sample jump beyond the
+    tone's own steepest slope is a join. They used to be butted together.
+    """
+    t = np.arange(int(4.0 * SR)) / SR
+    freq = 220.0
+    y = (0.5 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+    steepest = 0.5 * 2 * np.pi * freq / SR
+
+    src = np.arange(0.4, 3.6, 0.4)
+    dst = src + np.resize([0.02, -0.015, 0.01, -0.02], len(src))
+    out = _apply_time_map(y, SR, src, dst)
+
+    assert np.max(np.abs(np.diff(out))) < 1.5 * steepest
+
+
+async def test_analysis_reports_the_tempo_but_never_suggests_re_timing(tmp_path):
+    """A tracked beat isn't evidence the timing is wrong, so this stays manual."""
+    from src.production.toolkit import REGISTRY, ToolContext
+
+    path = tmp_path / "steady.wav"
+    sf.write(str(path), click(np.arange(16) * 0.5 + 0.4, 9.0), SR)
+
+    result = await REGISTRY["correct_beats"].analyze(ToolContext(enable_audio_analysis=True), str(path))
+
+    assert result["recommended"] is False, result
+    assert result["findings"]["detected_bpm"] > 0, result
+
+
+def test_time_map_length_changes_only_by_the_correction():
+    t = np.arange(int(4.0 * SR)) / SR
+    y = (0.5 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    src = np.array([1.0, 2.0, 3.0])
+    dst = np.array([1.02, 2.02, 3.05])
+
+    out = _apply_time_map(y, SR, src, dst)
+
+    assert abs(len(out) - (len(y) + 0.05 * SR)) < 16
 
 
 # ----------------------------------------------------- beat-grid correction

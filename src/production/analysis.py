@@ -272,6 +272,31 @@ def _build_time_map(beat_times, grid_times, strength: float):
     return beat_times.copy(), dst
 
 
+# Audio stretched either side of a beat segment and thrown away, so the vocoder's
+# edge behaviour lands outside the samples that are kept.
+BEAT_CONTEXT_SAMPLES = 2048
+# Crossfade across each join between two independently stretched segments.
+BEAT_CROSSFADE_MS = 10.0
+
+
+def _stretched_segment(mono, s0: int, s1: int, rate: float, run_on: int):
+    """``mono[s0:s1]`` at ``rate``: ``(samples, nominal length)``.
+
+    ``samples`` runs ``run_on`` past the nominal length where the audio allows,
+    which is what the next segment crossfades against.
+    """
+    import librosa
+
+    if abs(rate - 1.0) < 1e-3:
+        return mono[s0:s1 + run_on], s1 - s0
+    lo = max(0, s0 - BEAT_CONTEXT_SAMPLES)
+    hi = min(len(mono), s1 + BEAT_CONTEXT_SAMPLES)
+    stretched = librosa.effects.time_stretch(mono[lo:hi], rate=rate)
+    start = int(round((s0 - lo) / rate))
+    length = int(round((s1 - s0) / rate))
+    return stretched[start:start + length + run_on], length
+
+
 def _apply_time_map(mono, sr: int, src_times, dst_times):
     """Variable-rate time-stretch a signal so its src_times land on dst_times.
 
@@ -279,9 +304,13 @@ def _apply_time_map(mono, sr: int, src_times, dst_times):
     librosa.effects.time_stretch (phase vocoder). The first anchor is time 0 and
     the audio after the last beat is passed through at unit rate, so total
     length changes only by the accumulated correction.
+
+    Two segments stretched apart don't line up in phase where they meet, so
+    butting them together puts a waveform step on every beat — a click on each
+    of them, too small for the click detector to clean up afterwards. Each
+    segment is stretched with context and crossfaded into the next instead.
     """
     import numpy as np
-    import librosa
 
     src = np.asarray(src_times, dtype=float)
     dst = np.asarray(dst_times, dtype=float)
@@ -290,7 +319,8 @@ def _apply_time_map(mono, sr: int, src_times, dst_times):
     src = np.concatenate([[0.0], src])
     dst = np.concatenate([[0.0], dst])
 
-    pieces = []
+    overlap = int(sr * BEAT_CROSSFADE_MS / 1000.0)
+    segments = []
     total = len(mono)
     for i in range(len(src) - 1):
         s0 = int(round(src[i] * sr))
@@ -299,27 +329,37 @@ def _apply_time_map(mono, sr: int, src_times, dst_times):
         s1 = max(0, min(s1, total))
         if s1 <= s0:
             continue
-        seg = mono[s0:s1]
         src_dur = (s1 - s0) / sr
         dst_dur = dst[i + 1] - dst[i]
-        if dst_dur <= 0 or src_dur <= 0:
-            pieces.append(seg)
-            continue
-        rate = src_dur / dst_dur  # >1 speeds up (shortens), <1 slows down
-        if abs(rate - 1.0) < 1e-3:
-            pieces.append(seg)
-        else:
-            pieces.append(librosa.effects.time_stretch(seg, rate=rate))
+        # >1 speeds up (shortens), <1 slows down
+        rate = src_dur / dst_dur if dst_dur > 0 else 1.0
+        segments.append(_stretched_segment(mono, s0, s1, rate, overlap))
 
     # Tail after the last mapped beat, unchanged.
     last = int(round(src[-1] * sr))
     last = max(0, min(last, total))
     if last < total:
-        pieces.append(mono[last:])
+        segments.append((mono[last:], total - last))
 
-    if not pieces:
+    if not segments:
         return mono.copy()
-    return np.concatenate(pieces)
+
+    lengths = [min(length, len(samples)) for samples, length in segments]
+    out = np.zeros(sum(lengths), dtype=mono.dtype)
+    pos = 0
+    tail = out[:0]
+    for (samples, _), length in zip(segments, lengths):
+        body = np.array(samples[:length], copy=True)
+        fade = min(len(tail), length)
+        if fade > 0:
+            # Raised-cosine with gains summing to one, as in correct_pitch: the
+            # two sides are the same audio, moved by a few milliseconds at most.
+            ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, fade))
+            body[:fade] = tail[:fade] * (1.0 - ramp) + body[:fade] * ramp
+        out[pos:pos + length] = body
+        pos += length
+        tail = samples[length:]
+    return out
 
 
 # --------------------------------------------------------------- per-tool analyze
@@ -660,19 +700,27 @@ def detect_pitch_issues(y, sr: int, key: Optional[str] = None) -> dict:
     )
 
 
-# A click is a discontinuity: a sample-to-sample jump far outside anything the
-# music itself produces. The threshold is therefore relative to the track's own
-# loud transients (its 99th-percentile jump) rather than a fixed level, with an
-# absolute floor so near-silence cannot manufacture one out of dither.
+# A click is a sample the audio just before it could not have predicted. Each
+# short frame gets its own linear predictor, and a sample counts when its
+# prediction error stands far above that frame's typical error — so the bar
+# rises and falls with the music around it. It used to be one bar for the whole
+# file, 8x the song's 99th-percentile sample-to-sample jump: on a loud full mix
+# that demanded a single-sample jump of ~0.4 of full scale, so a real mix always
+# came back "no clicks", and a quiet ending could never be heard above the
+# loudest chorus.
 #
 # ``remove_artifacts.apply()`` repairs exactly what this finds (``find_clicks``),
 # so a card's "3 clicks detected" is the three spans that get rebuilt. It used to
 # cut at ``percentile(100 - sensitivity * 20)`` instead — a fixed *fraction* of
 # every file — which on a vocal meant interpolating over its sibilants.
-CLICK_RATIO = 8.0          # jump must stand this far above the 99th-percentile jump
-CLICK_MIN_JUMP = 0.02      # ...and be at least this large in absolute terms
-CLICK_GROUP_MS = 5.0       # jumps closer together than this are one click
-CLICK_HIGH_PER_MIN = 4.0   # a click a quarter-minute is a high-confidence card
+CLICK_RATIO = 9.0            # error must stand this far above its frame's typical error
+CLICK_MIN_RESIDUAL = 2e-4    # ...and be at least this large, so near-silence can't fire
+CLICK_AR_ORDER = 32          # predictor order (~0.7 ms of history at 44.1 kHz)
+CLICK_FRAME_SAMPLES = 2048   # how much audio one predictor and one "typical" cover
+CLICK_NEIGHBOUR_MS = 5.0     # a click stands out from these few ms too; a drum hit doesn't
+CLICK_GROUP_MS = 1.5         # flagged samples closer together than this are one click
+CLICK_MAX_SPAN_MS = 3.0      # longer than this is a musical event or a dropout, left alone
+CLICK_HIGH_PER_MIN = 4.0     # a click a quarter-minute is a high-confidence card
 # The sensitivity at which apply() repairs exactly what detect_clicks counts.
 CLICK_DEFAULT_SENSITIVITY = 0.5
 
@@ -680,8 +728,8 @@ CLICK_DEFAULT_SENSITIVITY = 0.5
 def click_ratio(sensitivity: float) -> float:
     """``remove_artifacts``'s ``sensitivity`` as a detection ratio.
 
-    Geometric around ``CLICK_RATIO``: 0 → 16x (only blatant clicks), 0.5 → 8x
-    (what ``detect_clicks`` counts), 1 → 4x (quieter clicks, more risk of
+    Geometric around ``CLICK_RATIO``: 0 → 18x (only blatant clicks), 0.5 → 9x
+    (what ``detect_clicks`` counts), 1 → 4.5x (quieter clicks, more risk of
     touching a sharp transient).
     """
     s = min(1.0, max(0.0, float(sensitivity)))
@@ -691,27 +739,58 @@ def click_ratio(sensitivity: float) -> float:
 def find_clicks(y, sr: int, ratio: float = CLICK_RATIO):
     """Locate clicks in a mono signal: ``(jumps, baseline, flagged, spans)``.
 
-    ``flagged`` are the indices of jumps (``y[i] -> y[i+1]``) over threshold;
-    ``spans`` groups them into clicks, each ``(first, last)`` flagged jump index,
-    jumps closer than ``CLICK_GROUP_MS`` being one click.
+    ``flagged`` are the indices of samples over their frame's threshold;
+    ``spans`` groups them into clicks, each ``(first, last)`` flagged sample,
+    samples closer than ``CLICK_GROUP_MS`` being one click. ``jumps`` and
+    ``baseline`` describe the signal for reporting and play no part in the
+    decision.
     """
     import numpy as np
+    from scipy import ndimage, signal
+    from scipy.linalg import solve_toeplitz
 
     jumps = np.abs(np.diff(y))
     baseline = float(np.percentile(jumps, 99.0))
-    threshold = max(baseline * ratio, CLICK_MIN_JUMP)
-    flagged = np.flatnonzero(jumps > threshold)
+
+    x = np.asarray(y, dtype=float)
+    order, frame = CLICK_AR_ORDER, CLICK_FRAME_SAMPLES
+    window = np.hanning(frame)
+    neighbours = int(sr * CLICK_NEIGHBOUR_MS / 1000.0) | 1
+    is_click = np.zeros(len(x), dtype=bool)
+    for start in range(0, len(x) - frame, frame // 2):
+        chunk = x[start:start + frame]
+        tapered = chunk * window
+        autocorr = signal.correlate(tapered, tapered, "full", method="fft")[frame - 1:frame + order]
+        if autocorr[0] < 1e-8:
+            continue
+        autocorr[0] *= 1.001  # keeps the solve stable on purely tonal frames
+        predictor = np.concatenate([[1.0], -solve_toeplitz(autocorr[:order], autocorr[1:order + 1])])
+        residual = np.abs(signal.lfilter(predictor, [1.0], chunk)[order:])
+        # The frame's level alone isn't enough: in a frame that is mostly quiet,
+        # every sample of a hit or a hard stop looks like an outlier. A click is
+        # a few samples, so it can't lift the median of its own neighbourhood.
+        typical = 1.4826 * np.maximum(
+            np.median(residual), ndimage.median_filter(residual, size=neighbours, mode="nearest")
+        )
+        over = np.flatnonzero(residual > np.maximum(ratio * typical, CLICK_MIN_RESIDUAL)) + order
+        # Only the middle half of each frame: frames overlap by half, and the
+        # predictor is least trustworthy at the window's edges.
+        is_click[start + over[(over > frame // 4) & (over < 3 * frame // 4)]] = True
+
+    flagged = np.flatnonzero(is_click)
     if flagged.size == 0:
         return jumps, baseline, flagged, []
     gap = max(1, int(sr * CLICK_GROUP_MS / 1000.0))
     breaks = np.flatnonzero(np.diff(flagged) > gap)
     starts = np.concatenate([[flagged[0]], flagged[breaks + 1]])
     ends = np.concatenate([flagged[breaks], [flagged[-1]]])
-    return jumps, baseline, flagged, list(zip(starts.tolist(), ends.tolist()))
+    max_span = int(sr * CLICK_MAX_SPAN_MS / 1000.0)
+    spans = [(a, b) for a, b in zip(starts.tolist(), ends.tolist()) if b - a <= max_span]
+    return jumps, baseline, flagged, spans
 
 
 def detect_clicks(y, sr: int) -> dict:
-    """Count clicks/pops: isolated sample-to-sample jumps far outside the music.
+    """Count clicks/pops: isolated samples the audio around them can't explain.
 
     ``recommended_sensitivity`` is ``CLICK_DEFAULT_SENSITIVITY`` whenever there
     is anything to repair: at that setting ``remove_artifacts.apply()`` rebuilds

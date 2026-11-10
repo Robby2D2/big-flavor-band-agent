@@ -1,7 +1,7 @@
 """``auto_clean_recording`` — whole-song cleanup pipeline over the registry.
 
-Runs the bundled analysis, then chains the individual tools (trim → hum → noise
-→ EQ → pitch → tempo → normalize → master) with float intermediates and a
+Runs the bundled analysis, then chains the individual tools (trim → hum → clicks
+→ noise → EQ → pitch → tempo → normalize → master) with float intermediates and a
 single final 24-bit write. This is the registry *orchestrator*: it calls each
 step's tool through ``REGISTRY`` rather than hard-coded methods, so the pipeline
 and the single-effect tools can never drift. Region mode confines the per-region
@@ -43,7 +43,7 @@ class AutoClean(AudioTool):
         Param("keep_intermediates", bool, default=False, label="Keep intermediates",
               help="Save intermediate processing steps for review"),
         Param("steps_override", dict, label="Steps override",
-              help="Per-step on/off map keyed by trim/noise_reduction/eq/normalize/master",
+              help="Per-step on/off map keyed by trim/hum/clicks/noise_reduction/eq/normalize/master",
               schema={"type": "object"}),
         Param("step_params", dict, label="Step params",
               help="Per-step raw-parameter overrides, e.g. {'master': {'target_lufs': -12}}",
@@ -81,7 +81,7 @@ class AutoClean(AudioTool):
             overrides = steps_override or {}
             trim_override = overrides.get("trim")
             trim_selection = trim_override if isinstance(trim_override, dict) else None
-            for _step in ("trim", "hum", "noise_reduction", "eq"):
+            for _step in ("trim", "hum", "clicks", "noise_reduction", "eq"):
                 if _step in overrides:
                     recommendations[_step]["recommended"] = bool(overrides[_step])
             do_normalize = False if has_region else bool(overrides.get("normalize", True))
@@ -179,6 +179,29 @@ class AutoClean(AudioTool):
                         "fundamental_hz": result.get("fundamental_hz"),
                         "harmonics_notched": result.get("harmonics_notched"),
                         "output": str(hum_output) if keep_intermediates else "temp"
+                    })
+
+            # Step 2c: Click repair (before anything raises their level)
+            if recommendations["clicks"]["recommended"]:
+                logger.info("Step 1c: Click repair...")
+                if keep_intermediates:
+                    clicks_output = intermediate_dir / "01c_declicked.wav"
+                else:
+                    import tempfile
+                    clicks_output = Path(tempfile.mktemp(suffix=".wav"))
+
+                result = await REGISTRY["remove_artifacts"].apply(
+                    ctx, current_file,
+                    step_param("clicks", "sensitivity", recommendations["clicks"]["recommended_sensitivity"]),
+                    str(clicks_output), subtype=INTERMEDIATE_WAV_SUBTYPE,
+                    start_s=start_s, end_s=end_s
+                )
+                if result.get("status") == "success":
+                    current_file = str(clicks_output)
+                    steps_taken.append({
+                        "step": "click_repair",
+                        "clicks_repaired": result.get("artifacts_removed"),
+                        "output": str(clicks_output) if keep_intermediates else "temp"
                     })
 
             # Step 3: Noise reduction
@@ -382,6 +405,7 @@ class AutoClean(AudioTool):
                 "recommendations_followed": {
                     "trim": any(s["step"] == "trim" for s in steps_taken),
                     "hum_removal": any(s["step"] == "hum_removal" for s in steps_taken),
+                    "click_repair": any(s["step"] == "click_repair" for s in steps_taken),
                     "noise_reduction": any(s["step"] == "noise_reduction" for s in steps_taken),
                     "eq": any(s["step"] == "eq" for s in steps_taken),
                     "pitch": any(s["step"] == "pitch" for s in steps_taken),

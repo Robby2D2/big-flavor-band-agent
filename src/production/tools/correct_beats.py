@@ -58,7 +58,14 @@ class CorrectBeats(AudioTool):
     ]
 
     async def analyze(self, ctx, file_path: str, **params) -> dict:
-        """Detect beats + per-beat confidence; report whether a reliable grid exists."""
+        """Detect beats + per-beat confidence, without ever suggesting the fix.
+
+        A tracked beat is not evidence the timing is wrong: on a band with a
+        loose drummer the tracker follows the looseness, and "correcting" toward
+        it re-times the whole take around someone's off beat. So this reports
+        the tempo (a hand-added tempo card starts from it) and leaves whether to
+        re-time a performance to the producer.
+        """
         try:
             import numpy as np
 
@@ -69,7 +76,7 @@ class CorrectBeats(AudioTool):
             return {
                 "status": "success",
                 "tool": self.name,
-                "recommended": bool(reliable),
+                "recommended": False,
                 "params": {},
                 "findings": {
                     "detected_bpm": round(float(tempo_bpm), 1),
@@ -77,10 +84,7 @@ class CorrectBeats(AudioTool):
                     "mean_confidence": round(mean_conf, 3),
                     "reliable_grid": bool(reliable),
                 },
-                "confidence": (
-                    self.confidence_tier(mean_conf, high=0.75, worth=LOW_BEAT_CONFIDENCE)
-                    if reliable else None
-                ),
+                "confidence": None,
                 "reason": (
                     f"{len(beat_times)} beats at {tempo_bpm:.0f} BPM (confidence {mean_conf:.2f})"
                     if reliable else
