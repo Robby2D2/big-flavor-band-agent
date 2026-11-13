@@ -5,24 +5,13 @@ import FixCard from './FixCard';
 import { fixTitleFor } from './fixCopy';
 
 interface FixQueueProps {
-  stemName: string | null;
-  /** Badge for the selected row's scope — "THIS STEM", or "FULL MIX". */
-  scopeLabel?: string;
-  stemFixes: FixEntry[];
-  masterFixes: FixEntry[];
+  /** The open row's fixes — on the full-mix row, the master fixes. */
+  fixes: FixEntry[];
   analyzing?: boolean;
-  /** Tools the producer can still add to the selected row. */
+  /** Tools the producer can still add to this row. */
   addableTools: ToolInfo[];
   onToggle: (id: string) => void;
   onAdjust: (fix: FixEntry) => void;
-  /** Audition one fix on the console transport — the page's only player. */
-  onHear: (fix: FixEntry) => void;
-  /** The fix the transport is playing right now, if any. */
-  auditionFixId?: string | null;
-  /** A fix chain is rendering before playback can start. */
-  rendering?: boolean;
-  /** The console has audio to play into. */
-  canHear?: boolean;
   onAddFix: (tool: string) => void;
   onRemoveFix: (id: string) => void;
   /** Required params a card still has no value for, by fix id. */
@@ -30,73 +19,42 @@ interface FixQueueProps {
 }
 
 /**
- * The review queue for the selected stem, plus the whole-mix/master bucket
- * underneath — trim, tone balance, and loudness are reviewed once per song,
- * not once per stem.
+ * One console row's review queue, shown beneath the row when it is opened.
+ * The full-mix row's queue is the whole-song bucket — trim, tone balance and
+ * loudness are reviewed once per song, not once per stem — so it is reached
+ * the same way as any stem's, and is not repeated under every other row.
  *
  * The analysis is where the queue starts, not where it ends: the picker under
- * the selected row's cards adds a fix the measurements never flagged, which
- * then behaves like any other card.
+ * the cards adds a fix the measurements never flagged, which then behaves like
+ * any other card.
  */
 export default function FixQueue({
-  stemName,
-  scopeLabel = 'THIS STEM',
-  stemFixes,
-  masterFixes,
+  fixes,
   analyzing = false,
   addableTools,
   onToggle,
   onAdjust,
-  onHear,
-  auditionFixId = null,
-  rendering = false,
-  canHear = true,
   onAddFix,
   onRemoveFix,
   missingParamsFor,
 }: FixQueueProps) {
   return (
-    <div className={`flex flex-col gap-4 transition-opacity ${analyzing ? 'opacity-40 pointer-events-none select-none' : ''}`}>
-      <div>
-        <div className="flex items-center gap-2">
-          <h3 className="font-semibold text-text">
-            {stemName ? (
-              <>
-                <span className="capitalize">{stemName}</span> — {stemFixes.length} fix
-                {stemFixes.length === 1 ? '' : 'es'}
-              </>
-            ) : (
-              'No stem selected'
-            )}
-          </h3>
-          <span className="font-mono text-[9.5px] tracking-wide text-text/45 bg-white/6 px-1.5 py-0.5 rounded">
-            {scopeLabel}
-          </span>
-        </div>
-        <p className="text-xs text-text/45 mt-1">
-          Pick another row above to tune its chain · master fixes live at the bottom of the list
-        </p>
-      </div>
-
+    <div className={`flex flex-col gap-3 transition-opacity ${analyzing ? 'opacity-40 pointer-events-none select-none' : ''}`}>
       <div className="flex flex-col gap-2.5">
-        {stemFixes.length === 0 ? (
+        {fixes.length === 0 ? (
           <p className="text-sm text-text/40">
-            {analyzing ? 'Analyzing…' : 'Nothing detected for this stem — add a fix below if you hear one.'}
+            {analyzing ? 'Analyzing…' : 'Nothing detected here — add a fix below if you hear one.'}
           </p>
         ) : (
-          stemFixes.map((fix, i) => (
+          fixes.map((fix, i) => (
             <FixCard
               key={fix.id}
               fix={fix}
               index={i}
               onToggle={() => onToggle(fix.id)}
               onAdjust={() => onAdjust(fix)}
-              onHear={() => onHear(fix)}
               onRemove={fix.source === 'manual' ? () => onRemoveFix(fix.id) : undefined}
               missingParams={missingParamsFor(fix)}
-              auditioning={fix.id === auditionFixId}
-              rendering={rendering && fix.id === auditionFixId}
-              canHear={canHear}
             />
           ))
         )}
@@ -104,7 +62,7 @@ export default function FixQueue({
 
       {/* Hidden when there is nothing left to offer — every tool for this row
           is already queued, or the tool list hasn't loaded yet. */}
-      {stemName && addableTools.length > 0 && (
+      {addableTools.length > 0 && (
         <div className="flex items-center gap-2">
           <label htmlFor="add-fix" className="text-xs text-text/45">
             Heard something the analysis missed?
@@ -129,34 +87,6 @@ export default function FixQueue({
               </option>
             ))}
           </select>
-        </div>
-      )}
-
-      {masterFixes.length > 0 && (
-        <div className="pt-3 border-t border-white/8">
-          <div className="flex items-center gap-2 mb-2.5">
-            <h4 className="font-semibold text-sm text-text">Full mix &amp; master</h4>
-            <span className="font-mono text-[9.5px] tracking-wide text-text/45 bg-white/6 px-1.5 py-0.5 rounded">
-              MASTER
-            </span>
-          </div>
-          <div className="flex flex-col gap-2.5">
-            {masterFixes.map((fix, i) => (
-              <FixCard
-                key={fix.id}
-                fix={fix}
-                index={i}
-                onToggle={() => onToggle(fix.id)}
-                onAdjust={() => onAdjust(fix)}
-                onHear={() => onHear(fix)}
-                onRemove={fix.source === 'manual' ? () => onRemoveFix(fix.id) : undefined}
-                missingParams={missingParamsFor(fix)}
-                auditioning={fix.id === auditionFixId}
-                rendering={rendering && fix.id === auditionFixId}
-                canHear={canHear}
-              />
-            ))}
-          </div>
         </div>
       )}
     </div>

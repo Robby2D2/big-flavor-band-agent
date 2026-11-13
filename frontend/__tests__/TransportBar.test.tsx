@@ -16,8 +16,6 @@ const props = {
   maxDuration: 120,
   onTogglePlay: vi.fn(),
   onSeek: vi.fn(),
-  auditionRendering: false,
-  audition: null,
   unrenderedRows: [] as string[],
   renderingFixes: false,
   withFixes: false,
@@ -44,12 +42,6 @@ describe('TransportBar', () => {
     render(<TransportBar {...props} withFixes />);
 
     expect(screen.getByTestId('transport-hearing')).toHaveTextContent('With fixes');
-  });
-
-  it('waits only for Hear it, which is about hearing that one fix', () => {
-    render(<TransportBar {...props} auditionRendering />);
-
-    expect(screen.getByRole('button', { name: 'Rendering fix' })).toBeDisabled();
   });
 
   it('waits for audio to decode before it can play anything', () => {
@@ -86,6 +78,27 @@ describe('TransportBar', () => {
     expect(screen.getByTestId('transport-hearing')).toHaveTextContent(
       'Loading audio · 2 of 6 parts ready'
     );
+  });
+
+  describe('Fixes switch', () => {
+    it('is not offered while there are no fixes to bypass', () => {
+      render(<TransportBar {...props} />);
+
+      expect(screen.queryByRole('switch', { name: 'Fixes' })).toBeNull();
+    });
+
+    it('flips the bypass and says the original is what is playing', () => {
+      const onToggleBypass = vi.fn();
+      render(<TransportBar {...props} withFixes fixesBypassed onToggleBypass={onToggleBypass} />);
+
+      const toggle = screen.getByRole('switch', { name: 'Fixes' });
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+      expect(screen.getByTestId('transport-hearing')).toHaveTextContent(
+        'Fixes bypassed · hearing the original'
+      );
+      fireEvent.click(toggle);
+      expect(onToggleBypass).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('Lyrics toggle', () => {

@@ -172,11 +172,7 @@ export default function ProduceSongPage({
     }
   };
 
-  const handleRenameVersion = async (versionId: number, currentName: string) => {
-    const next = window.prompt('Rename version', currentName);
-    if (next == null) return;
-    const name = next.trim();
-    if (!name || name === currentName) return;
+  const handleRenameVersion = async (versionId: number, name: string) => {
     setVersionBusyId(versionId);
     setVersionsError(null);
     try {

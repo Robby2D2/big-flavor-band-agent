@@ -25,47 +25,31 @@ const props = {
   index: 0,
   onToggle: vi.fn(),
   onAdjust: vi.fn(),
-  onHear: vi.fn(),
 };
 
-const hearButton = () => screen.getByRole('button', { name: /Hear it|Playing|Rendering/ });
-
-describe('auditioning a fix', () => {
+describe('hearing a fix', () => {
   it('never renders a player of its own', () => {
-    // The whole point of the change: one transport for the page, so a fix is
-    // judged in the mix rather than as a disconnected clip.
+    // One transport for the page, so a fix is judged in the mix rather than as
+    // a disconnected clip.
     const { container } = render(<FixCard {...props} />);
     expect(container.querySelector('audio')).toBeNull();
   });
 
-  it('hands Hear it to the transport instead of fetching a clip', async () => {
-    const onHear = vi.fn();
-    render(<FixCard {...props} onHear={onHear} />);
+  it('has no play button: the song plays from the transport and the switch A/Bs it', () => {
+    render(<FixCard {...props} />);
 
-    await userEvent.click(hearButton());
-    expect(onHear).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /Hear it/ })).toBeNull();
   });
 
-  it('is unavailable, not dead, until the console has audio', () => {
-    render(<FixCard {...props} canHear={false} />);
-    expect(hearButton()).toBeDisabled();
+  it('switches the fix from its toggle', async () => {
+    const onToggle = vi.fn();
+    render(<FixCard {...props} onToggle={onToggle} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Turn this fix off' }));
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
-  it('says which card the transport is on', () => {
-    render(<FixCard {...props} auditioning />);
-
-    expect(screen.getByText('ON THE TRANSPORT')).toBeInTheDocument();
-    expect(hearButton()).toHaveTextContent('Playing');
-  });
-
-  it('shows the pending state while its chain renders', () => {
-    render(<FixCard {...props} auditioning rendering />);
-
-    expect(hearButton()).toHaveTextContent('Rendering…');
-    expect(hearButton()).toBeDisabled();
-  });
-
-  it('refuses to audition a card that is still missing a required setting', () => {
+  it('will not switch on a card that is still missing a required setting', () => {
     render(
       <FixCard
         {...props}
@@ -76,7 +60,9 @@ describe('auditioning a fix', () => {
       />
     );
 
-    expect(hearButton()).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Set the missing setting under Adjust before turning this on' })
+    ).toBeDisabled();
     expect(screen.getByText(/Needs Target BPM/)).toBeInTheDocument();
   });
 });

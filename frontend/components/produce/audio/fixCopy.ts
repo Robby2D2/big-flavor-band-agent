@@ -135,7 +135,7 @@ export function fixCopyFor(
  * Only `remove_hum` is in this position: its one param has no default, and with
  * no mains frequency given, apply re-runs the same detection that already found
  * no hum and copies the file. Every other tool here starts from defaults that
- * do real work. Saying so on the card keeps "Hear it" from sounding broken.
+ * do real work. Saying so on the card keeps switching it on from sounding broken.
  */
 const MANUAL_SETUP_HINTS: Record<string, string> = {
   remove_hum:
