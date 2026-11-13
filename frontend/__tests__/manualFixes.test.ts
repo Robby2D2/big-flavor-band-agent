@@ -371,3 +371,39 @@ describe('producer-added fixes', () => {
     expect(result.current.masterFixes.map((f) => f.id)).toEqual(['master:apply_mastering']);
   });
 });
+
+describe('the console row switch', () => {
+  const enabledOn = (fixes: { id: string; enabled: boolean }[]) =>
+    fixes.filter((f) => f.enabled).map((f) => f.id).sort();
+
+  it('turns a row off and back on to the picks it had, leaving other rows alone', async () => {
+    const { result } = await analyzed();
+    act(() => result.current.addManualFix(STEM_ID, 'remove_hum'));
+    act(() => result.current.addManualFix(STEM_ID, 'reduce_noise'));
+    act(() => result.current.addManualFix(FULL_MIX_STEM_ID, 'apply_mastering'));
+    // The producer's own pick on this row: hum stays, noise is off.
+    act(() => result.current.toggleFix(`stem:${STEM_ID}:reduce_noise`));
+
+    act(() => result.current.setRowFixesEnabled(STEM_ID, false));
+    expect(enabledOn(result.current.fixesForStem(STEM_ID))).toEqual([]);
+    expect(enabledOn(result.current.masterFixes)).toEqual(['master:apply_mastering']);
+
+    act(() => result.current.setRowFixesEnabled(STEM_ID, true));
+    expect(enabledOn(result.current.fixesForStem(STEM_ID))).toEqual([`stem:${STEM_ID}:remove_hum`]);
+  });
+
+  it('turns every fix on when there are no earlier picks to go back to', async () => {
+    const { result } = await analyzed();
+    act(() => result.current.addManualFix(FULL_MIX_STEM_ID, 'apply_mastering'));
+    act(() => result.current.addManualFix(FULL_MIX_STEM_ID, 'trim_silence'));
+    act(() => result.current.toggleFix('master:apply_mastering'));
+    act(() => result.current.toggleFix('master:trim_silence'));
+
+    act(() => result.current.setRowFixesEnabled(FULL_MIX_STEM_ID, true));
+
+    expect(enabledOn(result.current.masterFixes)).toEqual([
+      'master:apply_mastering',
+      'master:trim_silence',
+    ]);
+  });
+});

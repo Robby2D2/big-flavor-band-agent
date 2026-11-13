@@ -29,6 +29,18 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-11-13 — Produce page: player in the version card, fixes inside console rows (PROD-24)
+Owner found the page confusing during playback. The transport now lives in the version card (sticky
+from `md` up). The card has a pencil for inline rename, a trash icon, a "Default version" checkbox,
+and a **Start analysis | ▾** split button with Analyze & save and Separate stems on the menu. A
+**Fixes** switch on the transport bypasses every fix for a whole-song A/B; it is listening-only and
+feeds `useStemPlayback` the raw buffers, so it crossfades at the playhead. Clicking a console row
+opens its fix cards beneath it. Each row's switch turns all its fixes off, and turns them back on to
+the producer's own picks (`setRowFixesEnabled`). Removed: the separate fix panel and its "Full mix &
+master" section (those fixes are the full-mix row's cards), **Hear it** with its whole `audition`
+state machine (play + per-fix ON/OFF already A/Bs at the playhead), and `StemDetailPanel`, whose
+"drag a region to limit fixes" never reached any render or save.
+
 ### 2026-11-10 — Analyze & save: one press from a version to a saved, cleaned version (PROD-23)
 Owner asked for one button instead of Start analysis → wait → Save. It's the same server pass with
 `then_save`, and the warm render it already started becomes a save. No pipeline was added. If

@@ -8,32 +8,24 @@ interface FixCardProps {
   index: number;
   onToggle: () => void;
   onAdjust: () => void;
-  /** Audition this fix on the console transport — the page's only player. */
-  onHear: () => void;
   /** Only passed for producer-added cards — a measured fix is toggled, not deleted. */
   onRemove?: () => void;
   /** Required params still unset — the card can't run until they have values. */
   missingParams?: ParamMeta[];
-  /** This is the card the transport is currently playing. */
-  auditioning?: boolean;
-  /** Its chain is being rendered before playback can start. */
-  rendering?: boolean;
-  /** The console has decoded audio — until then there is nothing to play into. */
-  canHear?: boolean;
 }
 
-/** One fix: what it found, in plain English, with Hear it / Adjust / on-off. */
+/**
+ * One fix: what it found, in plain English, with Adjust and on-off. There is no
+ * play button on the card: the fix is heard by playing the song and switching
+ * it, which swaps it in or out at the playhead.
+ */
 export default function FixCard({
   fix,
   index,
   onToggle,
   onAdjust,
-  onHear,
   onRemove,
   missingParams = [],
-  auditioning = false,
-  rendering = false,
-  canHear = true,
 }: FixCardProps) {
   const incomplete = missingParams.length > 0;
 
@@ -46,20 +38,11 @@ export default function FixCard({
   // What the queue will really run: enabled and complete.
   const on = fix.enabled && !incomplete;
 
-  const hearLabel = rendering ? 'Rendering…' : auditioning ? 'Playing' : 'Hear it';
-  const hearTitle = incomplete
-    ? 'Set the missing setting under Adjust first'
-    : !canHear
-      ? 'Waiting for the console to load this song’s audio'
-      : 'Play this fix in the mix, on the console transport';
-
   return (
     <div
       className={`rounded-xl border p-3.5 ${
         on ? 'bg-raised border-white/9' : 'bg-raised/60 border-white/6'
-      } ${incomplete ? 'border-amber-400/30' : ''} ${
-        auditioning ? 'ring-1 ring-signal/50' : ''
-      }`}
+      } ${incomplete ? 'border-amber-400/30' : ''}`}
     >
       <div className="flex items-start gap-3">
         <div className="w-8 h-8 rounded-lg bg-signal/15 border border-signal/30 flex items-center justify-center font-mono text-xs font-semibold text-signal flex-none">
@@ -82,11 +65,6 @@ export default function FixCard({
                 </span>
               )
             )}
-            {auditioning && (
-              <span className="font-mono text-[9.5px] tracking-wide px-1.5 py-0.5 rounded text-signal bg-signal/15">
-                ON THE TRANSPORT
-              </span>
-            )}
           </div>
           <p className="text-xs text-text/60 mt-1 leading-relaxed">{fix.body}</p>
 
@@ -100,14 +78,6 @@ export default function FixCard({
           )}
 
           <div className="flex gap-1.5 mt-2.5">
-            <button
-              onClick={onHear}
-              disabled={incomplete || !canHear || rendering}
-              title={hearTitle}
-              className={`${actionButton} text-text/70 hover:bg-white/5 disabled:opacity-50`}
-            >
-              {hearLabel}
-            </button>
             <button
               onClick={onAdjust}
               className={`${actionButton} text-text/70 hover:bg-white/5`}

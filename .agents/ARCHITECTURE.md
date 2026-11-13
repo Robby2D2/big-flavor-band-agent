@@ -71,7 +71,7 @@ frontend/
   app/                         # Next.js app-router pages + /api route handlers (BFF)
   components/                  # React components (AudioPlayer, SongList, SearchBar, …)
     produce/audio/              # Audio-processing review-queue UI (VersionBar, StemConsole,
-                                 #   StemRow, StemDetailPanel, FixQueue/FixCard, AdvancedDrawer,
+                                 #   StemRow, FixQueue/FixCard, AdvancedDrawer, TransportBar,
                                  #   ResultSidebar, LyricsCard, Spinner, useStemPlayback,
                                  #   fixCopy.ts, stemColors.ts)
   components/LyricsFollower.tsx # Follow-along lyric highlighting (time-source agnostic)
@@ -474,6 +474,18 @@ re-renders and resumes at the same playhead (keyed on *which* fixes are enabled,
 so a slider drag can't start a render per keystroke). `previewSingleFix` is gone with it — there is
 no isolated-clip render left to do.
 
+**Superseded 2026-11-13 — no Hear it at all.** With the transport in the version card and a fix's
+cards opened inside its console row, Hear it only added "start playback for me". Play on the
+transport, then a fix's ON/OFF, already A/Bs it at the playhead (PROD-21). While playing, any toggle
+re-renders the audible rows in the background, and the open row's one-toggle-away takes are
+pre-rendered. So the `audition` state, `renderRowThenPlay`, and the deferred play request are gone.
+Two whole-scope switches were added, and they mean different things (PROD-24):
+- **Transport Fixes switch** is a *bypass*. `effectiveBuffers` returns the raw decoded buffers, so
+  `useStemPlayback` crossfades to the original at the playhead. No fix's `enabled` changes, so it
+  never alters a save.
+- **Row switch** (`setRowFixesEnabled`) *does* change `enabled` for every fix on the row. It
+  remembers the row's picks when turned off, and restores them, not "all on", when turned back on.
+
 **Required params gate a card (2026-09):** `match_tempo.target_bpm` is the only scoped param with
 `required=True`, and `coerce_args` raises `ValueError` rather than inventing a value — a blank card
 would fail the render, not no-op. `missingRequiredParams` reads the `required` flag the tool
@@ -521,8 +533,7 @@ resources:
   (the catalog mount is read-only). Already-compressed sources (the catalog MP3s) are passed through
   rather than re-encoded.
 
-`/audio` still serves the real file and is what every DSP tool — and `StemDetailPanel`'s A/B fidelity
-control — reads; the lossy copies never enter the production path. On the client, `WaveformView` now
+`/audio` still serves the real file and is what every DSP tool reads; the lossy copies never enter the production path. On the client, `WaveformView` now
 takes a `Peaks` envelope instead of an `AudioBuffer` and `resamplePeaks` reduces it to the canvas
 width (a few thousand ops per resize, against a full-song sample scan before). Because waveforms
 arrive well ahead of audio, the transport is gated on `playbackReady` — `useStemPlayback.play()` is a
@@ -640,7 +651,8 @@ the song's **single** cache slot — evicting the 21-fix render, so the next Sav
   panel's `<audio>` and the "New mix (not saved)" row are gone) plays at once, rows whose fixes are
   not rendered play raw and the bar says so, and rendered audio swaps in at the playhead. Playback
   renders never start while the warm render runs — that is the duplicate this removes; its
-  completion fetches the rows from the cache instead. Only *Hear it* waits, for its own row.
+  completion fetches the rows from the cache instead. (Since 2026-11-13 the transport sits inside
+  the version card, `VersionDetails`, which is what sticks; Hear it is gone.)
 - **The console plays compressed copies of fixed stems.** A fixed stem is a full-size WAV
   (~23–46 MB); loading seven after a render took minutes and showed as a second task, "Rendering
   fixes to play", though nothing was rendering. `_render_mix` now ends with a `playback` stage that

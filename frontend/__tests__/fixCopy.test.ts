@@ -17,7 +17,7 @@ describe('fix card copy', () => {
 
   it('tells a producer adding hum removal to pick a mains frequency', () => {
     // Added at its defaults the tool re-runs the detection that already found
-    // no hum and copies the file, so "Hear it" would sound like nothing
+    // no hum and copies the file, so switching it on would sound like nothing
     // happened unless the card says what to set.
     const body = manualFixCopy('remove_hum').body;
     expect(body).toContain('50 or 60 Hz');

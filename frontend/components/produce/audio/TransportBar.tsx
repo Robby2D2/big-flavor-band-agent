@@ -25,10 +25,6 @@ interface TransportBarProps {
   maxDuration: number;
   onTogglePlay: () => void;
   onSeek: (seconds: number) => void;
-  /** Hear it is waiting for its own fix to render before it can play it. */
-  auditionRendering: boolean;
-  /** What a fix card started, when it did. */
-  audition: { fixTitle: string; rowName: string } | null;
   /** Audible rows whose enabled fixes have not been rendered, so play raw. */
   unrenderedRows: string[];
   /** Whether those rows' fixes are rendering right now. */
@@ -37,16 +33,24 @@ interface TransportBarProps {
   withFixes: boolean;
   /** The song whose follow-along lyrics the Lyrics toggle shows. */
   songId: number;
+  /** Every fix is bypassed, so the whole song plays as recorded. */
+  fixesBypassed?: boolean;
+  /** Flip the bypass; omitted while there are no fixes to bypass. */
+  onToggleBypass?: () => void;
 }
 
 /**
- * The page's one player: play, the clock, and the whole song's waveform to
- * scrub. It sits above the stem console and stays in view while the rows
- * scroll, so it is always at hand; the version panel's own player is gone.
+ * The page's one player: play, the clock, the whole song's waveform to scrub,
+ * and the Fixes switch. It lives in the version card, which stays in view while
+ * the console rows scroll, so it is always at hand.
  *
  * Play works as soon as any audio has decoded — it never waits for fixes to
  * render. Rows whose fixes are not ready play as recorded, and the bar says so
  * plainly, until the rendered audio swaps in where the playhead is.
+ *
+ * The Fixes switch is the whole-song A/B: it changes what is heard at the
+ * playhead and nothing else — which fixes are on, and so what a save would
+ * contain, is left exactly as it was.
  */
 export default function TransportBar({
   peaks,
@@ -58,12 +62,12 @@ export default function TransportBar({
   maxDuration,
   onTogglePlay,
   onSeek,
-  auditionRendering,
-  audition,
   unrenderedRows,
   renderingFixes,
   withFixes,
   songId,
+  fixesBypassed = false,
+  onToggleBypass,
 }: TransportBarProps) {
   // Fetched each time the panel opens, not once: the point of it here is to
   // check a re-extraction, which lands while the page stays open.
@@ -88,7 +92,7 @@ export default function TransportBar({
   const waiting = maxDuration > 0 && !playbackReady;
 
   let hearing: { text: string; tone: string } | null = null;
-  if (audioLoading && !(audition && !auditionRendering)) {
+  if (audioLoading) {
     const parts = `${audioLoading.ready} of ${audioLoading.total} parts ready`;
     hearing = {
       text:
@@ -99,8 +103,8 @@ export default function TransportBar({
             : `Decoding audio · ${parts}`,
       tone: 'text-text/55',
     };
-  } else if (audition && !auditionRendering) {
-    hearing = { text: `Auditioning ${audition.fixTitle} on ${audition.rowName}, fixes on`, tone: 'text-signal' };
+  } else if (fixesBypassed) {
+    hearing = { text: 'Fixes bypassed · hearing the original', tone: 'text-text/55' };
   } else if (unrenderedRows.length > 0) {
     hearing = {
       text: `Original audio on ${unrenderedRows.join(', ')} · ${
@@ -113,19 +117,19 @@ export default function TransportBar({
   }
 
   return (
-    <div className="sticky top-0 z-30 rounded-xl border border-white/8 bg-raised/95 px-3 py-2.5 backdrop-blur">
+    <div className="rounded-lg border border-white/6 bg-well/60 px-3 py-2.5">
       <div className="flex items-center gap-3">
         <button
           onClick={onTogglePlay}
           // The waveforms arrive well before the audio does, so without the
           // playbackReady gate the button would look live and do nothing.
-          disabled={maxDuration === 0 || !playbackReady || auditionRendering}
+          disabled={maxDuration === 0 || !playbackReady}
           aria-label={
-            playing ? 'Pause' : auditionRendering ? 'Rendering fix' : playbackReady ? 'Play' : 'Preparing playback'
+            playing ? 'Pause' : playbackReady ? 'Play' : 'Preparing playback'
           }
           className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-signal text-canvas hover:opacity-90 disabled:opacity-40"
         >
-          {auditionRendering || waiting ? (
+          {waiting ? (
             <Spinner className="w-3.5 h-3.5" />
           ) : playing ? (
             <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden>
@@ -157,6 +161,39 @@ export default function TransportBar({
             </span>
           )}
         </div>
+        {onToggleBypass && (
+          <button
+            onClick={onToggleBypass}
+            role="switch"
+            aria-checked={!fixesBypassed}
+            aria-label="Fixes"
+            title={
+              fixesBypassed
+                ? 'Hear the song with its fixes'
+                : 'Hear the song as recorded — your fix choices stay as they are'
+            }
+            className="flex flex-none items-center gap-1.5"
+          >
+            <span
+              className={`font-mono text-[10.5px] font-semibold ${
+                fixesBypassed ? 'text-text/40' : 'text-confirm'
+              }`}
+            >
+              FIXES
+            </span>
+            <span
+              className={`relative h-[18px] w-8 rounded-full transition-colors ${
+                fixesBypassed ? 'bg-white/13' : 'bg-confirm'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-[14px] w-[14px] rounded-full transition-all ${
+                  fixesBypassed ? 'left-0.5 bg-text/55' : 'right-0.5 bg-canvas'
+                }`}
+              />
+            </span>
+          </button>
+        )}
         <button
           onClick={() => {
             setTimings(undefined);

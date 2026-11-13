@@ -1005,6 +1005,33 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     setFixes((prev) => prev.map((f) => (f.id === id ? { ...f, enabled: !f.enabled } : f)));
   }, []);
 
+  // Which of a row's fixes were on when its row switch turned them all off, so
+  // turning the row back on restores the producer's picks instead of every card.
+  const rowPicksRef = useRef<Map<number, Set<string>>>(new Map());
+
+  /** The console row's switch: every fix on that row off, or back on. */
+  const setRowFixesEnabled = useCallback(
+    (rowId: number, enabled: boolean) => {
+      const onRow = (f: FixEntry) =>
+        rowId === FULL_MIX_STEM_ID ? f.scope === 'master' : f.scope === 'stem' && f.stemId === rowId;
+      // Worked out here rather than in the updater, which StrictMode runs twice.
+      let wanted: (f: FixEntry) => boolean;
+      if (enabled) {
+        const picks = rowPicksRef.current.get(rowId);
+        rowPicksRef.current.delete(rowId);
+        wanted = picks && fixes.some((f) => picks.has(f.id)) ? (f) => picks.has(f.id) : () => true;
+      } else {
+        rowPicksRef.current.set(
+          rowId,
+          new Set(fixes.filter((f) => onRow(f) && f.enabled).map((f) => f.id))
+        );
+        wanted = () => false;
+      }
+      setFixes((prev) => prev.map((f) => (onRow(f) ? { ...f, enabled: wanted(f) } : f)));
+    },
+    [fixes]
+  );
+
   /**
    * The tools a producer can still add to one console row.
    *
@@ -1067,7 +1094,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
    *
    * It starts from the tool's own declared defaults — there are no measured
    * numbers to pre-fill, which is exactly why the Adjust drawer is where the
-   * amount gets set. Everything downstream (Hear it, the accept payload, the
+   * amount gets set. Everything downstream (playback, the accept payload, the
    * render fingerprint) reads `tool` + `currentParams` and never asks where a
    * card came from, so it behaves like any other from here on.
    */
@@ -1334,6 +1361,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     renameStem,
     identifyStem,
     toggleFix,
+    setRowFixesEnabled,
     missingParamsFor,
     incompleteFixIds,
     addableToolsForStem,

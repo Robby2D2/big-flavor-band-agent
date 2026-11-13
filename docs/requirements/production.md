@@ -22,6 +22,14 @@ without stopping or restarting playback, so the producer can A/B the fix. Once t
 other state is rendered, the switch MUST be immediate. The takes one toggle away from the selected
 row are rendered ahead of time for this reason.
 
+**PROD-24** — During playback a producer MUST be able to bypass every fix at once and hear the song as
+recorded, then switch back, at the playhead and without restarting (as **PROD-21**). Bypassing is for
+listening only: it MUST NOT change which fixes are on, so it never changes what a save contains.
+Switching a whole console row's fixes off and back on MUST restore the producer's own picks on that
+row, not turn every fix on.
+*Why:* hearing "before vs. after" for the whole song took switching every card on every row, and
+undoing that by hand lost which ones had been deliberately left off.
+
 **PROD-03** — A producer MUST be able to **discard** a proposed change and be left exactly where they
 started.
 

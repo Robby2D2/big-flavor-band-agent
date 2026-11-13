@@ -10,14 +10,13 @@ import {
 } from '@/hooks/useProcessingQueue';
 import type { AcceptJob } from '@/hooks/useAcceptJob';
 import { buildTasks, TaskId } from '@/lib/processingTasks';
-import { decodeAudio, fetchPeaks, Region, WaveformPeaks } from '../audioEngine';
+import { decodeAudio, fetchPeaks, WaveformPeaks } from '../audioEngine';
 import { mapWithConcurrency } from '@/lib/concurrency';
 import { addTake, chainSignature, ChainStep, neighbourChains, takeKey } from '@/lib/fixTakes';
 import type { StemPlaybackControl } from './useStemPlayback';
 import { useStemPlayback } from './useStemPlayback';
 import VersionDetails, { VersionDetail } from './VersionDetails';
 import StemConsole from './StemConsole';
-import StemDetailPanel from './StemDetailPanel';
 import FixQueue from './FixQueue';
 import AdvancedDrawer from './AdvancedDrawer';
 import ResultSidebar from './ResultSidebar';
@@ -64,7 +63,7 @@ interface AudioProcessingTabProps {
   versionActions: {
     busyId: number | null;
     onSetDefault: (versionId: number) => void;
-    onRename: (versionId: number, currentName: string) => void;
+    onRename: (versionId: number, name: string) => void;
     onDelete: (versionId: number, name: string) => void;
   };
 }
@@ -108,7 +107,6 @@ export default function AudioProcessingTab({
   const [peaksError, setPeaksError] = useState<string | null>(null);
   const [buffers, setBuffers] = useState<Record<number, AudioBuffer>>({});
   const [controls, setControls] = useState<Record<number, StemPlaybackControl>>({});
-  const [region, setRegion] = useState<Region | null>(null);
   const [drawerFix, setDrawerFix] = useState<FixEntry | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
@@ -302,16 +300,19 @@ export default function AudioProcessingTab({
   // otherwise outlive the version they were rendered from. Dropped during the
   // render that sees the new version (React's "adjust state on a prop change"),
   // so no frame ever pairs the new version with the old takes.
+  // The transport's Fixes switch: every row plays its raw audio while set. A
+  // listening switch only — which fixes are on, and so what a save contains,
+  // is untouched. The raw audio is always decoded, so the swap is immediate.
+  const [bypassFixes, setBypassFixes] = useState(false);
   const [takesVersionId, setTakesVersionId] = useState(sourceVersionId);
   if (takesVersionId !== sourceVersionId) {
     setTakesVersionId(sourceVersionId);
     setTakes(new Map());
+    setBypassFixes(false);
   }
   useEffect(() => {
     pendingTakesRef.current.clear();
   }, [sourceVersionId]);
-  // Hear it waits for its own fix; the transport's play button never waits.
-  const [auditionRendering, setAuditionRendering] = useState(false);
   // Rows rendering in the background so they can play with their fixes, and
   // how far that has got — counted for the task panel.
   const [playbackRendering, setPlaybackRendering] = useState<number[]>([]);
@@ -355,6 +356,7 @@ export default function AudioProcessingTab({
   }, [currentTakeKeys]);
 
   const effectiveBuffers = useMemo(() => {
+    if (bypassFixes) return buffers;
     const merged: Record<number, AudioBuffer> = { ...buffers };
     for (const [id, signature] of Object.entries(fixSignature)) {
       // A row whose chain has no take yet falls back to the raw audio rather
@@ -363,7 +365,7 @@ export default function AudioProcessingTab({
       if (take) merged[Number(id)] = take;
     }
     return merged;
-  }, [buffers, takes, fixSignature]);
+  }, [buffers, takes, fixSignature, bypassFixes]);
 
   const playback = useStemPlayback(
     queue.consoleStems,
@@ -399,10 +401,6 @@ export default function AudioProcessingTab({
       fraction: sized && total > 0 ? loaded / total : null,
     };
   }, [targets, fullMixAudible, buffers, audioProgress]);
-  const playingRef = useRef(false);
-  useEffect(() => {
-    playingRef.current = playback.playing;
-  }, [playback.playing]);
 
   /** Whether a row can be heard with the current mute/solo. */
   const anySolo = Object.values(controls).some((c) => c.solo);
@@ -423,6 +421,7 @@ export default function AudioProcessingTab({
 
   const unrenderedRows = staleRows(true);
   const withFixes =
+    !bypassFixes &&
     unrenderedRows.length === 0 &&
     queue.consoleStems.some((stem) => fixSignature[stem.id] && isAudible(stem.id));
 
@@ -468,8 +467,6 @@ export default function AudioProcessingTab({
       onEach?.();
       return [takeKey(stem.id, signature), buffer] as const;
     });
-
-  const playWhenRenderedRef = useRef<{ from?: number } | null>(null);
 
   /**
    * Bring rows' fixed audio in behind the transport, without holding it up.
@@ -519,59 +516,15 @@ export default function AudioProcessingTab({
     setPlaybackLoad(null);
   };
 
-  /**
-   * Hear it: render the auditioned row first — hearing that fix is the point.
-   *
-   * Already playing, nothing restarts: the transport swaps the row's new take
-   * in at the playhead, which is what makes ON/OFF an instant A/B.
-   */
-  const renderRowThenPlay = async (rowId: number, from?: number) => {
-    const rows = staleRows(false).filter((stem) => stem.id === rowId);
-    if (rows.length > 0) {
-      setAuditionRendering(true);
-      setPlaybackError(null);
-      try {
-        const rendered = await renderRows(rows);
-        // Start playing from the effect below rather than here: `playback.play`
-        // closes over the buffers of the render it came from, so calling it now
-        // would play the pre-render audio we just replaced.
-        if (!playingRef.current) playWhenRenderedRef.current = { from };
-        commitTakes(rendered);
-      } catch (err) {
-        setPlaybackError(`Could not render fixes — playing without them. ${(err as Error).message}`);
-        if (!playingRef.current) void playback.play(from);
-      } finally {
-        setAuditionRendering(false);
-      }
-    } else if (!playingRef.current) {
-      void playback.play(from);
-    }
-    void renderInBackground(staleRows(true).filter((stem) => stem.id !== rowId));
-  };
-
   const handleTogglePlay = () => {
     if (playback.playing) {
       playback.pause();
       return;
     }
-    // The transport's own play button means "play the song", not "audition
-    // this fix" — so it takes the page back to plain playback. It plays at
-    // once; anything not rendered yet follows as it lands.
-    setAudition(null);
+    // It plays at once; anything not rendered yet follows as it lands.
     void playback.play();
     void renderInBackground(staleRows(true));
   };
-
-  useEffect(() => {
-    const request = playWhenRenderedRef.current;
-    if (!request) return;
-    playWhenRenderedRef.current = null;
-    void playback.play(request.from);
-    // Only the freshly committed buffers should trigger this; `playback` is
-    // deliberately not a dependency, since its identity changes on every tick
-    // of the playhead.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveBuffers]);
 
   // The warm render finished: every chain it did is in the server's cache, and
   // it made their compressed copies, so fetching the audible rows now costs a
@@ -625,85 +578,12 @@ export default function AudioProcessingTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRowId, selectedSignature, renderInProgress]);
 
-  /**
-   * Which fix card started the transport.
-   *
-   * A fix used to be auditioned through its own `<audio>` element, which meant
-   * judging it as an isolated clip: no other stems, no solo/mute, and as many
-   * playheads on the page as there were cards. Hear it now drives the console's
-   * one transport instead, so the fix is heard where it will actually live.
-   */
-  const [audition, setAudition] = useState<{ fixId: string; rowId: number } | null>(null);
-
-  // A play request that has to wait for the commit: Hear it may turn the fix on
-  // first, and the render has to be built from the signature *after* that
-  // toggle, not the one the click handler closed over.
-  const [playRequestSeq, setPlayRequestSeq] = useState(0);
-  const playRequest = useRef<{ rowId: number; from?: number } | null>(null);
-
-  const requestPlay = (rowId: number, from?: number) => {
-    playRequest.current = { rowId, from };
-    setPlayRequestSeq((n) => n + 1);
-  };
-
-  useEffect(() => {
-    const request = playRequest.current;
-    if (playRequestSeq === 0 || !request) return;
-    void renderRowThenPlay(request.rowId, request.from);
-    // Fires once per request. `renderRowThenPlay` is redefined every render
-    // and reads the current fix signature, which is the whole point of
-    // deferring the call to here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playRequestSeq]);
-
-  const handleHear = (fix: FixEntry) => {
-    const rowId = fix.scope === 'master' ? FULL_MIX_STEM_ID : fix.stemId;
-    if (rowId == null) return;
-    // Scope the queue to the row being auditioned, so the solo/mute controls
-    // and the cards on screen are the ones this fix belongs to.
-    queue.setSelectedStemId(rowId);
-    if (!fix.enabled) queue.toggleFix(fix.id);
-    setAudition({ fixId: fix.id, rowId });
-    requestPlay(rowId, playback.playhead);
-  };
-
-  /**
-   * ON/OFF while a fix is being auditioned is a question about the mix, so the
-   * transport answers it: re-render the row and pick playback up at the same
-   * position rather than making the producer press play again. Only toggles —
-   * a slider drag in the Adjust drawer must not kick off a render per keystroke.
-   */
-  const handleToggleFix = (id: string) => {
-    queue.toggleFix(id);
-    if (audition && playback.playing) requestPlay(audition.rowId, playback.playhead);
-  };
-
-  const handleRemoveFix = (id: string) => {
-    queue.removeFix(id);
-    if (audition && playback.playing) requestPlay(audition.rowId, playback.playhead);
-  };
-
+  // A fix is heard by playing the song and switching it: while playing, a
+  // toggle re-renders the row in the background (above) and swaps in at the
+  // playhead, and the open row's other takes are rendered ahead of time.
   const setControl = (id: number, patch: Partial<StemPlaybackControl>) => {
     setControls((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
   };
-
-  // A region belongs to the stem it was drawn on; picking another stem drops it
-  // in the same render rather than in an effect after it.
-  const [regionStemId, setRegionStemId] = useState(queue.selectedStemId);
-  if (regionStemId !== queue.selectedStemId) {
-    setRegionStemId(queue.selectedStemId);
-    setRegion(null);
-  }
-
-  // Derived rather than cleared: the audition is over the moment the transport
-  // stops, and deriving it means there is no stale "now playing" to tidy up.
-  const activeAudition = playback.playing || auditionRendering ? audition : null;
-  const auditionFix = activeAudition
-    ? queue.fixes.find((f) => f.id === activeAudition.fixId) ?? null
-    : null;
-  const auditionRow = activeAudition
-    ? queue.consoleStems.find((s) => s.id === activeAudition.rowId) ?? null
-    : null;
 
   // --- the task panel -------------------------------------------------------
   const separationRunning = queue.separationTask?.status === 'running';
@@ -758,10 +638,6 @@ export default function AudioProcessingTab({
     if (renderJob.status !== 'running' && renderJob.status !== 'idle') onDismissRender();
   };
 
-  const selectedStem = queue.consoleStems.find((s) => s.id === queue.selectedStemId) ?? null;
-  const fullMixSelected = queue.selectedStemId === FULL_MIX_STEM_ID;
-  const selectedStemFixes = queue.selectedStemId != null ? queue.fixesForStem(queue.selectedStemId) : [];
-  const enabledSelectedStemFixCount = selectedStemFixes.filter((f) => f.enabled).length;
   // A stem set can be showing (preloaded from an earlier session) before any
   // analysis pass has ever run for it — the fix queue/results only make sense
   // once a pass has completed, is in flight, or a single row has been analyzed
@@ -781,9 +657,7 @@ export default function AudioProcessingTab({
         canDelete={versions.length > 1}
         busy={selectedVersion != null && versionActions.busyId === selectedVersion.id}
         onSetDefault={() => selectedVersion && versionActions.onSetDefault(selectedVersion.id)}
-        onRename={() =>
-          selectedVersion && versionActions.onRename(selectedVersion.id, selectedVersion.name)
-        }
+        onRename={(name) => selectedVersion && versionActions.onRename(selectedVersion.id, name)}
         onDelete={() =>
           selectedVersion && versionActions.onDelete(selectedVersion.id, selectedVersion.name)
         }
@@ -795,7 +669,29 @@ export default function AudioProcessingTab({
         separating={queue.separating}
         analysisNote={queue.analysisNote}
         hasStems={queue.stems.length > 0}
-      />
+      >
+        {/* The player shows once there are rows to play: the stems are what
+            it plays, the full mix only when that row is un-muted. */}
+        {queue.stems.length > 0 && (
+          <TransportBar
+            peaks={fullMixPeaks}
+            peaksLoading={!fullMixPeaks && peaksLoadingIds.has(FULL_MIX_STEM_ID)}
+            playbackReady={playbackReady}
+            audioLoading={audioLoading}
+            playing={playback.playing}
+            playhead={playback.playhead}
+            maxDuration={playback.maxDuration}
+            onTogglePlay={handleTogglePlay}
+            onSeek={playback.seek}
+            unrenderedRows={unrenderedRows.map(stemLabel)}
+            renderingFixes={renderInProgress || playbackRendering.length > 0}
+            withFixes={withFixes}
+            songId={songId}
+            fixesBypassed={bypassFixes}
+            onToggleBypass={queue.fixes.length > 0 ? () => setBypassFixes((b) => !b) : undefined}
+          />
+        )}
+      </VersionDetails>
 
       {queue.error && (
         <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-300 rounded-lg text-sm">
@@ -858,98 +754,49 @@ export default function AudioProcessingTab({
               re-separate/re-analyze, instead of the whole console vanishing
               back to the empty-state prompt above. */}
           {queue.stems.length > 0 && (
-            <>
-              <TransportBar
-                peaks={fullMixPeaks}
-                peaksLoading={!fullMixPeaks && peaksLoadingIds.has(FULL_MIX_STEM_ID)}
-                playbackReady={playbackReady}
-                audioLoading={audioLoading}
-                playing={playback.playing}
-                playhead={playback.playhead}
-                maxDuration={playback.maxDuration}
-                onTogglePlay={handleTogglePlay}
-                onSeek={playback.seek}
-                auditionRendering={auditionRendering}
-                audition={
-                  auditionFix && auditionRow
-                    ? { fixTitle: auditionFix.title, rowName: stemLabel(auditionRow) }
-                    : null
-                }
-                unrenderedRows={unrenderedRows.map(stemLabel)}
-                renderingFixes={renderInProgress || playbackRendering.length > 0}
-                withFixes={withFixes}
-                songId={songId}
-              />
-
-              <StemConsole
-                stems={queue.consoleStems}
-                peaks={peaks}
-                peaksLoadingIds={peaksLoadingIds}
-                controls={controls}
-                setControl={setControl}
-                selectedStemId={queue.selectedStemId}
-                onSelectStem={queue.setSelectedStemId}
-                fixesForStem={queue.fixesForStem}
-                analyzedStemIds={queue.analyzedStemIds}
-                analyzingStemIds={queue.analyzingStemIds}
-                onAnalyzeStem={queue.analyzeStem}
-                identifyingStemIds={queue.identifyingStemIds}
-                onIdentifyStem={queue.identifyStem}
-                onRenameStem={queue.renameStem}
-                playhead={playback.playhead}
-                maxDuration={playback.maxDuration}
-                onSeek={playback.seek}
-                separating={queue.analyzing || queue.separating}
-                analyzed={queue.analyzed}
-                analysisNote={queue.analysisNote}
-              />
-
-              {selectedStem && (
-                <StemDetailPanel
-                  stemName={stemLabel(selectedStem)}
-                  sourceName={selectedStem.name}
-                  peaks={peaks[selectedStem.id]?.peaks ?? null}
-                  duration={playback.maxDuration}
-                  region={region}
-                  onRegionChange={setRegion}
-                  enabledFixCount={enabledSelectedStemFixCount}
-                />
-              )}
-
-              {hasEverAnalyzed ? (
-                <FixQueue
-                  stemName={selectedStem ? stemLabel(selectedStem) : null}
-                  scopeLabel={fullMixSelected ? 'FULL MIX' : 'THIS STEM'}
-                  stemFixes={selectedStemFixes}
-                  // The full-mix row already *is* the master bucket — don't
-                  // list the same fixes twice when it's selected.
-                  masterFixes={fullMixSelected ? [] : queue.masterFixes}
-                  analyzing={queue.analyzing}
-                  addableTools={
-                    queue.selectedStemId != null
-                      ? queue.addableToolsForStem(queue.selectedStemId)
-                      : []
-                  }
-                  onToggle={handleToggleFix}
-                  onAdjust={setDrawerFix}
-                  onHear={handleHear}
-                  auditionFixId={activeAudition?.fixId ?? null}
-                  rendering={auditionRendering}
-                  canHear={playbackReady}
-                  onAddFix={(tool) =>
-                    queue.selectedStemId != null && queue.addManualFix(queue.selectedStemId, tool)
-                  }
-                  missingParamsFor={queue.missingParamsFor}
-                  onRemoveFix={handleRemoveFix}
-                />
-              ) : (
-                <p className="text-sm text-text/45 py-4 text-center">
-                  Loaded from a previous run — press{' '}
-                  <span className="text-text/70 font-medium">Start analysis</span> above to detect
-                  fixes for these stems.
-                </p>
-              )}
-            </>
+            <StemConsole
+              stems={queue.consoleStems}
+              peaks={peaks}
+              peaksLoadingIds={peaksLoadingIds}
+              controls={controls}
+              setControl={setControl}
+              selectedStemId={queue.selectedStemId}
+              onSelectStem={queue.setSelectedStemId}
+              fixesForStem={queue.fixesForStem}
+              onSetRowFixesEnabled={queue.setRowFixesEnabled}
+              renderFixes={(stem) =>
+                hasEverAnalyzed ? (
+                  <FixQueue
+                    fixes={queue.fixesForStem(stem.id)}
+                    analyzing={queue.analyzing}
+                    addableTools={queue.addableToolsForStem(stem.id)}
+                    onToggle={queue.toggleFix}
+                    onAdjust={setDrawerFix}
+                    onAddFix={(tool) => queue.addManualFix(stem.id, tool)}
+                    missingParamsFor={queue.missingParamsFor}
+                    onRemoveFix={queue.removeFix}
+                  />
+                ) : (
+                  <p className="text-sm text-text/45">
+                    Loaded from a previous run — press{' '}
+                    <span className="text-text/70 font-medium">Start analysis</span> above, or
+                    analyze this row on its own, to detect its fixes.
+                  </p>
+                )
+              }
+              analyzedStemIds={queue.analyzedStemIds}
+              analyzingStemIds={queue.analyzingStemIds}
+              onAnalyzeStem={queue.analyzeStem}
+              identifyingStemIds={queue.identifyingStemIds}
+              onIdentifyStem={queue.identifyStem}
+              onRenameStem={queue.renameStem}
+              playhead={playback.playhead}
+              maxDuration={playback.maxDuration}
+              onSeek={playback.seek}
+              separating={queue.analyzing || queue.separating}
+              analyzed={queue.analyzed}
+              analysisNote={queue.analysisNote}
+            />
           )}
         </div>
 

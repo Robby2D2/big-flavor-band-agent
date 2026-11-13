@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import StemConsole from '@/components/produce/audio/StemConsole';
 import FixCard from '@/components/produce/audio/FixCard';
 import type { FixEntry, StemInfo } from '@/hooks/useProcessingQueue';
@@ -101,24 +101,70 @@ const fix: FixEntry = {
 };
 
 describe('fix card buttons are thumb-sized on a phone', () => {
-  it('gives Hear it, Adjust and Remove a 44px floor that lifts on desktop', () => {
+  it('gives Adjust and Remove a 44px floor that lifts on desktop', () => {
     render(
       <FixCard
         fix={fix}
         index={0}
         onToggle={vi.fn()}
         onAdjust={vi.fn()}
-        onHear={vi.fn()}
         onRemove={vi.fn()}
       />
     );
 
-    for (const name of ['Hear it', 'Adjust', 'Remove']) {
+    for (const name of ['Adjust', 'Remove']) {
       const button = screen.getByRole('button', { name });
       expect(button.className).toContain('min-h-[44px]');
       expect(button.className).toContain('sm:min-h-0');
       // The target grows, not the type — the card's density is the point.
       expect(button.className).toContain('text-xs');
     }
+  });
+});
+
+describe('a row opens to its own fixes', () => {
+  it('shows the fix list beneath the open row only', () => {
+    render(
+      <StemConsole {...consoleProps} renderFixes={(stem) => <p>fixes for {stem.name}</p>} />
+    );
+
+    expect(screen.getByText('fixes for vocals')).toBeInTheDocument();
+    expect(screen.queryByText('fixes for drums')).toBeNull();
+    expect(screen.queryByText('fixes for full mix')).toBeNull();
+  });
+
+  it('closes the open row when it is clicked again, and opens another', () => {
+    const onSelectStem = vi.fn();
+    render(<StemConsole {...consoleProps} onSelectStem={onSelectStem} />);
+
+    fireEvent.click(screen.getByText('vocals'));
+    expect(onSelectStem).toHaveBeenLastCalledWith(null);
+    fireEvent.click(screen.getByText('drums'));
+    expect(onSelectStem).toHaveBeenLastCalledWith(902);
+  });
+
+  it('turns a row with any fix on all off, without opening or closing it', () => {
+    const onSelectStem = vi.fn();
+    const onSetRowFixesEnabled = vi.fn();
+    const drumFixes: FixEntry[] = [
+      { ...fix, id: 'stem:902:a', stemId: 902, enabled: true },
+      { ...fix, id: 'stem:902:b', stemId: 902, enabled: false },
+    ];
+    render(
+      <StemConsole
+        {...consoleProps}
+        onSelectStem={onSelectStem}
+        fixesForStem={(id) => (id === 902 ? drumFixes : [])}
+        onSetRowFixesEnabled={onSetRowFixesEnabled}
+      />
+    );
+
+    const toggle = screen.getByRole('switch', { name: 'All fixes on drums' });
+    expect(toggle).toHaveTextContent('1/2');
+    fireEvent.click(toggle);
+    expect(onSetRowFixesEnabled).toHaveBeenCalledWith(902, false);
+    expect(onSelectStem).not.toHaveBeenCalled();
+    // Rows with nothing to switch carry no switch.
+    expect(screen.queryByRole('switch', { name: 'All fixes on vocals' })).toBeNull();
   });
 });
