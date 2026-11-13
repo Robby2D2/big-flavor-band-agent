@@ -37,6 +37,11 @@ interface TransportBarProps {
   fixesBypassed?: boolean;
   /** Flip the bypass; omitted while there are no fixes to bypass. */
   onToggleBypass?: () => void;
+  /**
+   * Some audible row has its fixed audio in hand. Until then bypassing would
+   * play the same original audio, so the switch waits rather than look live.
+   */
+  fixesReady?: boolean;
 }
 
 /**
@@ -68,6 +73,7 @@ export default function TransportBar({
   songId,
   fixesBypassed = false,
   onToggleBypass,
+  fixesReady = true,
 }: TransportBarProps) {
   // Fetched each time the panel opens, not once: the point of it here is to
   // check a re-extraction, which lands while the page stays open.
@@ -90,6 +96,10 @@ export default function TransportBar({
   }, [showLyrics, songId]);
 
   const waiting = maxDuration > 0 && !playbackReady;
+  // A bypass already on can always be turned off; one not yet on has nothing
+  // to compare against until some fixed audio has arrived.
+  const switchWaiting = !fixesBypassed && !fixesReady;
+  const fixesOn = !fixesBypassed && fixesReady;
 
   let hearing: { text: string; tone: string } | null = null;
   if (audioLoading) {
@@ -164,31 +174,35 @@ export default function TransportBar({
         {onToggleBypass && (
           <button
             onClick={onToggleBypass}
+            disabled={switchWaiting}
             role="switch"
-            aria-checked={!fixesBypassed}
+            aria-checked={fixesOn}
             aria-label="Fixes"
             title={
-              fixesBypassed
-                ? 'Hear the song with its fixes'
-                : 'Hear the song as recorded — your fix choices stay as they are'
+              switchWaiting
+                ? 'The fixes are still rendering — the original is what is playing'
+                : fixesBypassed
+                  ? 'Hear the song with its fixes'
+                  : 'Hear the song as recorded — your fix choices stay as they are'
             }
-            className="flex flex-none items-center gap-1.5"
+            className="flex flex-none items-center gap-1.5 disabled:cursor-not-allowed"
           >
+            {switchWaiting && renderingFixes && <Spinner className="h-3 w-3 text-text/40" />}
             <span
               className={`font-mono text-[10.5px] font-semibold ${
-                fixesBypassed ? 'text-text/40' : 'text-confirm'
+                fixesOn ? 'text-confirm' : 'text-text/40'
               }`}
             >
               FIXES
             </span>
             <span
               className={`relative h-[18px] w-8 rounded-full transition-colors ${
-                fixesBypassed ? 'bg-white/13' : 'bg-confirm'
-              }`}
+                fixesOn ? 'bg-confirm' : 'bg-white/13'
+              } ${switchWaiting ? 'opacity-50' : ''}`}
             >
               <span
                 className={`absolute top-0.5 h-[14px] w-[14px] rounded-full transition-all ${
-                  fixesBypassed ? 'left-0.5 bg-text/55' : 'right-0.5 bg-canvas'
+                  fixesOn ? 'right-0.5 bg-canvas' : 'left-0.5 bg-text/55'
                 }`}
               />
             </span>

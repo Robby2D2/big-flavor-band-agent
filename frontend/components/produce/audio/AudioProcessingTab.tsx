@@ -420,6 +420,12 @@ export default function AudioProcessingTab({
     });
 
   const unrenderedRows = staleRows(true);
+  // Whether the Fixes switch would change anything: some audible row has its
+  // rendered take, so bypassing it swaps in different audio.
+  const fixesReady = queue.consoleStems.some((stem) => {
+    const signature = fixSignature[stem.id];
+    return signature && isAudible(stem.id) && takes.has(takeKey(stem.id, signature));
+  });
   const withFixes =
     !bypassFixes &&
     unrenderedRows.length === 0 &&
@@ -688,6 +694,7 @@ export default function AudioProcessingTab({
             withFixes={withFixes}
             songId={songId}
             fixesBypassed={bypassFixes}
+            fixesReady={fixesReady}
             onToggleBypass={queue.fixes.length > 0 ? () => setBypassFixes((b) => !b) : undefined}
           />
         )}

@@ -87,6 +87,28 @@ describe('TransportBar', () => {
       expect(screen.queryByRole('switch', { name: 'Fixes' })).toBeNull();
     });
 
+    it('waits, greyed out, while no fixed audio has arrived to compare against', () => {
+      render(
+        <TransportBar
+          {...props}
+          unrenderedRows={['vocals']}
+          renderingFixes
+          fixesReady={false}
+          onToggleBypass={vi.fn()}
+        />
+      );
+
+      const toggle = screen.getByRole('switch', { name: 'Fixes' });
+      expect(toggle).toBeDisabled();
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('can always be turned back off a bypass, rendered or not', () => {
+      render(<TransportBar {...props} fixesBypassed fixesReady={false} onToggleBypass={vi.fn()} />);
+
+      expect(screen.getByRole('switch', { name: 'Fixes' })).toBeEnabled();
+    });
+
     it('flips the bypass and says the original is what is playing', () => {
       const onToggleBypass = vi.fn();
       render(<TransportBar {...props} withFixes fixesBypassed onToggleBypass={onToggleBypass} />);
