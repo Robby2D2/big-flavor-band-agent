@@ -372,6 +372,15 @@ describe('producer-added fixes', () => {
   });
 });
 
+describe('the console rows on load', () => {
+  it('starts with every row closed, even once the stems have loaded', async () => {
+    const { result } = await analyzed(['apply_eq']);
+
+    expect(result.current.stems.length).toBeGreaterThan(0);
+    expect(result.current.selectedStemId).toBeNull();
+  });
+});
+
 describe('the console row switch', () => {
   const enabledOn = (fixes: { id: string; enabled: boolean }[]) =>
     fixes.filter((f) => f.enabled).map((f) => f.id).sort();

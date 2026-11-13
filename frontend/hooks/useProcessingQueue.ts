@@ -428,9 +428,9 @@ async function postJson(url: string, body: unknown): Promise<any> {
  */
 export function useProcessingQueue(songId: number, sourceVersionId: number | null) {
   const [stems, setStems] = useState<StemInfo[]>([]);
-  // The full mix is the console's first row, so it is also what's selected
-  // before any stem has been picked.
-  const [selectedStemId, setSelectedStemId] = useState<number | null>(FULL_MIX_STEM_ID);
+  // The open console row. The page loads with every row closed, so the whole
+  // console is in view before the producer opens one.
+  const [selectedStemId, setSelectedStemId] = useState<number | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   // Separation as an action in its own right — a producer can make stems
   // without committing to a full measuring pass.
@@ -593,7 +593,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setSelectedStemId((prev) =>
         prev === FULL_MIX_STEM_ID || (prev != null && set.stems.some((s) => s.id === prev))
           ? prev
-          : FULL_MIX_STEM_ID
+          : null
       );
     };
 
@@ -937,7 +937,7 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setSelectedStemId((prev) =>
         prev === FULL_MIX_STEM_ID || (prev != null && stemSet.stems.some((s) => s.id === prev))
           ? prev
-          : FULL_MIX_STEM_ID
+          : null
       );
       // Fixes measured from the previous stems describe audio that no longer
       // exists; the new set has not been measured at all.
