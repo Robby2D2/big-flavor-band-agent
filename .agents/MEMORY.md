@@ -29,6 +29,13 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 
 ---
 
+### 2026-11-13 — `deploy-changes.ps1`: deploy only what changed
+The full deploy rebuilds and restarts everything. Restarting the backend also wipes its in-memory
+render cache (`ChainCache`), so produce pages re-render every stem afterwards. The new script diffs
+the last deployed commit (`.deploy-state.json`, also written by `deploy-production.ps1`) against the
+working tree and maps paths to actions; mapping rules are in its `Classify`. The first run dates its
+baseline from the running frontend image's build time. Not ported to `deploy-production.sh` yet.
+
 ### 2026-11-13 — Produce page: player in the version card, fixes inside console rows (PROD-24)
 Owner found the page confusing during playback. The transport now lives in the version card (sticky
 from `md` up). The card has a pencil for inline rename, a trash icon, a "Default version" checkbox,

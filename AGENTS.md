@@ -259,7 +259,12 @@ tags it, and produces a deploy summary; a human runs the actual deploy.
   `docker-compose.yml`** (optimized `next build` frontend from `Dockerfile.frontend`, no source
   mounts, `APP_ENV=production`). The base file alone is the dev stack (`next dev`, which shows the
   Next.js dev-tools badge to visitors), so a bare `docker-compose up -d` reverts the frontend to dev;
-  frontend changes go live by redeploying, not `docker restart`. Full procedure in
+  frontend changes go live by redeploying, not `docker restart`. **`deploy-changes.ps1`** does only
+  what changed since the last deploy (recorded in gitignored `.deploy-state.json`, which both scripts
+  write): rebuild the frontend, restart the backend for mounted code, rebuild it for its
+  requirements/Dockerfile, `--no-cache` rebuild Liquidsoap for `radio.liq`, `up -d` for compose or
+  `.env.production` changes, nothing for docs/tests/scripts. It refuses on paths it doesn't
+  recognize (use `-Full`) and only warns about migrations, which stay manual. Full procedure in
   [`docs/DOCKER_DEPLOYMENT.md`](docs/DOCKER_DEPLOYMENT.md) and
   [`docs/PRODUCTION_QUICK_START.md`](docs/PRODUCTION_QUICK_START.md).
 - **Environment:** copy `.env.production.example` → production env; secrets (Anthropic key, Google

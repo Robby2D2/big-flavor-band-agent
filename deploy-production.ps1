@@ -230,6 +230,15 @@ if (-not $allUp) {
     exit 1
 }
 
+# Record what went out, so deploy-changes.ps1 can deploy only what changes next.
+$dirty = @(git diff --name-only --no-renames HEAD) + @(git ls-files --others --exclude-standard)
+@{
+    commit     = (git rev-parse HEAD)
+    dirtyFiles = @($dirty | Where-Object { $_ })
+    envHash    = (Get-FileHash '.env.production' -Algorithm SHA256).Hash
+    deployedAt = (Get-Date).ToString('s')
+} | ConvertTo-Json | Set-Content -Encoding utf8 '.deploy-state.json'
+
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host "Deployment Complete!" -ForegroundColor Green
@@ -242,6 +251,7 @@ Write-Host "Useful commands:" -ForegroundColor Cyan
 Write-Host "  View logs:           docker-compose -f docker-compose.yml -f docker-compose.prod.yml logs -f"
 Write-Host "  Stop services:       docker-compose -f docker-compose.yml -f docker-compose.prod.yml down"
 Write-Host "  Restart service:     docker restart bigflavor-<service>"
+Write-Host "  Next time, faster:   .\deploy-changes.ps1   (rebuilds/restarts only what changed)"
 Write-Host "  View this guide:     cat docs/DOCKER_DEPLOYMENT.md"
 Write-Host ""
 Write-Host "Check service health:" -ForegroundColor Cyan
