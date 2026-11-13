@@ -124,14 +124,16 @@ class Harness:
             list_stems=self._list_stems,
             start_separation=self._start_separation,
             is_separating=lambda stem_set_id: stem_set_id in self.live_sets,
-            on_complete=lambda rows, outcomes: self.completed.append((rows, outcomes)),
+            on_complete=lambda rows, outcomes, then_save: self.completed.append(
+                (rows, outcomes, then_save)
+            ),
         )
 
-    def start(self):
-        return self.manager.start(SONG, VERSION, self.db, self.services)
+    def start(self, then_save=False):
+        return self.manager.start(SONG, VERSION, self.db, self.services, then_save=then_save)
 
-    async def run(self):
-        self.start()
+    async def run(self, then_save=False):
+        self.start(then_save)
         await self.manager._jobs[VERSION]["_task"]
         return await self.manager.status(VERSION, self.db)
 
@@ -364,7 +366,7 @@ async def test_the_warm_render_starts_before_the_pass_reports_complete():
         list_stems=services.list_stems,
         start_separation=services.start_separation,
         is_separating=services.is_separating,
-        on_complete=lambda rows, outcomes: seen.append(h.manager._jobs[VERSION]["status"]),
+        on_complete=lambda rows, outcomes, then_save: seen.append(h.manager._jobs[VERSION]["status"]),
     )
     h.manager.start(SONG, VERSION, h.db, wrapped)
     await h.manager._jobs[VERSION]["_task"]
@@ -372,11 +374,34 @@ async def test_the_warm_render_starts_before_the_pass_reports_complete():
 
 
 @pytest.mark.asyncio
+async def test_analyze_and_save_reaches_the_render_it_sets_off():
+    h = Harness(FakeDb([stem_set(9)]), {9: [stem(901, "drums")]})
+    await h.run()
+    await h.run(then_save=True)
+    assert [then_save for _rows, _outcomes, then_save in h.completed] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_upgrades_a_pass_already_running():
+    # A second tab presses Analyze & save while the first tab's plain pass runs.
+    h = Harness(FakeDb([stem_set(9)]), {9: [stem(901, "drums")]})
+    release = asyncio.Event()
+    h.gate = {"held": {(901, "remove_hum")}, "release": release}
+    h.start()
+    await asyncio.sleep(0.01)
+    assert h.start(then_save=True)["then_save"] is True
+
+    release.set()
+    await h.manager._jobs[VERSION]["_task"]
+    assert h.completed[0][2] is True
+
+
+@pytest.mark.asyncio
 async def test_a_warm_render_that_will_not_start_does_not_fail_the_pass():
     h = Harness(FakeDb([stem_set(9)]), {9: [stem(901, "drums")]})
     services = h.services
 
-    def boom(rows, outcomes):
+    def boom(rows, outcomes, then_save):
         raise RuntimeError("already rendering")
 
     wrapped = PassServices(
@@ -532,3 +557,121 @@ def test_warm_render_leaves_a_running_render_alone(monkeypatch):
         lambda *a, **k: pytest.fail("started a second render"),
     )
     produce._warm_analyzed_render(SONG, VERSION, [], [], agent=None, db=None)
+
+
+# --- Analyze & save (PROD-23) -------------------------------------------------
+
+SAVE_ROWS = [
+    {"row_id": FULL_MIX_ROW_ID, "label": "Full mix", "done": 1, "total": 1},
+    {"row_id": 901, "label": "drums", "done": 1, "total": 1},
+]
+SAVE_OUTCOMES = [
+    {"row_id": 901, "tool": "remove_hum", "result": {"recommended": True, "params": {}}},
+]
+
+
+@pytest.fixture
+def renders(monkeypatch):
+    """A real render manager, with the DSP and the version write faked."""
+    from src.api.accept_jobs import AcceptJobManager
+    from src.api.routers import produce
+
+    manager = AcceptJobManager()
+    monkeypatch.setattr(produce, "accept_jobs", manager)
+    monkeypatch.setattr(produce, "_accept_fingerprint", lambda request: "detected")
+
+    async def render(request, agent, db, report=None):
+        if request.preview:
+            return {"candidate_path": "/tmp/mix.wav"}
+        return {"version": {"version_id": 99, "is_published": False}}
+
+    async def save_rendered(request, db, print_):
+        return {"version": {"version_id": 77, "is_published": False}, "notices": []}
+
+    monkeypatch.setattr(produce, "_render_accept_fixes", render)
+    monkeypatch.setattr(produce, "_save_rendered", save_rendered)
+    return manager
+
+
+async def _held_render(manager, fingerprint):
+    """Start a render that runs until the returned event is set."""
+    release = asyncio.Event()
+
+    async def render():
+        await release.wait()
+        return {"candidate_path": "/tmp/other.wav"}
+
+    manager.start(SONG, preview=True, fix_count=1, render=render, fingerprint=fingerprint)
+    await asyncio.sleep(0)
+    return release
+
+
+async def _settled(manager):
+    for _ in range(50):
+        if not manager.is_running(SONG):
+            break
+        await asyncio.sleep(0.01)
+    return manager.status(SONG)
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_renders_and_writes_a_version(renders):
+    from src.api.routers import produce
+
+    produce._warm_analyzed_render(SONG, VERSION, SAVE_ROWS, SAVE_OUTCOMES, True, agent=None, db=None)
+    job = await _settled(renders)
+    assert job["preview"] is False
+    assert job["version"]["version_id"] == 99
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_saves_a_mix_already_rendered(renders, tmp_path):
+    from src.api.routers import produce
+
+    mix = tmp_path / "mix.wav"
+    mix.write_bytes(b"")
+    renders.remember_render(SONG, "detected", str(mix))
+    produce._warm_analyzed_render(SONG, VERSION, SAVE_ROWS, SAVE_OUTCOMES, True, agent=None, db=None)
+    job = await _settled(renders)
+    assert job["version"]["version_id"] == 77, "saved the cached mix, not a fresh render"
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_saves_nothing_when_nothing_was_found(renders):
+    from src.api.routers import produce
+
+    clean = [{**SAVE_OUTCOMES[0], "result": {"recommended": False, "params": {}}}]
+    produce._warm_analyzed_render(SONG, VERSION, SAVE_ROWS, clean, True, agent=None, db=None)
+    job = await _settled(renders)
+    assert job["preview"] is True
+    assert job["version"] is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_rides_on_a_render_of_the_same_fixes(renders):
+    from src.api.routers import produce
+
+    release = await _held_render(renders, "detected")
+    produce._warm_analyzed_render(SONG, VERSION, SAVE_ROWS, SAVE_OUTCOMES, True, agent=None, db=None)
+    assert renders.status(SONG)["preview"] is False
+    release.set()
+    job = await _settled(renders)
+    assert job["version"]["version_id"] == 77
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_waits_out_a_different_render(renders):
+    # The producer pressed one button and left: the save must not be dropped.
+    from src.api.routers import produce
+
+    release = await _held_render(renders, "something-else")
+    produce._warm_analyzed_render(SONG, VERSION, SAVE_ROWS, SAVE_OUTCOMES, True, agent=None, db=None)
+    assert renders.status(SONG)["preview"] is True, "left the other render as it was"
+    release.set()
+    for _ in range(50):
+        job = renders.status(SONG)
+        if job.get("version"):
+            break
+        await asyncio.sleep(0.01)
+    assert job["preview"] is False
+    assert job["version"]["version_id"] == 99

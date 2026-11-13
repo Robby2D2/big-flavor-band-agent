@@ -2316,6 +2316,8 @@ def _warm_analyzed_render(
     version_id: int,
     rows: List[Dict[str, Any]],
     outcomes: List[Dict[str, Any]],
+    save: bool = False,
+    *,
     agent: BigFlavorAgent,
     db: DatabaseManager,
 ) -> None:
@@ -2326,8 +2328,13 @@ def _warm_analyzed_render(
     and it can't wait for the page: the producer may have left. Shaped exactly
     as the page's own payload (every stem, fixes in pass order), since that is
     what makes the fingerprint match and a later Save land on this render.
+
+    ``save`` is Analyze & save: the same render, written as a new version. A
+    pass that found nothing saves nothing — that version would only be the
+    stems summed back together.
     """
     recommended = [o for o in outcomes if o["result"].get("recommended")]
+    save = save and bool(recommended)
 
     def fixes_for(row_id: int) -> List[StemFixSpec]:
         return [
@@ -2345,13 +2352,41 @@ def _warm_analyzed_render(
             if row["row_id"] != FULL_MIX_ROW_ID
         ],
         master_fixes=fixes_for(FULL_MIX_ROW_ID),
-        preview=True,
+        preview=not save,
     )
-    if accept_jobs.is_running(song_id):
-        return
     print_ = _accept_fingerprint(request)
+    if accept_jobs.is_running(song_id):
+        if not save:
+            return
+        running = accept_jobs.status(song_id)
+        # Already saving these very fixes, so a second save would duplicate it.
+        if running.get("preview") is False and running.get("fingerprint") == print_:
+            return
+        # Already rendering these fixes: the save rides on that render.
+        if accept_jobs.attach_save(
+            song_id, print_, lambda _result: _save_rendered(request, db, print_)
+        ) is None:
+            # Rendering something else. The producer pressed one button and
+            # left, so the save waits its turn rather than being dropped.
+            async def save_after_it() -> None:
+                await accept_jobs.wait(song_id)
+                _warm_analyzed_render(
+                    song_id, version_id, rows, outcomes, True, agent=agent, db=db
+                )
+
+            _in_background(save_after_it())
+        return
     fix_count = len(recommended)
     cached = accept_jobs.cached_render(song_id, print_)
+    if cached is not None and save:
+        accept_jobs.start(
+            song_id,
+            preview=False,
+            fix_count=fix_count,
+            render=lambda: _save_rendered(request, db, print_),
+            fingerprint=print_,
+        )
+        return
     if cached is not None:
         accept_jobs.complete_now(
             song_id,
@@ -2362,7 +2397,7 @@ def _warm_analyzed_render(
         return
     accept_jobs.start(
         song_id,
-        preview=True,
+        preview=request.preview,
         fix_count=fix_count,
         render=lambda: _render_accept_fixes(
             request, agent, db, report=partial(accept_jobs.report, song_id)
@@ -2391,6 +2426,7 @@ async def version_analysis_status(
 @router.post("/api/produce/versions/{version_id}/analysis/start")
 async def start_version_analysis(
     version_id: int,
+    then_save: bool = False,
     agent: BigFlavorAgent = Depends(get_agent),
     db: DatabaseManager = Depends(get_db),
     _role: str = Depends(require_role("editor")),
@@ -2399,6 +2435,8 @@ async def start_version_analysis(
 
     Separates the version first if it has no stems, and carries on whether or
     not anyone is watching. Joins the running pass if there already is one.
+    ``then_save`` (Analyze & save) also saves every recommended fix as a new
+    version when the pass finishes (PROD-23).
     """
     from src.api import stem_jobs
 
@@ -2435,6 +2473,7 @@ async def start_version_analysis(
             is_separating=stem_jobs.manager.is_running,
             on_complete=partial(_warm_analyzed_render, song_id, version_id, agent=agent, db=db),
         ),
+        then_save=then_save,
     )
 
 

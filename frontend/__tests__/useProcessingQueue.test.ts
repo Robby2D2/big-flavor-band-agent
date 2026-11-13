@@ -82,7 +82,7 @@ function installFakeApi(sets: FakeSet[], initialPass: any = { status: 'idle' }) 
       sets.push(created);
       return json({ stem_set: created });
     }
-    if (url === START_URL) {
+    if (url === START_URL || url.startsWith(`${START_URL}?`)) {
       api.pass = finishedPass(sets[0]?.id ?? 9);
       return json(api.pass);
     }
@@ -146,6 +146,28 @@ describe('useProcessingQueue — Start analysis', () => {
     await runPass(() => result.current.startAnalysis());
 
     expect(result.current.analysisTask?.status).toBe('done');
+  });
+
+  it('Analyze & save asks the server to save what the pass finds', async () => {
+    const api = installFakeApi([completeSet(9)]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    await runPass(() => result.current.analyzeAndSave());
+
+    expect(api.calls).toContain(`POST ${START_URL}?then_save=true`);
+    expect(result.current.savingAfterAnalysis).toBe(false);
+    // finishedPass recommends nothing, and the server saves nothing for it.
+    expect(result.current.analysisNote).toBe('Nothing to fix, so no new version was saved.');
+  });
+
+  it('plain Start analysis never asks for a save', async () => {
+    const api = installFakeApi([completeSet(9)]);
+    const { result } = renderHook(() => useProcessingQueue(SONG_ID, VERSION_ID));
+
+    await runPass(() => result.current.startAnalysis());
+
+    expect(api.calls.some((c) => c.includes('then_save'))).toBe(false);
+    expect(result.current.analysisNote).toBeNull();
   });
 
   it('shows the error and stops when the server will not start a pass', async () => {

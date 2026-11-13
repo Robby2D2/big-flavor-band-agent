@@ -200,6 +200,12 @@ class AcceptJobManager:
         job = self._jobs.get(song_id)
         return bool(job and job["status"] == STATUS_RUNNING)
 
+    async def wait(self, song_id: int) -> None:
+        """Until the song's running render has ended, however it ends."""
+        task = self._tasks.get(song_id)
+        if task is not None:
+            await asyncio.wait({task})
+
     def start(
         self,
         song_id: int,

@@ -5,16 +5,19 @@ import { backendAuthHeaders, backendErrorMessage } from '@/lib/backend';
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8000';
 
 // Start analysis: separates if needed and measures, whether or not the page stays open.
+// `?then_save=true` is Analyze & save: the fixes it finds are saved as a new version too.
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ versionId: string }> }
 ) {
   try {
     await requireAuth(UserRole.EDITOR);
     const { versionId } = await params;
+    const thenSave = request.nextUrl.searchParams.get('then_save') === 'true';
 
     const response = await fetch(
-      `${AGENT_API_URL}/api/produce/versions/${encodeURIComponent(versionId)}/analysis/start`,
+      `${AGENT_API_URL}/api/produce/versions/${encodeURIComponent(versionId)}/analysis/start` +
+        (thenSave ? '?then_save=true' : ''),
       { method: 'POST', headers: backendAuthHeaders('editor') }
     );
 

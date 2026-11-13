@@ -108,8 +108,9 @@ class PassServices:
     start_separation: Callable[[], Awaitable[int]]
     #: Whether a stem set is really being worked on in this process.
     is_separating: Callable[[int], bool]
-    #: Given the finished rows and outcomes. Best-effort.
-    on_complete: Callable[[List[Dict[str, Any]], List[Dict[str, Any]]], None]
+    #: Given the finished rows and outcomes, and whether the producer asked for
+    #: the result to be saved as a version. Best-effort.
+    on_complete: Callable[[List[Dict[str, Any]], List[Dict[str, Any]], bool], None]
 
 
 def _newest_set(
@@ -145,15 +146,28 @@ class AnalysisJobManager:
         return bool(job and job["status"] == STATUS_RUNNING)
 
     def start(
-        self, song_id: int, version_id: int, db: Any, services: PassServices
+        self,
+        song_id: int,
+        version_id: int,
+        db: Any,
+        services: PassServices,
+        then_save: bool = False,
     ) -> Dict[str, Any]:
-        """Begin a pass, or join the one already running (a second tab, say)."""
+        """Begin a pass, or join the one already running (a second tab, say).
+
+        ``then_save`` is Analyze & save: the render the pass sets off when it
+        finishes is saved as a new version, not just kept for Preview. Joining a
+        running pass with it turns that pass into one that saves.
+        """
         if self.is_running(version_id):
-            return self._view(self._jobs[version_id])
+            job = self._jobs[version_id]
+            job["then_save"] = job["then_save"] or then_save
+            return self._view(job)
         job: Dict[str, Any] = {
             "status": STATUS_RUNNING,
             "song_id": song_id,
             "source_version_id": version_id,
+            "then_save": then_save,
             "stem_set_id": None,
             "stage": None,
             "separation_started_at": None,
@@ -284,7 +298,7 @@ class AnalysisJobManager:
         # the render it set off.
         if status == STATUS_COMPLETE:
             try:
-                services.on_complete(job["rows"], outcomes)
+                services.on_complete(job["rows"], outcomes, job["then_save"])
             except Exception:
                 logger.exception("Warm render failed to start for version %s", version_id)
 

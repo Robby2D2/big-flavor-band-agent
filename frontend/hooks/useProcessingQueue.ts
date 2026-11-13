@@ -341,6 +341,8 @@ interface PassRow extends TaskRow {
 interface AnalysisPass {
   status: 'idle' | 'running' | 'complete' | 'failed' | 'cancelled';
   stage?: 'separating' | 'measuring' | null;
+  /** Analyze & save: what the pass finds is saved as a new version. */
+  then_save?: boolean;
   stem_set_id?: number | null;
   /** Seconds since the epoch. */
   separation_started_at?: number | null;
@@ -471,6 +473,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     setAnalysisTask(null);
     setSeparationTask(null);
     startedHereRef.current = false;
+    thenSaveRef.current = false;
+    setSavingAfterAnalysis(false);
   }, [sourceVersionId]);
   const [analyzingStemIds, setAnalyzingStemIds] = useState<Set<number>>(new Set());
   // Tempo as each row measured it. Kept from the analysis pass so a hand-added
@@ -494,6 +498,10 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
   // This page started the pass, so it should report the outcome rather than
   // quietly restoring it.
   const startedHereRef = useRef(false);
+  // The running pass is Analyze & save. State for the button's label; the ref
+  // for the poll, whose finished pass comes back from storage without the flag.
+  const [savingAfterAnalysis, setSavingAfterAnalysis] = useState(false);
+  const thenSaveRef = useRef(false);
   const shownStemSetRef = useRef<number | null>(null);
 
   // Optimistic preload: a stem set for *this version* may already sit complete
@@ -593,6 +601,9 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       const rows = pass.rows ?? [];
       const reporting = startedHereRef.current;
       startedHereRef.current = false;
+      const thenSave = thenSaveRef.current;
+      thenSaveRef.current = false;
+      setSavingAfterAnalysis(false);
       setAnalyzing(false);
       setAnalysisNote(null);
       setSeparationTask(null);
@@ -632,6 +643,11 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
         return;
       }
       if (reporting) setAnalysisTask({ status: 'done', rows });
+      // The server saves nothing when nothing was found; say so, or the
+      // producer waits for a version that is never coming.
+      if (reporting && thenSave && results.length === 0) {
+        setAnalysisNote('Nothing to fix, so no new version was saved.');
+      }
       setAnalyzed(true);
     };
 
@@ -659,6 +675,10 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
       setAnalyzing(true);
       setAnalyzed(false);
       startedHereRef.current = true;
+      if (pass.then_save) {
+        thenSaveRef.current = true;
+        setSavingAfterAnalysis(true);
+      }
       if (pass.stage === 'separating') {
         setAnalysisNote('Separating into stems — this takes a few minutes…');
         setSeparationTask({
@@ -766,10 +786,16 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     [songId, sourceVersionId]
   );
 
-  /** Hand a pass to the server; the poll above follows it from here. */
-  const startAnalysis = useCallback(async () => {
+  /**
+   * Hand a pass to the server; the poll above follows it from here. With
+   * `thenSave` (Analyze & save) the server also saves what it finds as a new
+   * version, and the page picks that save up like any other.
+   */
+  const beginPass = useCallback(async (thenSave: boolean) => {
     if (sourceVersionId == null) return;
     startedHereRef.current = true;
+    thenSaveRef.current = thenSave;
+    setSavingAfterAnalysis(thenSave);
     setAnalyzing(true);
     setAnalyzed(false);
     setAnalysisNote(null);
@@ -781,14 +807,24 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     setFixes((prev) => prev.filter((f) => f.source === 'manual'));
     setAnalyzedStemIds(new Set());
     try {
-      await postJson(`/api/produce/versions/${sourceVersionId}/analysis/start`, {});
+      await postJson(
+        `/api/produce/versions/${sourceVersionId}/analysis/start${thenSave ? '?then_save=true' : ''}`,
+        {}
+      );
       setPassNonce((n) => n + 1);
     } catch (err) {
       startedHereRef.current = false;
+      thenSaveRef.current = false;
+      setSavingAfterAnalysis(false);
       setAnalyzing(false);
       setError((err as Error).message);
     }
   }, [sourceVersionId]);
+
+  // Separate callbacks rather than a flag: a button's click event would arrive
+  // as the argument.
+  const startAnalysis = useCallback(() => beginPass(false), [beginPass]);
+  const analyzeAndSave = useCallback(() => beginPass(true), [beginPass]);
 
   /**
    * Re-measure one console row on its own — a single stem, or the full mix
@@ -1285,6 +1321,8 @@ export function useProcessingQueue(songId: number, sourceVersionId: number | nul
     masterFixes,
     enabledCount,
     startAnalysis,
+    analyzeAndSave,
+    savingAfterAnalysis,
     cancelAnalysis,
     separateStems,
     cancelSeparation,

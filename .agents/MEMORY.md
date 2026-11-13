@@ -4,6 +4,9 @@ Rolling, **dated** record of the project's most relevant state and the key chang
 entries at the top. When this file approaches ~200 lines, move older entries into topic files under
 `.agents/memory/` and link them from [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md).
 
+> Pruned 2026-11-10 (215 lines → ~185): the 2026-09-26 `docs/requirements/` entry moved to
+> [memory/history_2025_2026.md](memory/history_2025_2026.md).
+>
 > Pruned 2026-11-08 again (209 lines → ~190): the 2026-10-23 phantom-lyrics entry moved to
 > [memory/search_rag.md](memory/search_rag.md).
 >
@@ -25,6 +28,14 @@ entries at the top. When this file approaches ~200 lines, move older entries int
 > (2026-08-01 → 2026-09-27) are recorded in [LONGTERM_MEMORY.md](LONGTERM_MEMORY.md)'s table.
 
 ---
+
+### 2026-11-10 — Analyze & save: one press from a version to a saved, cleaned version (PROD-23)
+Owner asked for one button instead of Start analysis → wait → Save. It's the same server pass with
+`then_save`, and the warm render it already started becomes a save. No pipeline was added. If
+nothing is recommended, nothing is saved and the page says so. A render of different fixes is waited
+out (`accept_jobs.wait`), because a one-press save that silently didn't happen is the worst outcome.
+The saved version is an unpublished candidate, like any Save. See
+[ARCHITECTURE.md](ARCHITECTURE.md) (search "Analyze & save").
 
 ### 2026-11-08 — Click repair works on real mixes; timing fixes stop adding clicks (song 917)
 Cleaning 917 added pops: `_apply_time_map` butted independently stretched beat segments together, a
@@ -171,37 +182,5 @@ restart (`play(from)`), because the console held only one take per row (`fixedBu
   same offset on the same clock, with a 15 ms crossfade (`Voice` = src → fade → row gain). End of
   song is detected by the rAF tick, not `onended` (a swap stops sources early). Callers no longer
   re-`play()` to pick up a landed render.
-
----
-
-### 2026-09-26 — `docs/requirements/`: the product contract the PM now guards
-The app's promises were only ever implicit — spread across OKRs, architecture notes, and whatever a
-past spec happened to say — so nothing stopped a change from quietly removing a behavior users
-depend on. `docs/requirements/` now records them: eight area files (search, radio, agent/DJ, catalog,
-production, sessions, accounts, platform) of **MUST** statements with permanent IDs (`SRCH-04`,
-`RAD-02`), seeded from what the app actually does today.
-
-- **Requirements ≠ OKRs.** Requirements are invariants ("what must always be true"); OKRs are
-  targets ("what we're trying to move"). Keeping them in separate files keeps both readable.
-- **IDs are permanent and never reused** — retired requirements stay in the file struck through, so
-  a two-year-old issue citing `SRCH-04` still means the same promise.
-- **A known gap stays in the file, marked inline** rather than being deleted. Two are recorded:
-  the hosted Anthropic path (`PLAT-01`) and the unguarded search/agent routes (`PLAT-03`).
-- **The PM authors, the developer commits, QA checks, a human merges.** The PM agent stays
-  read-only (it ingests untrusted issue text), so requirement changes ride into `main` inside the
-  code's own PR — the merge *is* the approval. Its spec template gained a mandatory
-  `**Requirements.**` section: `Honors:` (IDs this change must not break) and `Impact:` (the exact
-  new/amended text, ready to paste, or `None`).
-- **Conflicts halt for a human.** A greenlit issue that would make a MUST false gets a
-  `<!-- pm-agent:requirements-conflict -->` comment, the `requirements-conflict` label, and no
-  `dev_ready` — the orchestrator's new **REQ-CONFLICT** bucket parks it above the PM buckets so no
-  sweep re-posts it, and it returns to **PM (re-eval)** once a human replies. The gate exists
-  precisely to catch "it's obviously fine" reasoning, so there is no obviousness threshold that lets
-  an agent skip it.
-
-Touched: `docs/requirements/*` (new), `.claude/agents/product-manager.md` (rewritten around the two
-jobs), `.claude/agents/developer.md` (commits the requirement text verbatim),
-`.claude/agents/qa-reviewer.md` (contract check in the review), `.claude/commands/fix-issue.md`
-(REQ-CONFLICT routing + label), `AGENTS.md`, `.agents/memory/pm_conventions.md`.
 
 ---

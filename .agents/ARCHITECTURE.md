@@ -676,6 +676,15 @@ the page only follows it.
 - **The warm render starts server-side too** (`_warm_analyzed_render`), or a producer who left would
   come back to nothing rendered. Its request is built to match `buildAcceptPayload` exactly: every
   stem, fixes in pass order. That equality is what makes a later Save hit the render cache.
+- **Analyze & save is the same pass with `then_save`** (PROD-23, 2026-11-10). It's a query param on
+  `…/analysis/start`, kept on the job and handed to `on_complete`, so the warm render becomes a save
+  (`preview=False`). There is no new pipeline. The page notices the save the way it notices any
+  other: `useAcceptJob` sees a non-preview job complete, reloads the list, and selects the new
+  version. Its edge cases are explicit. If nothing was recommended, nothing is saved, because that
+  version would only be the stems summed back together, and the page says so. A cached mix is saved
+  as it is. A render of the same fixes already under way gets the save attached (`attach_save`). A
+  render of *different* fixes is waited out (`accept_jobs.wait`) rather than dropping the save, since
+  the producer may have left. A second tab pressing it during a plain pass upgrades that pass.
 - **`analyze_tool` runs on a worker thread**, as `apply` already did. Each tool's `analyze()` is
   CPU-bound `async`, and on the event loop a pass would stall its own progress polls and every other
   request. `ANALYZE_CONCURRENCY = 3` is only real because of this.

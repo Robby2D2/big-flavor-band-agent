@@ -62,6 +62,14 @@ song MUST NOT abort the rest.
 **PROD-11** — A long-running operation MUST show progress and MUST survive a page reload — reopening
 the page picks the work back up rather than losing it.
 
+**PROD-23** — A producer MUST be able to analyze a version and save every recommended fix as a new
+version with one press (**Analyze & save**), and the save MUST happen whether or not they stay on the
+page. When analysis recommends nothing, it MUST say so instead of saving a version. This is in
+addition to reviewing fixes, not a replacement for it (**PROD-08**): the findings stay on the source
+version (**PROD-22**), and the saved version is a candidate, never the default (**PROD-05**).
+*Why:* most of the time the producer wants what analysis recommends, and used to have to wait out
+the analysis and the render to press Save.
+
 ---
 
 ## Stems

@@ -31,9 +31,13 @@ interface VersionDetailsProps {
   onRename: () => void;
   onDelete: () => void;
   onStartAnalysis: () => void;
+  /** Analyze, then save every recommended fix as a new version — one press. */
+  onAnalyzeAndSave: () => void;
   /** Separate this version into stems without measuring anything. */
   onSeparateStems: () => void;
   analyzing: boolean;
+  /** The pass running is Analyze & save. */
+  savingAfterAnalysis?: boolean;
   separating?: boolean;
   analysisNote: string | null;
   /** This version already has stems, so an analysis pass only measures them. */
@@ -59,8 +63,10 @@ export default function VersionDetails({
   onRename,
   onDelete,
   onStartAnalysis,
+  onAnalyzeAndSave,
   onSeparateStems,
   analyzing,
+  savingAfterAnalysis = false,
   separating = false,
   analysisNote,
   hasStems,
@@ -143,10 +149,11 @@ export default function VersionDetails({
           </button>
         </div>
 
-        {/* The two jobs, side by side: making the parts, and measuring them.
-            Separating used to be reachable only from inside the console, which
-            meant a version with no stems could not be separated without
-            committing to a full measuring pass first. */}
+        {/* The jobs, side by side: making the parts, measuring them, and
+            measuring them straight through to a saved version. Separating used
+            to be reachable only from inside the console, which meant a version
+            with no stems could not be separated without committing to a full
+            measuring pass first. */}
         <div className="flex items-center gap-2">
           <button
             onClick={onSeparateStems}
@@ -165,7 +172,15 @@ export default function VersionDetails({
             disabled={analyzing || separating || renderInProgress}
             className="px-4 py-2 bg-signal text-canvas font-semibold text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {analyzing ? 'Analyzing…' : 'Start analysis'}
+            {analyzing && !savingAfterAnalysis ? 'Analyzing…' : 'Start analysis'}
+          </button>
+          <button
+            onClick={onAnalyzeAndSave}
+            disabled={analyzing || separating || renderInProgress}
+            title="Analyze, apply every recommended fix, and save the result as a new version. Runs on the server, so you can leave the page."
+            className="px-3 py-2 border border-signal/50 text-signal font-semibold text-sm rounded-lg hover:bg-signal/10 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {analyzing && savingAfterAnalysis ? 'Analyzing…' : 'Analyze & save'}
           </button>
         </div>
       </div>

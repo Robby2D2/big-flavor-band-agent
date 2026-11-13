@@ -788,8 +788,10 @@ export default function AudioProcessingTab({
           selectedVersion && versionActions.onDelete(selectedVersion.id, selectedVersion.name)
         }
         onStartAnalysis={queue.startAnalysis}
+        onAnalyzeAndSave={queue.analyzeAndSave}
         onSeparateStems={queue.separateStems}
         analyzing={queue.analyzing}
+        savingAfterAnalysis={queue.savingAfterAnalysis}
         separating={queue.separating}
         analysisNote={queue.analysisNote}
         hasStems={queue.stems.length > 0}
